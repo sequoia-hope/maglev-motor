@@ -36,7 +36,8 @@ for (const [key, preset] of Object.entries(PRESETS)) {
   // that the platen falls straight through. Sweep the reachable area and demand
   // it can hover EVERYWHERE.
   let worstLift = Infinity, worstAt = null;
-  const reach = 0.03;
+  const reach = Math.max(0.005,
+    Math.min(0.03, (cfg.stator.statorSize - cfg.translator.platenSize) / 2 - cfg.translator.pitch / 2));
   for (let iy = 0; iy <= 6; iy++) {
     for (let ix = 0; ix <= 6; ix++) {
       const x = -reach + (2 * reach * ix) / 6, y = -reach + (2 * reach * iy) / 6;
@@ -44,7 +45,7 @@ for (const [key, preset] of Object.entries(PRESETS)) {
       if (m < worstLift) { worstLift = m; worstAt = [x, y]; }
     }
   }
-  console.log(`  worst-case lift over +/-${reach * 1000}mm workspace: ${worstLift.toFixed(2)}x at (${(worstAt[0] * 1000).toFixed(0)}, ${(worstAt[1] * 1000).toFixed(0)}) mm`);
+  console.log(`  worst-case lift over +/-${(reach * 1000).toFixed(0)}mm workspace: ${worstLift.toFixed(2)}x at (${(worstAt[0] * 1000).toFixed(0)}, ${(worstAt[1] * 1000).toFixed(0)}) mm`);
   check('can hover everywhere in the workspace', worstLift > 1.2, `worst ${worstLift.toFixed(2)}x`);
 
   for (const trajName of ['hover', 'circle', 'raster']) {

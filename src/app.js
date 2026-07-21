@@ -40,6 +40,15 @@ const PRESETS = {
       sim: { gap: 0.0015, iMax: 8, bwPos: 14, bwAtt: 26, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
     },
   },
+  desk40: {
+    label: '40 mm desktop platen (searched)',
+    blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 49 magnets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.0209, magnetThickness: 0.002, Br: 1.32, segments: 4, platenSize: 0.040, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'square', coilPitch: 0.00677, coilFill: 0.92, statorSize: 0.080, windingHeight: 0.0038, wireDiameter: 0.0002, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
+      sim: { gap: 0.00249, iMax: 7.5, bwPos: 20, bwAtt: 38, zeta: 1.0, kiPos: 0.5, kiAtt: 0.5, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
+    },
+  },
   baseline: {
     label: 'Baseline: plain N/S array',
     blurb: 'Identical machine with the flux-steering magnets removed. Run it to see exactly what the Halbach geometry buys you.',
@@ -899,6 +908,8 @@ const METRIC_AXES = {
   deltaT: { label: 'Stator ΔT (K)', get: (m) => m.deltaT },
   currentDensity: { label: 'Current density (A/mm²)', get: (m) => m.currentDensity },
   amplifiers: { label: 'Amplifiers', get: (m) => m.amplifiers },
+  gap: { label: 'Air gap (mm)', get: (m) => m.gap * 1000 },
+  coils: { label: 'Coils to wind', get: (m) => m.coils },
   mass: { label: 'Platen mass (kg)', get: (m) => m.mass },
   cond: { label: 'Condition number', get: (m) => m.cond },
 };
@@ -974,6 +985,7 @@ function buildOptUI() {
     ['maxDeltaT', 'Max stator ΔT (K)', 5, 200, 5],
     ['maxCurrentDensity', 'Max current density (A/mm²)', 1, 60, 1],
     ['maxAmplifiers', 'Max amplifiers', 4, 512, 4],
+    ['maxCoils', 'Max coils to wind', 16, 2304, 16],
     ['minGapFraction', 'Min air gap (× platen size)', 0, 0.05, 0.0025],
   ];
   document.getElementById('optConstraints').innerHTML = cons.map(([k, l, mn, mx, st]) => `

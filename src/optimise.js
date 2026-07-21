@@ -46,6 +46,11 @@ export const CATEGORICAL = {
 
 export const OBJECTIVES = {
   accel: { label: 'Max lateral acceleration', better: 'max', get: (m) => m.accel, unit: 'g' },
+  // Air gap is the hardest thing to buy on a real machine -- force falls as
+  // exp(-k*gap), so everything else is spent purchasing it. Maximising the gap
+  // subject to a lift floor is usually the most useful question for a small
+  // build, where flatness and assembly tolerance dominate.
+  gap: { label: 'Max air gap (most buildable)', better: 'max', get: (m) => m.gap * 1000, unit: 'mm' },
   liftPerWatt: { label: 'Max lift per watt', better: 'max', get: (m) => m.worstLift / Math.max(m.hoverPower, 1e-6), unit: '×/W' },
   power: { label: 'Min hover power', better: 'min', get: (m) => m.hoverPower, unit: 'W' },
   lift: { label: 'Max worst-case lift margin', better: 'max', get: (m) => m.worstLift, unit: '×' },
@@ -58,6 +63,9 @@ export const DEFAULT_CONSTRAINTS = {
   maxDeltaT: 40,         // K rise, natural convection
   maxCurrentDensity: 15, // A/mm^2 at hover
   maxAmplifiers: 256,
+  // Coil count is the labour gate on a hand-wound stator: 500 coils is a
+  // year of evenings, whatever the physics says.
+  maxCoils: 512,
   requireRank6: true,
   // Air gap is not free to shrink. Stator flatness, platen flatness, thermal
   // expansion and control error all scale with the machine, so the achievable
@@ -139,6 +147,7 @@ export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARC
   const m = {
     worstLift, accel: worstAcc, hoverPower: maxPower, deltaT: dT,
     currentDensity: J, amplifiers: a0.amplifiers, coils: stator.coils.length,
+    gap: cfg.sim.gap,
     activeCoils: a0.activeCoils, cond: a0.conditionNumber, mass: tr.mass,
     peakB: tr.peakGapField, rank6: worstSigma > 1e-4,
   };
@@ -147,18 +156,53 @@ export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARC
     (constraints.minGapFraction ?? 0) * cfg.translator.platenSize);
   m.gapFloor = gapFloor;
 
+  // Order matters, and so does not double-reporting: a design that cannot
+  // hover has infinite hover power, which would otherwise ALSO be counted as a
+  // thermal failure and bury the real blocker in the histogram.
   const fails = [];
+  const cannotHover = !isFinite(m.hoverPower);
   if (!(m.peakB > 1e-4)) fails.push('no usable air-gap field');
-  if (!isFinite(m.hoverPower)) fails.push('cannot hover within the current limit');
+  if (cannotHover) fails.push('cannot hover within the current limit');
   if (!(cfg.sim.gap >= gapFloor - 1e-9)) fails.push('gap below buildable floor');
   if (!(m.worstLift >= constraints.minWorstLift)) fails.push('lift');
-  if (!(m.deltaT <= constraints.maxDeltaT)) fails.push('thermal');
+  if (!cannotHover && !(m.deltaT <= constraints.maxDeltaT)) fails.push('thermal');
   if (!(m.currentDensity <= constraints.maxCurrentDensity)) fails.push('current density');
   if (!(m.amplifiers <= constraints.maxAmplifiers)) fails.push('amplifiers');
+  if (!(m.coils <= (constraints.maxCoils ?? Infinity))) fails.push('coil count');
   if (constraints.requireRank6 && !m.rank6) fails.push('rank');
   m.feasible = fails.length === 0;
   m.reason = fails.join(', ');
   return m;
+}
+
+/** How badly a design misses feasibility, normalised per constraint so the
+ *  terms are commensurate. Only meaningful for infeasible designs. */
+export function violation(m, cons) {
+  if (!m || m.feasible) return 0;
+  let v = 0;
+  if (!(m.peakB > 1e-4)) v += 10;                       // no machine at all
+  if (!isFinite(m.hoverPower)) v += 10;                 // cannot hover
+  else v += Math.max(0, m.deltaT / cons.maxDeltaT - 1);
+  v += Math.max(0, 1 - m.worstLift / Math.max(cons.minWorstLift, 1e-9));
+  v += Math.max(0, m.currentDensity / cons.maxCurrentDensity - 1);
+  v += Math.max(0, m.amplifiers / cons.maxAmplifiers - 1);
+  v += Math.max(0, m.coils / (cons.maxCoils ?? Infinity) - 1);
+  if (cons.requireRank6 && !m.rank6) v += 1;
+  return isFinite(v) ? v : 1e6;
+}
+
+/** Feasibility first, then objective. A feasible design always beats an
+ *  infeasible one; among infeasible ones, less violation wins. Without this
+ *  the refinement stage can only start from candidates that are ALREADY
+ *  feasible -- so when random sampling happens to find none, the search
+ *  reports "no feasible design" while good designs sit a short walk away. On a
+ *  small platen, where the feasible region is a thin corner of the space, that
+ *  is the normal case rather than the exception. */
+function better(a, b) {
+  if (!b) return true;
+  const fa = a.m.feasible ? 1 : 0, fb = b.m.feasible ? 1 : 0;
+  if (fa !== fb) return fa > fb;
+  return fa ? a.score > b.score : a.viol < b.viol;
 }
 
 function score(m, objective) {
@@ -220,7 +264,11 @@ export function* search(baseCfg, spec) {
   const run = (cand) => {
     const cfg = applyCandidate(baseCfg, cand);
     const m = evaluate(cfg, constraints);
-    const r = { cand, cfg, m, score: m.feasible ? score(m, objective) : -Infinity };
+    const r = {
+      cand, cfg, m,
+      score: m.feasible ? score(m, objective) : -Infinity,
+      viol: violation(m, constraints),
+    };
     results.push(r);
     evaluated++;
     return r;
@@ -233,16 +281,19 @@ export function* search(baseCfg, spec) {
   }
   yield { phase: 'explore', evaluated, total: samples, best: bestOf(results) };
 
-  // Phase 2: pattern search from the best feasible candidates.
-  const seeds = results.filter((r) => r.m.feasible)
-    .sort((a, b) => b.score - a.score).slice(0, refineFrom);
+  // Phase 2: pattern search. Seeds are ranked feasibility-first, so if nothing
+  // is feasible yet the search walks downhill on constraint violation until it
+  // reaches the feasible region, then switches to optimising the objective.
+  const seeds = results.slice()
+    .sort((a, b) => (better(a, b) ? -1 : better(b, a) ? 1 : 0))
+    .slice(0, refineFrom);
   const keys = Object.keys(dims);
   const totalRefine = seeds.length * refineSteps * keys.length * 2;
   let done = 0;
 
   for (const s0 of seeds) {
     let cur = { ...s0.cand };
-    let curScore = s0.score;
+    let curRef = s0;
     let step = 0.25;
     for (let it = 0; it < refineSteps; it++) {
       let improved = false;
@@ -254,7 +305,7 @@ export function* search(baseCfg, spec) {
           if (trial[k] === cur[k]) { done++; continue; }
           const r = run(trial);
           done++;
-          if (r.score > curScore) { cur = trial; curScore = r.score; improved = true; }
+          if (better(r, curRef)) { cur = trial; curRef = r; improved = true; }
           if (done % 8 === 0) {
             yield { phase: 'refine', evaluated, total: totalRefine, done, best: bestOf(results) };
           }
@@ -296,6 +347,6 @@ export function activeBounds(cand, dims, tol = 0.02) {
 
 function bestOf(results) {
   let b = null;
-  for (const r of results) if (!b || r.score > b.score) b = r;
-  return b && isFinite(b.score) ? b : null;
+  for (const r of results) if (r.m.feasible && (!b || r.score > b.score)) b = r;
+  return b;
 }
