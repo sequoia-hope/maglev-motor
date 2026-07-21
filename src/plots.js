@@ -317,6 +317,110 @@ export function barStrip(canvas, values, opts = {}) {
   }
 }
 
+/** Scatter plot. points: [{x, y, cls, label}] where cls picks the mark style.
+ *  Used for the design-space cloud: feasible / infeasible / Pareto / chosen. */
+export function scatter(canvas, opts) {
+  const { ctx, w, h, pal } = setup(canvas);
+  const { points, xLabel = '', yLabel = '', title = '', hover, logX = false, logY = false } = opts;
+  const pad = { l: 58, r: 14, t: title ? 26 : 12, b: 36 };
+  const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
+  const fx = (v) => (logX ? Math.log10(Math.max(v, 1e-9)) : v);
+  const fy = (v) => (logY ? Math.log10(Math.max(v, 1e-9)) : v);
+
+  const vis = points.filter((p) => isFinite(p.x) && isFinite(p.y));
+  if (!vis.length) {
+    ctx.fillStyle = pal.muted; ctx.font = FONT; ctx.textAlign = 'center';
+    ctx.fillText('no results yet', w / 2, h / 2);
+    return;
+  }
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of vis) {
+    x0 = Math.min(x0, fx(p.x)); x1 = Math.max(x1, fx(p.x));
+    y0 = Math.min(y0, fy(p.y)); y1 = Math.max(y1, fy(p.y));
+  }
+  const mx = (x1 - x0) * 0.06 || 1e-6, my = (y1 - y0) * 0.08 || 1e-6;
+  x0 -= mx; x1 += mx; y0 -= my; y1 += my;
+  const X = (v) => pad.l + ((fx(v) - x0) / (x1 - x0)) * pw;
+  const Y = (v) => pad.t + ph - ((fy(v) - y0) / (y1 - y0)) * ph;
+
+  if (title) {
+    ctx.fillStyle = pal.ink; ctx.font = FONT_B;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(title, pad.l, 16);
+  }
+  ctx.font = FONT; ctx.strokeStyle = pal.grid; ctx.lineWidth = 1;
+  ctx.fillStyle = pal.muted; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (const t of niceTicks(y0, y1, 5)) {
+    const y = Math.round(Y(logY ? Math.pow(10, t) : t)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + pw, y); ctx.stroke();
+    ctx.fillText(fmt(logY ? Math.pow(10, t) : t), pad.l - 6, y);
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (const t of niceTicks(x0, x1, 6)) {
+    const x = Math.round(X(logX ? Math.pow(10, t) : t)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + ph); ctx.stroke();
+    ctx.fillText(fmt(logX ? Math.pow(10, t) : t), x, pad.t + ph + 6);
+  }
+  ctx.strokeStyle = pal.axis;
+  ctx.beginPath();
+  ctx.moveTo(pad.l + 0.5, pad.t); ctx.lineTo(pad.l + 0.5, pad.t + ph);
+  ctx.lineTo(pad.l + pw, pad.t + ph + 0.5); ctx.stroke();
+  ctx.fillStyle = pal.ink2;
+  if (xLabel) { ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillText(xLabel, pad.l + pw / 2, h - 8); }
+  if (yLabel) {
+    ctx.save(); ctx.translate(12, pad.t + ph / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(yLabel, 0, 0); ctx.restore();
+  }
+
+  const STYLE = {
+    infeasible: { r: 2, fill: pal.muted, alpha: 0.28 },
+    feasible: { r: 3, fill: pal.s1, alpha: 0.5 },
+    pareto: { r: 5, fill: pal.s2, alpha: 1, ring: true },
+    best: { r: 7, fill: pal.s3, alpha: 1, ring: true },
+  };
+  for (const key of ['infeasible', 'feasible', 'pareto', 'best']) {
+    const st = STYLE[key];
+    for (const p of vis) {
+      if ((p.cls || 'feasible') !== key) continue;
+      ctx.globalAlpha = st.alpha;
+      ctx.fillStyle = st.fill;
+      ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), st.r, 0, Math.PI * 2); ctx.fill();
+      if (st.ring) {
+        ctx.globalAlpha = 1; ctx.strokeStyle = pal.surface; ctx.lineWidth = 2; ctx.stroke();
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Legend: identity must never be colour-alone, so each entry is labelled.
+  ctx.font = FONT; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  let lx = pad.l + 4; const ly = pad.t + 8;
+  for (const [key, label] of [['infeasible', 'infeasible'], ['feasible', 'feasible'], ['pareto', 'Pareto front'], ['best', 'best']]) {
+    const st = STYLE[key];
+    ctx.globalAlpha = st.alpha; ctx.fillStyle = st.fill;
+    ctx.beginPath(); ctx.arc(lx + 4, ly, st.r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1; ctx.fillStyle = pal.ink2;
+    ctx.fillText(label, lx + 13, ly);
+    lx += ctx.measureText(label).width + 30;
+  }
+
+  if (hover) {
+    let best = null, bd = 14 * 14;
+    for (const p of vis) {
+      const dx = X(p.x) - hover.x, dy = Y(p.y) - hover.y;
+      const d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = p; }
+    }
+    if (best) {
+      ctx.strokeStyle = pal.ink; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(X(best.x), Y(best.y), 9, 0, Math.PI * 2); ctx.stroke();
+      tooltip(ctx, pal, hover.x + 12, hover.y - 30, best.label ?? [], w);
+    }
+    return { hit: best };
+  }
+  return {};
+}
+
 /** Attach pointer tracking; calls redraw with {x,y} or null. */
 export function trackHover(canvas, redraw) {
   const st = { pos: null };

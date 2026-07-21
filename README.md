@@ -13,7 +13,7 @@ python3 -m http.server 8000     # then http://localhost:8000
 Tests (Node 18+, no dependencies):
 
 ```sh
-cd test && node physics.test.mjs && node flight.test.mjs
+cd test && node physics.test.mjs && node flight.test.mjs && node optimise.test.mjs
 ```
 
 ---
@@ -37,6 +37,7 @@ that relationship is exactly linear, everything else falls out of it:
 | How hot does it get? | `Σ iⱼ²Rⱼ` |
 | Will it fly? | integrate a rigid body driven by `W·i` |
 | How few amplifiers can I get away with? | `W_eff = W·G` for a grouping `G` |
+| What should I actually build? | constrained search over the coupled design space |
 
 ### The field model
 
@@ -91,6 +92,51 @@ array and follow the platen — the physically realisable kind. What it costs:
 The headline: **8 amplifiers track exactly as well as 121** on the four-array
 cross, at roughly double the hover power. That is the published design, and the
 model reproduces it. The racetrack is the exception — see limitations below.
+
+### Design search
+
+A 1-D sweep answers "what is the best pole pitch, holding everything else
+fixed?" — the wrong question, because the optimum pitch depends on the air gap,
+which depends on the winding height, which trades against turn count. The
+**Optimise** tab searches them together: random sampling to find the basins, then
+pattern search from the best candidates. ~330 designs/second, so a 500-design
+search takes under two seconds and runs in animation frames without blocking.
+
+Designs are **constrained, then ranked** — never a weighted sum of objectives. A
+weighted sum silently trades a hard physical requirement for a soft one, and no
+amount of low hover power compensates for a machine that cannot lift itself
+somewhere in its workspace. Hard gates: worst-case lift, stator ΔT, current
+density, amplifier count, full rank-6 controllability, and a buildable air-gap
+floor. Then one objective (max acceleration, min power, max lift-per-watt, …).
+
+Any result can be pushed back into the live config — from the best-design card,
+a table row, or by clicking a point in the design-space scatter. Applying
+**re-verifies at full solver quality**, since the search runs coarse; the two
+agree to ~3%.
+
+Three things the search does that a sweep cannot:
+
+- **Reports which bounds are binding.** If the winner sits on a search bound,
+  the bound chose the value, not the physics, and it says so.
+- **Reports why nothing was feasible.** A ranked histogram of which constraint
+  blocked how many candidates — the top row is the one to loosen.
+- **Shows the Pareto front**, so you can see the trade rather than just the
+  single point that happened to win the objective you picked.
+
+It also validates itself: given free rein over the coil-pitch ratio, the search
+independently converges on **λ/3** — the three-phase spacing the literature
+prescribes, and which this simulator earlier had to discover the hard way.
+
+Run against the PCB preset it found, in ~350 designs, a machine strictly better
+on every axis than the hand-tuned starting point:
+
+| | hand-tuned | searched |
+|---|---|---|
+| Lift margin | 4.73× | **9.37×** |
+| Lateral accel | 4.96 g | **6.8 g** |
+| Hover power | 11.4 W | **4.71 W** |
+| Stator ΔT | 51 K | **9.5 K** |
+| Amplifiers | 16 | 16 |
 
 ### Validation
 
@@ -165,13 +211,15 @@ exists to surface:
 ## Layout
 
 ```
-index.html          two tabs: Design (static analysis) and Simulate (live flight)
+index.html          Design (static analysis), Optimise (search), Simulate (flight)
 src/math.js         vectors, quaternions, Cholesky, Jacobi eigenvalues
 src/halbach.js      magnet tiles, Fourier decomposition, air-gap field
 src/coils.js        stator topologies reduced to current filaments
 src/physics.js      wrench matrix, allocation, rigid-body dynamics
 src/control.js      6-DOF PID with gravity + acceleration feedforward, trajectories
 src/analysis.js     design sweeps (gap, pole pitch, capability maps, ripple)
+src/grouping.js     phase grouping: commutating many coils from few amplifiers
+src/optimise.js     constrained multi-dimensional design search
 src/render3d.js     dependency-free 3-D canvas renderer
 src/plots.js        line charts, heatmaps, bar strips with hover readouts
 src/app.js          parameter UI, presets, the frame loop
@@ -194,6 +242,10 @@ src/app.js          parameter UI, presets, the frame loop
   compact coils (square, PCB spiral), poor for long racetracks whose two long
   sides span a wide range of magnet phase. Some of the racetrack's poor
   behaviour under grouping is this approximation rather than the topology.
+- **The search optimises the model, not reality.** Every approximation above is
+  inherited, and an optimiser is extremely good at finding whichever corner of
+  the model is least faithful. Treat a searched design as a hypothesis to check,
+  not an answer — and read the active-bounds warning first.
 - **No driver electrical model.** Amplifier count is reported, but voltage
   limits, back-EMF and the switching matrix itself are not simulated.
 - The wrench matrix is rebuilt at the control rate, not every dynamics substep.

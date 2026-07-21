@@ -15,6 +15,7 @@
   </div>
   <nav class="tabs" id="tabs">
     <button data-tab="design" class="active">Design</button>
+    <button data-tab="optimise">Optimise</button>
     <button data-tab="simulate">Simulate</button>
     <button data-tab="about">Notes &amp; sources</button>
   </nav>
@@ -87,11 +88,62 @@
       <figure class="card">
         <figcaption>Pole-pitch sweep <span class="hint">rebuilds the whole machine at each pitch &middot; coil pitch tracks pole pitch unless locked</span>
           <button id="btnPitchSweep" class="ghost small">Run sweep</button>
+          <button id="btnPitchApply" class="ghost small" disabled>Apply best</button>
         </figcaption>
         <canvas id="pitchChart"></canvas>
       </figure>
 
       <div class="card" id="designTable"></div>
+    </section>
+
+    <!-- =========================== OPTIMISE =========================== -->
+    <section class="tabpane" id="pane-optimise">
+      <div class="card">
+        <div class="optbar">
+          <label class="inline-field">Maximise / minimise
+            <select id="optObjective"></select>
+          </label>
+          <label class="inline-field">Budget
+            <input type="range" id="optBudget" min="100" max="2000" step="50" value="500">
+            <output id="optBudgetOut"></output>
+          </label>
+          <button id="btnOptRun" class="primary">Run search</button>
+          <button id="btnOptStop" class="ghost" disabled>Stop</button>
+          <span class="flex"></span>
+          <span class="status" id="optStatus">idle</span>
+        </div>
+        <div class="optprogress"><div id="optBar"></div></div>
+        <div class="optgrid">
+          <div>
+            <h4>Search these dimensions</h4>
+            <div id="optDims"></div>
+          </div>
+          <div>
+            <h4>Hard constraints</h4>
+            <div id="optConstraints"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="optBest"></div>
+
+      <div class="grid2">
+        <figure class="card">
+          <figcaption>Design space <span class="hint">click a point to load it</span>
+            <select id="optScatterX" class="inline"></select>
+            <select id="optScatterY" class="inline"></select>
+          </figcaption>
+          <canvas id="optScatter"></canvas>
+        </figure>
+        <figure class="card">
+          <figcaption>Objective vs each dimension <span class="hint">feasible designs only</span>
+            <select id="optSliceDim" class="inline"></select>
+          </figcaption>
+          <canvas id="optSlice"></canvas>
+        </figure>
+      </div>
+
+      <div class="card" id="optTable"></div>
     </section>
 
     <!-- =========================== SIMULATE =========================== -->

@@ -89,7 +89,7 @@ const PARAMS = [
       { path: 'stator.coilType', type: 'select', label: 'Coil topology',
         options: Object.entries(COIL_TYPES).map(([k, v]) => [k, v.label]),
         help: (cfg) => COIL_TYPES[cfg.stator.coilType].note },
-      { path: 'stator.coilPitch', type: 'range', label: 'Coil pitch', min: 0.004, max: 0.060, step: 0.001, ...mm,
+      { path: 'stator.coilPitch', type: 'range', label: 'Coil pitch', min: 0.002, max: 0.060, step: 0.001, ...mm,
         help: (c) => `Use λ/3 (${(c.translator.pitch / 3 * 1000).toFixed(1)} mm here). At exactly λ/2 the coil grid lands in phase with the magnets and lateral force cancels identically at symmetric poses — watch the capability map collapse if you try it.` },
       { path: 'stator.coilFill', type: 'range', label: 'Coil fill fraction', min: 0.5, max: 1.0, step: 0.01, scale: 100, unit: '%', digits: 0 },
       { path: 'stator.statorSize', type: 'range', label: 'Stator size', min: 0.05, max: 0.6, step: 0.01, ...mm },
@@ -238,6 +238,7 @@ function makeField(f) {
       rebuild(f.path === 'sim.quality' ? false : true);
       refreshFieldVisibility();
       updateHelp();
+      if (typeof syncOptConstraints === 'function') { syncOptConstraints(); refreshOptDimStates(); }
     });
   } else {
     const disp = (v) => `${(v * f.scale).toFixed(f.digits)}${f.unit ? ' ' + f.unit : ''}`;
@@ -473,7 +474,29 @@ function setupDesignCharts() {
     app.pitchRows = pitchSweep(app.cfg, pitches, app.cfg.sim.iMax);
     redraw('pitchChart');
     renderDesignTable();
+    document.getElementById('btnPitchApply').disabled = !bestPitchRow();
   });
+
+  // Push the sweep's winner back into the config. "Best" here means the highest
+  // lateral acceleration among pitches that can actually hover with margin --
+  // ranking on lift margin alone just picks the heaviest-lifting brick.
+  document.getElementById('btnPitchApply').addEventListener('click', () => {
+    const best = bestPitchRow();
+    if (!best) return;
+    app.cfg.translator.pitch = best.pitch / 1000;
+    if (!app.cfg.stator.lockCoilPitch) app.cfg.stator.coilPitch = best.pitch / 1000 / 3;
+    app.camDesign.userZoomed = app.camSim.userZoomed = false;
+    rebuild(true);
+    buildParamUI();
+  });
+}
+
+/** Highest lateral accel among pitches that clear a 1.5x lift margin. */
+function bestPitchRow() {
+  if (!app.pitchRows) return null;
+  const ok = app.pitchRows.filter((r) => r.margin >= 1.5 && isFinite(r.accel));
+  if (!ok.length) return null;
+  return ok.reduce((a, b) => (b.accel > a.accel ? b : a));
 }
 
 function renderDesignTable() {
@@ -499,8 +522,9 @@ function renderDesignTable() {
 
   if (app.pitchRows) {
     html += '<h3 style="font-size:12px;margin:16px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Pole-pitch sweep results</h3><div class="table-wrap"><table><thead><tr><th>λ (mm)</th><th>lift ÷ w</th><th>accel (g)</th><th>hover P (W)</th><th>σmin</th><th>cond</th><th>mass (g)</th><th>peak B (T)</th></tr></thead><tbody>';
+    const bp = bestPitchRow();
     for (const r of app.pitchRows) {
-      html += `<tr><td>${r.pitch.toFixed(1)}</td><td>${sig(r.margin, 3)}</td><td>${sig(r.accel, 3)}</td><td>${sig(r.power, 3)}</td><td>${sig(r.sigmaMin, 3)}</td><td>${sig(r.cond, 3)}</td><td>${sig(r.mass * 1000, 3)}</td><td>${sig(r.peakB, 3)}</td></tr>`;
+      html += `<tr${r === bp ? ' style="font-weight:600"' : ''}><td>${r.pitch.toFixed(1)}${r === bp ? ' ★' : ''}</td><td>${sig(r.margin, 3)}</td><td>${sig(r.accel, 3)}</td><td>${sig(r.power, 3)}</td><td>${sig(r.sigmaMin, 3)}</td><td>${sig(r.cond, 3)}</td><td>${sig(r.mass * 1000, 3)}</td><td>${sig(r.peakB, 3)}</td></tr>`;
     }
     html += '</tbody></table></div>';
   }
@@ -644,6 +668,8 @@ function setupChrome() {
     app.camDesign.userZoomed = app.camSim.userZoomed = false;
     loadPreset(presetSel.value);
     renderAbout();
+    syncOptConstraints();
+    refreshOptDimStates();
   });
 
   document.getElementById('btnReset').addEventListener('click', () => {
@@ -658,6 +684,7 @@ function setupChrome() {
     document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('active', x === b));
     document.querySelectorAll('.tabpane').forEach((p) => p.classList.toggle('active', p.id === `pane-${app.tab}`));
     if (app.tab === 'design') redrawAll();
+    if (app.tab === 'optimise') { redraw('optScatter'); redraw('optSlice'); }
   });
 
   document.getElementById('themeToggle').addEventListener('click', () => {
@@ -744,6 +771,21 @@ function renderAbout() {
     the wrench matrix loses rank, and the platen becomes uncontrollable in tilt
     or yaw no matter how much current you have.</p>
 
+    <h2>The Optimise tab</h2>
+    <p>Pole pitch, air gap, winding height and coil pitch are <em>coupled</em> —
+    the best value of each depends on the others — so sweeping one at a time
+    answers the wrong question. The search samples the whole space, then refines
+    around the best candidates.</p>
+    <p>Designs are <strong>constrained, then ranked</strong>, never scored by a
+    weighted sum: no amount of low hover power makes up for a machine that cannot
+    lift itself somewhere in its workspace. If nothing is feasible you get a
+    ranked histogram of what blocked it; if the winner sits on a search bound you
+    get told, because then the bound chose the answer, not the physics.</p>
+    <p>Applying a design re-verifies it at full solver quality — the search runs
+    deliberately coarse for speed. And note the obvious hazard: an optimiser is
+    very good at finding whichever corner of a model is least faithful, so treat
+    what comes out as a hypothesis to check rather than an answer.</p>
+
     <h2>Reading the design tab</h2>
     <ul>
       <li><strong>Lift margin</strong> below 1 means it physically cannot hover. Aim for 2–3×
@@ -796,3 +838,365 @@ setupSimCharts();
 renderAbout();
 redrawAll();
 requestAnimationFrame(frame);
+
+// ============================================================== optimiser ===
+// The search runs as a generator driven from requestAnimationFrame with a
+// per-frame time budget, so a 2000-design sweep never blocks the UI.
+
+import {
+  DIMENSIONS, CATEGORICAL, OBJECTIVES, DEFAULT_CONSTRAINTS,
+  search as runSearch, evaluate as evalDesign, applyCandidate, activeBounds, constraintsFor,
+} from './optimise.js';
+import { scatter } from './plots.js';
+
+const opt = {
+  enabled: new Set(['pitch', 'magnetThickness', 'coilPitchRatio', 'windingHeight', 'gap']),
+  constraints: { ...DEFAULT_CONSTRAINTS },
+  autoConstraints: true,
+  objective: 'accel',
+  budget: 500,
+  results: null,
+  running: false,
+  iter: null,
+  raf: null,
+  scatterX: 'hoverPower',
+  scatterY: 'accel',
+  sliceDim: 'pitch',
+};
+
+const METRIC_AXES = {
+  accel: { label: 'Lateral accel (g)', get: (m) => m.accel },
+  worstLift: { label: 'Worst-case lift (×)', get: (m) => m.worstLift },
+  hoverPower: { label: 'Hover power (W)', get: (m) => m.hoverPower },
+  deltaT: { label: 'Stator ΔT (K)', get: (m) => m.deltaT },
+  currentDensity: { label: 'Current density (A/mm²)', get: (m) => m.currentDensity },
+  amplifiers: { label: 'Amplifiers', get: (m) => m.amplifiers },
+  mass: { label: 'Platen mass (kg)', get: (m) => m.mass },
+  cond: { label: 'Condition number', get: (m) => m.cond },
+};
+
+function optDims() {
+  const d = {};
+  for (const k of opt.enabled) {
+    const spec = DIMENSIONS[k];
+    if (!spec) continue;
+    if (spec.skipIf && spec.skipIf(app.cfg)) continue;
+    d[k] = spec;
+  }
+  return d;
+}
+
+function buildOptUI() {
+  const objSel = document.getElementById('optObjective');
+  objSel.innerHTML = Object.entries(OBJECTIVES)
+    .map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+  objSel.value = opt.objective;
+  objSel.addEventListener('change', () => { opt.objective = objSel.value; });
+
+  const budget = document.getElementById('optBudget');
+  const budgetOut = document.getElementById('optBudgetOut');
+  const updBudget = () => { opt.budget = +budget.value; budgetOut.textContent = `${opt.budget}`; };
+  budget.addEventListener('input', updBudget); updBudget();
+
+  const dimsEl = document.getElementById('optDims');
+  dimsEl.innerHTML = Object.entries(DIMENSIONS).map(([k, d]) => `
+    <div class="dimrow" data-dim="${k}">
+      <input type="checkbox" id="dim-${k}" ${opt.enabled.has(k) ? 'checked' : ''}>
+      <label for="dim-${k}">${d.label}</label>
+      <span class="range">${(d.min * d.scale).toFixed(d.scale === 1 ? 1 : 1)}–${(d.max * d.scale).toFixed(d.scale === 1 ? 1 : 1)} ${d.unit}</span>
+    </div>`).join('') + `
+    <div class="dimrow"><input type="checkbox" id="dim-grouping" checked>
+      <label for="dim-grouping">${CATEGORICAL.grouping.label}</label>
+      <span class="range">4 options</span></div>`;
+  dimsEl.addEventListener('change', (e) => {
+    const row = e.target.closest('.dimrow');
+    if (!row || !row.dataset.dim) return;
+    if (e.target.checked) opt.enabled.add(row.dataset.dim);
+    else opt.enabled.delete(row.dataset.dim);
+    refreshOptDimStates();
+  });
+
+  const cons = [
+    ['minWorstLift', 'Min worst-case lift (× weight)', 0.1, 10, 0.1],
+    ['maxDeltaT', 'Max stator ΔT (K)', 5, 200, 5],
+    ['maxCurrentDensity', 'Max current density (A/mm²)', 1, 60, 1],
+    ['maxAmplifiers', 'Max amplifiers', 4, 512, 4],
+    ['minGapFraction', 'Min air gap (× platen size)', 0, 0.05, 0.0025],
+  ];
+  document.getElementById('optConstraints').innerHTML = cons.map(([k, l, mn, mx, st]) => `
+    <div class="conrow"><label for="con-${k}">${l}</label>
+      <input type="number" id="con-${k}" min="${mn}" max="${mx}" step="${st}" value="${opt.constraints[k]}"></div>`).join('')
+    + `<div class="conrow"><label for="con-rank">Require full 6-DOF control</label>
+        <input type="checkbox" id="con-rank" ${opt.constraints.requireRank6 ? 'checked' : ''}></div>`;
+  for (const [k] of cons) {
+    document.getElementById(`con-${k}`).addEventListener('change', (e) => {
+      opt.constraints[k] = +e.target.value;
+      if (k === 'maxCurrentDensity') opt.autoConstraints = false; // user took over
+    });
+  }
+  document.getElementById('con-rank').addEventListener('change', (e) => {
+    opt.constraints.requireRank6 = e.target.checked;
+  });
+
+  const axOpts = Object.entries(METRIC_AXES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+  const sx = document.getElementById('optScatterX'), sy = document.getElementById('optScatterY');
+  sx.innerHTML = axOpts; sy.innerHTML = axOpts;
+  sx.value = opt.scatterX; sy.value = opt.scatterY;
+  sx.addEventListener('change', () => { opt.scatterX = sx.value; redraw('optScatter'); });
+  sy.addEventListener('change', () => { opt.scatterY = sy.value; redraw('optScatter'); });
+
+  const sd = document.getElementById('optSliceDim');
+  sd.innerHTML = Object.entries(DIMENSIONS).map(([k, d]) => `<option value="${k}">${d.label}</option>`).join('');
+  sd.value = opt.sliceDim;
+  sd.addEventListener('change', () => { opt.sliceDim = sd.value; redraw('optSlice'); });
+
+  document.getElementById('btnOptRun').addEventListener('click', startSearch);
+  document.getElementById('btnOptStop').addEventListener('click', stopSearch);
+  refreshOptDimStates();
+  syncOptConstraints();
+}
+
+/** Re-derive topology-dependent constraint defaults, unless the user has
+ *  overridden them by hand. */
+function syncOptConstraints() {
+  if (!opt.autoConstraints) return;
+  const c = constraintsFor(app.cfg, DEFAULT_CONSTRAINTS);
+  opt.constraints.maxCurrentDensity = c.maxCurrentDensity;
+  const el = document.getElementById('con-maxCurrentDensity');
+  if (el) el.value = c.maxCurrentDensity;
+}
+
+function refreshOptDimStates() {
+  document.querySelectorAll('#optDims .dimrow[data-dim]').forEach((row) => {
+    const k = row.dataset.dim;
+    const spec = DIMENSIONS[k];
+    const skipped = spec.skipIf && spec.skipIf(app.cfg);
+    row.classList.toggle('off', skipped || !opt.enabled.has(k));
+    row.title = skipped ? 'Not applicable to the current coil topology' : '';
+  });
+}
+
+function startSearch() {
+  if (opt.running) return;
+  const dims = optDims();
+  if (!Object.keys(dims).length) {
+    document.getElementById('optStatus').textContent = 'select at least one dimension';
+    return;
+  }
+  const cats = document.getElementById('dim-grouping').checked ? CATEGORICAL : {};
+  opt.running = true;
+  opt.results = null;
+  document.getElementById('btnOptRun').disabled = true;
+  document.getElementById('btnOptStop').disabled = false;
+
+  const explore = Math.round(opt.budget * 0.7);
+  opt.iter = runSearch(app.cfg, {
+    dims, cats, objective: opt.objective, constraints: opt.constraints,
+    samples: explore, refineFrom: 6, refineSteps: 5,
+  });
+
+  const tick = () => {
+    if (!opt.running) return;
+    const t0 = performance.now();
+    let r;
+    do {
+      r = opt.iter.next();
+      if (r.done) { finishSearch(r.value); return; }
+    } while (performance.now() - t0 < 28);
+    const p = r.value;
+    const frac = p.phase === 'explore'
+      ? (p.evaluated / opt.budget) * 0.7
+      : 0.7 + 0.3 * Math.min(1, (p.done ?? 0) / Math.max(p.total ?? 1, 1));
+    document.getElementById('optBar').style.width = `${Math.min(100, frac * 100)}%`;
+    document.getElementById('optStatus').textContent =
+      `${p.phase}: ${p.evaluated} designs · best ${p.best ? fmtObjective(p.best.m) : '—'}`;
+    opt.raf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function stopSearch() {
+  opt.running = false;
+  if (opt.raf) cancelAnimationFrame(opt.raf);
+  document.getElementById('btnOptRun').disabled = false;
+  document.getElementById('btnOptStop').disabled = true;
+  document.getElementById('optStatus').textContent = 'stopped';
+}
+
+function fmtObjective(m) {
+  const o = OBJECTIVES[opt.objective];
+  return `${sig(o.get(m), 3)} ${o.unit}`;
+}
+
+function finishSearch(out) {
+  opt.running = false;
+  opt.results = out;
+  document.getElementById('btnOptRun').disabled = false;
+  document.getElementById('btnOptStop').disabled = true;
+  document.getElementById('optBar').style.width = '100%';
+  const feas = out.results.filter((r) => r.m.feasible).length;
+  document.getElementById('optStatus').textContent =
+    `${out.evaluated} designs · ${feas} feasible · ${out.pareto.length} on the Pareto front`;
+  renderOptBest();
+  renderOptTable();
+  redraw('optScatter');
+  redraw('optSlice');
+}
+
+function renderOptBest() {
+  const el = document.getElementById('optBest');
+  const out = opt.results;
+  if (!out || !out.best || !isFinite(out.best.score)) {
+    const hist = Object.entries(out?.failures ?? {}).sort((a, b) => b[1] - a[1]);
+    const total = out?.results.length ?? 0;
+    el.innerHTML = `<div class="card"><strong>No feasible design found.</strong>
+      <div style="color:var(--muted);font-size:12px;margin-top:6px">
+      Every one of ${total} candidates violated a hard constraint. What blocked them:</div>
+      <div class="table-wrap" style="margin-top:8px"><table><thead><tr>
+        <th>Constraint violated</th><th>Designs</th><th>Share</th></tr></thead><tbody>
+      ${hist.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td><td>${((v / total) * 100).toFixed(0)}%</td></tr>`).join('')}
+      </tbody></table></div>
+      <div style="color:var(--muted);font-size:12px;margin-top:8px">
+      The top row is the one to loosen first — anything below it may not be binding at
+      all. Alternatively widen a dimension's range or enable more dimensions.</div></div>`;
+    return;
+  }
+  const { m, cfg } = out.best;
+  const p = (v, s = 1000, d = 1) => (v * s).toFixed(d);
+  const bounds = out.activeBounds ?? [];
+  el.innerHTML = `
+    <div class="bestcard">
+      <h3>Best design — ${OBJECTIVES[opt.objective].label.toLowerCase()}: ${fmtObjective(m)}</h3>
+      <div class="metrics">
+        <span>worst-case lift <b>${sig(m.worstLift, 3)}×</b></span>
+        <span>lateral accel <b>${sig(m.accel, 3)} g</b></span>
+        <span>hover <b>${sig(m.hoverPower, 3)} W</b></span>
+        <span>ΔT <b>${sig(m.deltaT, 2)} K</b></span>
+        <span>J <b>${sig(m.currentDensity, 2)} A/mm²</b></span>
+        <span>amplifiers <b>${m.amplifiers}</b></span>
+        <span>coils <b>${m.coils}</b></span>
+        <span>mass <b>${sig(m.mass * 1000, 3)} g</b></span>
+        <span>cond <b>${sig(m.cond, 3)}</b></span>
+      </div>
+      <div class="params">
+        <code>λ ${p(cfg.translator.pitch)} mm</code>
+        <code>magnet ${p(cfg.translator.magnetThickness)} mm</code>
+        <code>platen ${p(cfg.translator.platenSize, 1000, 0)} mm</code>
+        <code>coil pitch ${p(cfg.stator.coilPitch, 1000, 2)} mm (λ/${sig(cfg.translator.pitch / cfg.stator.coilPitch, 3)})</code>
+        <code>winding ${p(cfg.stator.windingHeight)} mm</code>
+        <code>wire ${p(cfg.stator.wireDiameter, 1000, 2)} mm</code>
+        <code>gap ${p(cfg.sim.gap, 1000, 2)} mm</code>
+        <code>drive ${cfg.sim.grouping}</code>
+      </div>
+      ${bounds.length ? `<div class="warnbox"><strong>${bounds.length} variable${bounds.length > 1 ? 's are' : ' is'} pinned to a search bound:</strong>
+        ${bounds.map((b) => `${b.label} at its ${b.at}`).join(', ')}.
+        The bound is choosing the value, not the physics — widen the range if it is not a real limit.</div>` : ''}
+      <button class="primary" id="btnApplyBest">Apply this design</button>
+    </div>`;
+  document.getElementById('btnApplyBest').addEventListener('click', () => applyDesign(out.best.cfg));
+}
+
+/** Push a searched design back into the live config. Verifies it at full solver
+ *  quality first, since the search ran coarse. */
+function applyDesign(cfg) {
+  const merged = JSON.parse(JSON.stringify(cfg));
+  merged.sim.quality = app.cfg.sim.quality; // keep the user's solver setting
+  app.cfg = merged;
+  app.camDesign.userZoomed = app.camSim.userZoomed = false;
+  rebuild(true);
+  buildParamUI();
+  refreshOptDimStates();
+  // Re-check at full quality: the search deliberately runs coarse.
+  const verified = evalDesign(app.cfg, opt.constraints,
+    { ringsPerCoil: 3, segmentsPerSide: 5, maxOrder: 4 });
+  const st = document.getElementById('optStatus');
+  st.textContent = verified.feasible
+    ? `applied · verified at full quality (worst-case lift ${sig(verified.worstLift, 3)}×)`
+    : `applied · WARNING: fails at full quality (${verified.reason})`;
+  st.className = 'status' + (verified.feasible ? '' : ' crit');
+}
+
+function renderOptTable() {
+  const out = opt.results;
+  if (!out) return;
+  const rows = out.results.filter((r) => r.m.feasible).slice(0, 15);
+  const pareto = new Set(out.pareto);
+  let html = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
+    Top feasible designs <span style="text-transform:none;font-weight:400">— click a row to load it</span></h4>`;
+  if (!rows.length) { document.getElementById('optTable').innerHTML = html + '<p style="color:var(--muted);font-size:12px">None.</p>'; return; }
+  html += `<div class="table-wrap"><table><thead><tr>
+    <th>#</th><th>λ (mm)</th><th>gap (mm)</th><th>coil λ/n</th><th>accel (g)</th>
+    <th>lift (×)</th><th>hover (W)</th><th>ΔT (K)</th><th>amps</th><th>mass (g)</th><th></th></tr></thead><tbody>`;
+  rows.forEach((r, i) => {
+    const m = r.m, c = r.cfg;
+    html += `<tr class="applyrow" data-i="${i}">
+      <td>${i + 1}${pareto.has(r) ? ' ◆' : ''}</td>
+      <td>${(c.translator.pitch * 1000).toFixed(1)}</td>
+      <td>${(c.sim.gap * 1000).toFixed(2)}</td>
+      <td>${(c.translator.pitch / c.stator.coilPitch).toFixed(2)}</td>
+      <td>${sig(m.accel, 3)}</td><td>${sig(m.worstLift, 3)}</td>
+      <td>${sig(m.hoverPower, 3)}</td><td>${sig(m.deltaT, 2)}</td>
+      <td>${m.amplifiers}</td><td>${sig(m.mass * 1000, 3)}</td>
+      <td><button class="ghost" data-apply="${i}">Apply</button></td></tr>`;
+  });
+  html += '</tbody></table></div><p style="color:var(--muted);font-size:11px;margin-top:6px">◆ = on the Pareto front (not beaten on every axis by any other design).</p>';
+  const el = document.getElementById('optTable');
+  el.innerHTML = html;
+  el.querySelectorAll('[data-apply], tr.applyrow').forEach((n) => {
+    n.addEventListener('click', (e) => {
+      const i = +(e.currentTarget.dataset.apply ?? e.currentTarget.dataset.i);
+      if (rows[i]) applyDesign(rows[i].cfg);
+    });
+  });
+}
+
+function setupOptCharts() {
+  mountChart('optScatter', (h) => {
+    const cv = document.getElementById('optScatter');
+    const out = opt.results;
+    const ax = METRIC_AXES[opt.scatterX], ay = METRIC_AXES[opt.scatterY];
+    const pareto = new Set(out?.pareto ?? []);
+    const pts = (out?.results ?? []).map((r) => ({
+      x: ax.get(r.m), y: ay.get(r.m),
+      cls: r === out.best && isFinite(r.score) ? 'best'
+        : pareto.has(r) ? 'pareto' : r.m.feasible ? 'feasible' : 'infeasible',
+      ref: r,
+      label: [
+        `${ax.label}: ${sig(ax.get(r.m), 3)}`,
+        `${ay.label}: ${sig(ay.get(r.m), 3)}`,
+        r.m.feasible ? 'feasible' : `infeasible: ${r.m.reason}`,
+        `λ ${(r.cfg.translator.pitch * 1000).toFixed(1)} mm · gap ${(r.cfg.sim.gap * 1000).toFixed(2)} mm`,
+      ],
+    }));
+    const res = scatter(cv, { points: pts, hover: h, xLabel: ax.label, yLabel: ay.label });
+    opt.scatterHit = res?.hit ?? null;
+  });
+  document.getElementById('optScatter').addEventListener('click', () => {
+    if (opt.scatterHit?.ref) applyDesign(opt.scatterHit.ref.cfg);
+  });
+
+  mountChart('optSlice', (h) => {
+    const out = opt.results;
+    const d = DIMENSIONS[opt.sliceDim];
+    const o = OBJECTIVES[opt.objective];
+    const pts = (out?.results ?? []).filter((r) => r.m.feasible && r.cand[opt.sliceDim] !== undefined)
+      .map((r) => ({
+        x: r.cand[opt.sliceDim] * d.scale, y: o.get(r.m), cls: 'feasible',
+        label: [`${d.label}: ${sig(r.cand[opt.sliceDim] * d.scale, 3)} ${d.unit}`,
+          `${o.label}: ${sig(o.get(r.m), 3)}`],
+      }));
+    if (out?.best && isFinite(out.best.score) && out.best.cand[opt.sliceDim] !== undefined) {
+      pts.push({
+        x: out.best.cand[opt.sliceDim] * d.scale, y: o.get(out.best.m), cls: 'best',
+        label: ['best'],
+      });
+    }
+    scatter(document.getElementById('optSlice'), {
+      points: pts, hover: h,
+      xLabel: `${d.label} (${d.unit})`, yLabel: o.label,
+    });
+  });
+}
+
+buildOptUI();
+setupOptCharts();
