@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planar Maglev Motor Simulator</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="mark"></span>
+    <h1>Planar Maglev Simulator</h1>
+    <span class="sub">Halbach translator over a coil stator &middot; harmonic field model, 6-DOF Lorentz coupling</span>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="design" class="active">Design</button>
+    <button data-tab="simulate">Simulate</button>
+    <button data-tab="about">Notes &amp; sources</button>
+  </nav>
+  <button id="themeToggle" class="ghost" title="Toggle light / dark">◐</button>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="preset-row">
+      <label>Preset</label>
+      <select id="presetSelect"></select>
+    </div>
+    <div id="params"></div>
+    <div class="sidebar-foot">
+      <button id="btnReset" class="ghost wide">Reset to preset</button>
+      <div class="selftest" id="selfTest"></div>
+    </div>
+  </aside>
+
+  <main class="content">
+    <!-- ============================ DESIGN ============================ -->
+    <section class="tabpane active" id="pane-design">
+      <div class="tiles" id="tiles"></div>
+
+      <div class="grid2">
+        <figure class="card tall">
+          <figcaption>Machine view <span class="hint">drag to orbit &middot; scroll to zoom &middot; coil colour = hover current</span></figcaption>
+          <canvas id="designView"></canvas>
+        </figure>
+        <figure class="card tall">
+          <figcaption>Air-gap field under the translator
+            <select id="fieldComponent" class="inline">
+              <option value="bz">B&#8203;z (vertical)</option>
+              <option value="mag">|B| (magnitude)</option>
+            </select>
+          </figcaption>
+          <canvas id="fieldMap"></canvas>
+        </figure>
+      </div>
+
+      <div class="grid2">
+        <figure class="card">
+          <figcaption>Lift capability vs air gap <span class="hint">the exp(&minus;kz) wall</span></figcaption>
+          <canvas id="gapChart"></canvas>
+        </figure>
+        <figure class="card">
+          <figcaption>Hover power vs air gap</figcaption>
+          <canvas id="gapPower"></canvas>
+        </figure>
+      </div>
+
+      <div class="grid2">
+        <figure class="card">
+          <figcaption>Capability across the stator
+            <select id="mapMetric" class="inline">
+              <option value="lift">Lift margin (&times; weight)</option>
+              <option value="sigmaMin">&sigma;&#8203;min (worst-direction N/A)</option>
+              <option value="power">Hover power (W)</option>
+              <option value="cond">Condition number</option>
+            </select>
+          </figcaption>
+          <canvas id="capMap"></canvas>
+        </figure>
+        <figure class="card">
+          <figcaption>Force ripple along x <span class="hint">at constant hover command</span></figcaption>
+          <canvas id="rippleChart"></canvas>
+        </figure>
+      </div>
+
+      <figure class="card">
+        <figcaption>Pole-pitch sweep <span class="hint">rebuilds the whole machine at each pitch &middot; coil pitch tracks pole pitch unless locked</span>
+          <button id="btnPitchSweep" class="ghost small">Run sweep</button>
+        </figcaption>
+        <canvas id="pitchChart"></canvas>
+      </figure>
+
+      <div class="card" id="designTable"></div>
+    </section>
+
+    <!-- =========================== SIMULATE =========================== -->
+    <section class="tabpane" id="pane-simulate">
+      <div class="simbar">
+        <button id="btnPlay" class="primary">Pause</button>
+        <button id="btnResetSim" class="ghost">Reset</button>
+        <button id="btnKick" class="ghost">Kick it</button>
+        <label class="inline-field">Trajectory
+          <select id="trajSelect"></select>
+        </label>
+        <label class="inline-field">Speed
+          <input type="range" id="trajSpeed" min="0.1" max="12" step="0.1" value="2">
+          <output id="trajSpeedOut"></output>
+        </label>
+        <label class="inline-field">Amplitude
+          <input type="range" id="trajAmp" min="1" max="80" step="1" value="25">
+          <output id="trajAmpOut"></output>
+        </label>
+        <label class="inline-field">Noise
+          <input type="range" id="noiseSlider" min="0" max="0.2" step="0.005" value="0">
+          <output id="noiseOut"></output>
+        </label>
+        <span class="flex"></span>
+        <span class="status" id="simStatus"></span>
+      </div>
+
+      <div class="grid-sim">
+        <figure class="card view">
+          <figcaption>Live view</figcaption>
+          <canvas id="simView"></canvas>
+        </figure>
+        <div class="sim-side">
+          <div class="tiles compact" id="simTiles"></div>
+          <figure class="card short">
+            <figcaption>Coil currents</figcaption>
+            <canvas id="currentStrip"></canvas>
+          </figure>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <figure class="card">
+          <figcaption>Position error</figcaption>
+          <canvas id="scopePos"></canvas>
+        </figure>
+        <figure class="card">
+          <figcaption>Attitude error</figcaption>
+          <canvas id="scopeAtt"></canvas>
+        </figure>
+      </div>
+      <div class="grid2">
+        <figure class="card">
+          <figcaption>Peak coil current</figcaption>
+          <canvas id="scopeCur"></canvas>
+        </figure>
+        <figure class="card">
+          <figcaption>Copper loss</figcaption>
+          <canvas id="scopePow"></canvas>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ============================ ABOUT ============================= -->
+    <section class="tabpane" id="pane-about">
+      <div class="card prose" id="aboutBody"></div>
+    </section>
+  </main>
+</div>
+
+<script type="module" src="src/app.js"></script>
+</body>
+</html>
