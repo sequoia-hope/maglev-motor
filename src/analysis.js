@@ -142,9 +142,9 @@ export function rippleScan(stator, tr, gap, span, n, iMax) {
   return out;
 }
 
-/** Thermal sanity: steady-state copper temperature rise for a natural-
- *  convection stator. Crude (h is a guess) but it catches the designs that are
- *  obviously going to melt. */
+/** Steady-state stator temperature rise. Kept as a thin wrapper for callers
+ *  that only have an area; anything with a real build should go through
+ *  mechanical.js stackUp(), which knows the spreader and the cooling class. */
 export function thermal(power, statorArea, h = 12) {
   return power / Math.max(h * statorArea * 2, 1e-9);
 }

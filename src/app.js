@@ -8,7 +8,8 @@ import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
 import { render, makeCamera, fitCamera, attachOrbit, theme } from './render3d.js';
 import { lineChart, heatmap, barStrip, trackHover } from './plots.js';
-import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, thermal } from './analysis.js';
+import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan } from './analysis.js';
+import { MATERIALS, PROCESSES, COOLING, DEFAULT_MECH, stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
 
 // ---------------------------------------------------------------- presets ---
 
@@ -119,6 +120,28 @@ const PARAMS = [
     ],
   },
   {
+    title: 'Mechanical build',
+    fields: [
+      { path: 'mech.backingThickness', type: 'range', label: 'Platen backing plate', min: 0.001, max: 0.020, step: 0.0005, ...mm, digits: 1,
+        help: () => 'Carries the magnet retainer. Thicker is stiffer and flatter but every gram is lift you have to pay for.' },
+      { path: 'mech.backingMaterial', type: 'select', label: 'Backing material',
+        options: Object.entries(MATERIALS).map(([k, v]) => [k, v.label]),
+        help: (c) => `${MATERIALS[c.mech.backingMaterial].rho} kg/m³, CTE ${(MATERIALS[c.mech.backingMaterial].cte * 1e6).toFixed(1)} ppm/K. CFRP is the classic platen material: a third the expansion of aluminium at 60% the density.` },
+      { path: 'mech.pocketWall', type: 'range', label: 'Magnet retainer wall', min: 0.0002, max: 0.003, step: 0.0001, scale: 1000, unit: 'mm', digits: 2,
+        help: () => 'Wall between magnet cells. Halbach neighbours push hard, so this wall is structural — but it displaces magnet, so it costs field directly.' },
+      { path: 'mech.baseProcess', type: 'select', label: 'Stator flatness class',
+        options: Object.entries(PROCESSES).map(([k, v]) => [k, v.label]),
+        help: (c) => `${PROCESSES[c.mech.baseProcess].note}. This is usually the largest single term in the air-gap budget.` },
+      { path: 'mech.spreaderThickness', type: 'range', label: 'Thermal spreader', min: 0, max: 0.012, step: 0.0005, ...mm, digits: 1 },
+      { path: 'mech.cooling', type: 'select', label: 'Cooling',
+        options: Object.entries(COOLING).map(([k, v]) => [k, v.label]),
+        help: (c) => `h = ${COOLING[c.mech.cooling].h} W/m²K. Cooling buys current density, and current density is force.` },
+      { path: 'mech.controlError', type: 'range', label: 'Control error (3σ)', min: 0.00001, max: 0.001, step: 0.00001, scale: 1e6, unit: 'µm', digits: 0,
+        help: () => 'Goes straight into the air-gap budget: you cannot fly closer than you can hold position. The Simulate tab measures this — see the readout there.' },
+      { path: 'mech.gapSafety', type: 'range', label: 'Gap safety margin', min: 0, max: 1, step: 0.05, scale: 100, unit: '%', digits: 0 },
+    ],
+  },
+  {
     title: 'Operating point',
     fields: [
       { path: 'sim.gap', type: 'range', label: 'Nominal air gap', min: 0.0005, max: 0.030, step: 0.0005, ...mm, digits: 2 },
@@ -180,14 +203,19 @@ const set = (o, path, v) => {
 function loadPreset(key) {
   app.presetKey = key;
   app.cfg = deep(PRESETS[key].cfg);
+  if (!app.cfg.mech) app.cfg.mech = mechDefaultsFor(app.cfg, DEFAULT_MECH);
   rebuild(true);
   buildParamUI();
 }
 
 function rebuild(resetSim = false) {
   const q = QUALITY[app.cfg.sim.quality];
+  if (!app.cfg.mech) app.cfg.mech = mechDefaultsFor(app.cfg, DEFAULT_MECH);
+  // Mechanical stack first: it supplies the platen mass the physics needs.
+  app.stack = stackUp(app.cfg, app.cfg.mech);
   app.tr = makeTranslator({
     ...app.cfg.translator,
+    platenMass: app.cfg.translator.platenMass || app.stack.platenMass,
     gap: app.cfg.sim.gap,
     maxOrder: q.maxOrder,
   });
@@ -201,6 +229,9 @@ function rebuild(resetSim = false) {
     app.cfg.sim.iMax, app.cfg.sim.grouping);
   app.pitchRows = null;
   app.trajParams.gap = app.cfg.sim.gap;
+  // Second pass: the tolerance stack's thermal-growth term depends on the
+  // temperature rise, which depends on the design we just built.
+  app.stack = stackUp(app.cfg, { ...app.cfg.mech, deltaT: stackTemperatureRise(app.analysis.hoverPower, app.stack) });
   for (const cam of [app.camDesign, app.camSim]) {
     fitCamera(cam, app.cfg.stator.statorSize, app.cfg.translator.platenSize, app.cfg.sim.gap);
   }
@@ -301,13 +332,17 @@ function renderTiles() {
   const a = app.analysis;
   const tr = app.tr;
   const marginCls = a.liftMargin < 1 ? 'crit' : a.liftMargin < 1.6 ? 'warn' : 'good';
-  const statorArea = app.cfg.stator.statorSize ** 2;
-  const dT = thermal(a.hoverPower, statorArea);
+  const dT = stackTemperatureRise(a.hoverPower, app.stack);
   const powCls = dT > 60 ? 'crit' : dT > 30 ? 'warn' : '';
 
   document.getElementById('tiles').innerHTML = [
     tile('Lift margin', sig(a.liftMargin, 3), '× weight', marginCls),
     tile('Platen mass', sig(tr.mass * 1000, 3), 'g'),
+    (() => {
+      const g = app.cfg.sim.gap, f = app.stack.gapFloor;
+      const cls = g < f ? 'crit' : g < f * 1.5 ? 'warn' : 'good';
+      return tile('Air gap vs floor', sig(g * 1000, 3), `min ${sig(f * 1000, 3)} mm`, cls);
+    })(),
     tile('Peak lateral accel', sig(a.maxAccel / 9.80665, 3), 'g'),
     tile('Hover power', a.hoverSaturated > 1e-6 ? '—' : sig(a.hoverPower, 3), 'W', powCls),
     tile('Stator ΔT (est.)', a.hoverSaturated > 1e-6 ? '—' : sig(dT, 2), 'K', powCls),
@@ -369,6 +404,7 @@ function redraw(id) {
 
 function redrawAll() {
   renderTiles();
+  renderStackCards();
   renderDesignTable();
   for (const id of app.charts.keys()) redraw(id);
   renderSelfTest();
@@ -511,6 +547,42 @@ function bestPitchRow() {
   return ok.reduce((a, b) => (b.accel > a.accel ? b : a));
 }
 
+/** The physical stack, and what the air gap is actually made of. */
+function renderStackCards() {
+  const st = app.stack, c = app.cfg;
+  const mmv = (v) => (v * 1000).toFixed(2);
+  let h = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Mechanical stack-up</h4>`;
+  h += '<div class="table-wrap"><table><thead><tr><th>Layer</th><th>Thickness</th><th style="text-align:left">Material</th><th>Mass</th></tr></thead><tbody>';
+  for (const L of st.layers) {
+    const cls = L.side === 'gap' ? ' style="color:var(--accent);font-weight:600"' : '';
+    h += `<tr${cls}><td>${L.name}</td><td>${mmv(L.t)} mm</td><td style="text-align:left;color:var(--muted)">${L.material}</td><td>${L.mass ? sig(L.mass * 1000, 3) + ' g' : '—'}</td></tr>`;
+  }
+  h += `</tbody></table></div>
+    <p style="font-size:12px;color:var(--ink-2);margin:10px 0 0">
+    Platen <b>${sig(st.platenMass * 1000, 3)} g</b> = ${sig(st.magnetMass * 1000, 3)} g magnets +
+    ${sig(st.pocketMass * 1000, 3)} g retainer + ${sig(st.backingMass * 1000, 3)} g backing.
+    The retainer wall displaces <b>${(st.wallFraction * 100).toFixed(0)}%</b> of the magnet layer — that is field you do not get.</p>
+    <p style="font-size:12px;color:var(--muted);margin:6px 0 0">
+    Assembly: adjacent Halbach magnets push about <b>${sig(st.neighbourForce, 2)} N</b> apart
+    (order-of-magnitude bound from B²/2µ₀), loading the retainer wall to
+    <b>${sig(st.wallStress / 1e6, 2)} MPa</b>. Thermal path ${st.thermalResistance.toFixed(2)} K/W via ${st.coolingLabel.toLowerCase()}.</p>`;
+  document.getElementById('stackCard').innerHTML = h;
+
+  const floor = st.gapFloor, gap = c.sim.gap;
+  const ok = gap >= floor;
+  let g = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Air-gap budget</h4>`;
+  g += '<div class="table-wrap"><table><thead><tr><th>Contribution</th><th>mm</th><th style="text-align:left">Source</th></tr></thead><tbody>';
+  const worst = st.terms.reduce((a, b) => (b.v > a.v ? b : a));
+  for (const t of st.terms) {
+    g += `<tr${t === worst ? ' style="font-weight:600"' : ''}><td>${t.label}${t === worst ? ' ←' : ''}</td><td>${(t.v * 1000).toFixed(3)}</td><td style="text-align:left;color:var(--muted)">${t.note}</td></tr>`;
+  }
+  g += `<tr style="border-top:2px solid var(--axis)"><td><b>Minimum air gap</b></td><td><b>${(floor * 1000).toFixed(3)}</b></td><td style="text-align:left;color:var(--muted)">sum</td></tr>`;
+  g += `<tr><td>Design uses</td><td style="color:${ok ? 'var(--good)' : 'var(--crit)'};font-weight:600">${(gap * 1000).toFixed(3)}</td><td style="text-align:left;color:${ok ? 'var(--good)' : 'var(--crit)'}">${ok ? `OK — ${(gap / floor).toFixed(1)}× the floor` : 'TOO TIGHT — it will touch down'}</td></tr>`;
+  g += '</tbody></table></div>';
+  g += `<p style="font-size:12px;color:var(--muted);margin:10px 0 0">Largest term is <b>${worst.label.toLowerCase()}</b>. Attack that one first — the others are rounding error until it moves.</p>`;
+  document.getElementById('gapCard').innerHTML = g;
+}
+
 function renderDesignTable() {
   const el = document.getElementById('designTable');
   const c = app.cfg, tr = app.tr, st = app.stator, a = app.analysis;
@@ -519,10 +591,14 @@ function renderDesignTable() {
   const wireLen = st.coils.reduce((L, k) => L + k.turns * 2 * (k.outer[0] + k.outer[1]), 0);
   const rows = [
     ['Magnet cells on the platen', `${nMag}`, `${(tr.tile.lx / tr.tile.nx * 1000).toFixed(1)} × ${(tr.tile.ly / tr.tile.ny * 1000).toFixed(1)} × ${(c.translator.magnetThickness * 1000).toFixed(1)} mm each`],
-    ['Magnet mass', `${sig(tr.magnetMass * 1000, 3)} g`, 'NdFeB at 7500 kg/m³'],
+    ['Magnet mass', `${sig(app.stack.magnetMass * 1000, 3)} g`,
+      `NdFeB at 7500 kg/m³, less the ${(app.stack.wallFraction * 100).toFixed(0)}% displaced by retainer wall`],
     ['Coils in stator', `${st.coils.length}`, `${st.effTurns} effective turns each, ${sig(st.coils[0]?.R ?? 0, 3)} Ω`],
     ['Total wire length', `${sig(wireLen, 3)} m`, `${sig(st.copperMass * 1000, 3)} g of copper`],
-    ['Driver channels needed', `${st.coils.length}`, 'one H-bridge per coil, or a switching matrix'],
+    ['Driver channels needed', `${a.amplifiers}`,
+      a.amplifiers < st.coils.length
+        ? `${st.coils.length} coils commutated in groups (${c.sim.grouping})`
+        : 'one H-bridge per coil, or a switching matrix'],
     ['Retained field harmonics', `${tr.harm.n}`, `order ≤ ${QUALITY[c.sim.quality].maxOrder}`],
     ...(st.truncated ? [['Stator truncated', 'yes',
       'coil count hit the 48×48 cap — the modelled stator is smaller than the size you set']] : []),
@@ -661,6 +737,12 @@ function frame(ts) {
     renderSimTiles(app.lastPeakI ?? 0, app.lastPower ?? 0);
     const st = document.getElementById('simStatus');
     const sat = (app.lastPeakI ?? 0) >= app.cfg.sim.iMax * 0.995;
+    if (app.notice && app.state.t < app.notice.until) {
+      st.textContent = app.notice.text;
+      st.className = 'status';
+      requestAnimationFrame(frame);
+      return;
+    }
     st.textContent = app.state.landed
       ? 'CRASHED — platen is resting on the stator. Lower the mass, raise the current limit, or shorten the pole pitch.'
       : sat ? 'Current limited — the allocator is scaling the commanded wrench back.'
@@ -729,6 +811,38 @@ function setupChrome() {
   });
   document.getElementById('btnResetSim').addEventListener('click', resetSimulation);
   document.getElementById('btnKick').addEventListener('click', () => kick(app.dist, app.tr, 0.6, 25));
+
+  // The air-gap budget assumes a control error; the sim measures one. Wiring
+  // the measurement back into the budget closes the loop -- you cannot fly
+  // closer to the stator than you can hold position.
+  document.getElementById('btnUseMeasured').addEventListener('click', () => {
+    const H = app.hist;
+    if (!H || H.ez.length < 30) return;
+    // A clearance budget is worst-case, not statistical: what matters is the
+    // largest excursion the loop actually allowed, including disturbance
+    // recovery. Quiet-hover RMS would flatter the design badly -- kick it and
+    // run a trajectory first, then press this.
+    const n = H.ez.length, tail = Math.max(0, n - 300);
+    let peak = 0, s2 = 0, cnt = 0;
+    for (let i = tail; i < n; i++) {
+      const e = Math.abs(H.ez[i]) * 1e-6;
+      peak = Math.max(peak, e);
+      s2 += e * e; cnt++;
+    }
+    const sigma3 = 3 * Math.sqrt(s2 / Math.max(cnt, 1));
+    const measured = Math.max(peak, sigma3);
+    const used = clamp(measured, 1e-5, 1e-3);
+    app.cfg.mech.controlError = used;
+    rebuild(false);
+    buildParamUI();
+    // The frame loop rewrites simStatus every tick, so latch the message.
+    app.notice = {
+      text: `measured vertical error: peak ${(peak * 1e6).toFixed(1)} µm, 3σ ${(sigma3 * 1e6).toFixed(1)} µm`
+        + `${used !== measured ? ` (clamped to ${(used * 1e6).toFixed(0)} µm)` : ''}`
+        + ` → air-gap floor now ${(app.stack.gapFloor * 1000).toFixed(2)} mm`,
+      until: app.state.t + 6,
+    };
+  });
 
   // Section / vertical-exaggeration controls for both 3-D views.
   const wireView = (v, axisId, fracId, zId, zOutId, canvasId) => {

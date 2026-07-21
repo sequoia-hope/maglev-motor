@@ -109,6 +109,41 @@ The air gap carries a live dimension callout, since it is the variable
 everything else trades against. The backing plate is drawn translucent so the
 magnet array stays visible at true scale.
 
+### The mechanical stack
+
+Three numbers used to be invented: platen mass was `magnetMass × 1.6`, the
+air-gap floor was `1.5% of platen size`, and cooling was a fixed
+`h = 12 W/m²K`. `src/mechanical.js` replaces all three with parts that have a
+material, a thickness and a manufacturing process.
+
+**The air gap is now a tolerance stack**, not a guess:
+
+```
+gap_min = stator flatness + platen flatness + coil height variation
+        + magnet thickness tolerance + thermal expansion
+        + control error + safety margin
+```
+
+Every term is traceable. Flatness comes from the *process* — CNC ≈ 0.05 mm per
+100 mm, PCB laminate ≈ 0.75% of diagonal per IPC-6012 — and it scales with part
+size, so a bigger machine is a flatter machine only if you pay for it. On the
+PCB preset, board flatness alone is 0.72 mm of a 1.32 mm floor: it is not a
+contributor, it *is* the budget.
+
+**The loop closes back on the simulator.** One term is the closed-loop control
+error, which the flight sim measures. "Use measured error" on the Simulate tab
+feeds the observed worst-case vertical excursion into the budget — because you
+cannot fly closer to the stator than you can hold position. Quiet hover reads
+sub-micron; kick the platen at 0.6 g and the peak excursion is **702 µm**,
+which pushes the PCB preset's floor from 1.32 mm to **2.11 mm** — past the
+1.5 mm gap it was designed around. Disturbance rejection and mechanical
+clearance are the same budget, and this is the only way to see that.
+
+It also prices things that were previously free. The magnet retainer wall
+displaces 25% of the magnet layer on the PCB preset — that is field you do not
+get — and adjacent Halbach magnets push about 15 N apart, which is what the
+retainer wall has to survive during assembly.
+
 ### Design search
 
 A 1-D sweep answers "what is the best pole pitch, holding everything else
@@ -244,6 +279,7 @@ src/control.js      6-DOF PID with gravity + acceleration feedforward, trajector
 src/analysis.js     design sweeps (gap, pole pitch, capability maps, ripple)
 src/grouping.js     phase grouping: commutating many coils from few amplifiers
 src/optimise.js     constrained multi-dimensional design search
+src/mechanical.js   stack-up: masses, tolerance budget, thermal path
 src/render3d.js     dependency-free solid-geometry 3-D canvas renderer
 src/plots.js        line charts, heatmaps, bar strips with hover readouts
 src/app.js          parameter UI, presets, the frame loop
@@ -270,6 +306,12 @@ src/app.js          parameter UI, presets, the frame loop
   inherited, and an optimiser is extremely good at finding whichever corner of
   the model is least faithful. Treat a searched design as a hypothesis to check,
   not an answer — and read the active-bounds warning first.
+- **Plate stiffness is not modelled.** Flatness comes from the manufacturing
+  process, not from a deflection calculation, so a platen that is too thin to
+  hold its own shape will not be caught.
+- **Magnet-to-magnet force is an order-of-magnitude bound** (`B²/2µ₀` over the
+  facing area). Real Halbach neighbours meet at 90°, so the load is largely
+  shear and the true figure is lower.
 - **No driver electrical model.** Amplifier count is reported, but voltage
   limits, back-EMF and the switching matrix itself are not simulated.
 - The wrench matrix is rebuilt at the control rate, not every dynamics substep.

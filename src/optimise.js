@@ -20,7 +20,7 @@ import { quat } from './math.js';
 import { makeTranslator } from './halbach.js';
 import { makeStator } from './coils.js';
 import { analysePose } from './physics.js';
-import { thermal } from './analysis.js';
+import { stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
 
 // Coarse solver settings: the search evaluates thousands of designs, so it runs
 // cheap and the winner is re-verified at full quality afterwards.
@@ -72,8 +72,10 @@ export const DEFAULT_CONSTRAINTS = {
   // gap scales with platen size. Without this the optimiser always drives the
   // gap to its lower bound -- force goes as exp(-k*gap), so of course it does --
   // and returns a machine that cannot be assembled.
-  minGapFraction: 0.015, // gap >= 1.5% of platen size
-  minGapAbsolute: 0.0005,
+  // The air-gap floor now comes from the mechanical tolerance stack; this is
+  // only an absolute backstop.
+  minGapAbsolute: 0.0003,
+  maxWallStress: 60e6,   // Pa, retainer walls under magnet-to-magnet load
 };
 
 /** Current-density limits are not one number. A wound coil is a thick bundle
@@ -116,8 +118,15 @@ export function applyCandidate(cfg, cand) {
  *  is a symmetry point and systematically flatters the design. */
 export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARCH_QUALITY) {
   let tr, stator;
+  // The mechanical stack supplies platen mass, the air-gap floor and the
+  // thermal path. All three used to be invented constants.
+  const stack = stackUp(cfg, { ...mechDefaultsFor(cfg), ...(cfg.mech ?? {}) });
   try {
-    tr = makeTranslator({ ...cfg.translator, gap: cfg.sim.gap, maxOrder: quality.maxOrder });
+    tr = makeTranslator({
+      ...cfg.translator,
+      platenMass: cfg.translator.platenMass || stack.platenMass,
+      gap: cfg.sim.gap, maxOrder: quality.maxOrder,
+    });
     stator = makeStator({ ...cfg.stator, ringsPerCoil: quality.ringsPerCoil, segmentsPerSide: quality.segmentsPerSide });
   } catch (e) {
     return { feasible: false, reason: 'build failed' };
@@ -143,18 +152,20 @@ export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARC
   }
 
   const J = (a0.hoverPeakCurrent ?? 0) / (stator.wireArea * 1e6);
-  const dT = thermal(maxPower, cfg.stator.statorSize ** 2);
+  const dT = stackTemperatureRise(maxPower, stack);
   const m = {
     worstLift, accel: worstAcc, hoverPower: maxPower, deltaT: dT,
     currentDensity: J, amplifiers: a0.amplifiers, coils: stator.coils.length,
     gap: cfg.sim.gap,
     activeCoils: a0.activeCoils, cond: a0.conditionNumber, mass: tr.mass,
     peakB: tr.peakGapField, rank6: worstSigma > 1e-4,
+    stack, wallStress: stack.wallStress, neighbourForce: stack.neighbourForce,
   };
 
-  const gapFloor = Math.max(constraints.minGapAbsolute ?? 0,
-    (constraints.minGapFraction ?? 0) * cfg.translator.platenSize);
+  // Computed from the tolerance stack, not from a fraction of the platen.
+  const gapFloor = Math.max(constraints.minGapAbsolute ?? 0, stack.gapFloor);
   m.gapFloor = gapFloor;
+  m.gapTerms = stack.terms;
 
   // Order matters, and so does not double-reporting: a design that cannot
   // hover has infinite hover power, which would otherwise ALSO be counted as a
@@ -169,6 +180,7 @@ export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARC
   if (!(m.currentDensity <= constraints.maxCurrentDensity)) fails.push('current density');
   if (!(m.amplifiers <= constraints.maxAmplifiers)) fails.push('amplifiers');
   if (!(m.coils <= (constraints.maxCoils ?? Infinity))) fails.push('coil count');
+  if (!(m.wallStress <= (constraints.maxWallStress ?? Infinity))) fails.push('magnet retainer stress');
   if (constraints.requireRank6 && !m.rank6) fails.push('rank');
   m.feasible = fails.length === 0;
   m.reason = fails.join(', ');
@@ -187,6 +199,7 @@ export function violation(m, cons) {
   v += Math.max(0, m.currentDensity / cons.maxCurrentDensity - 1);
   v += Math.max(0, m.amplifiers / cons.maxAmplifiers - 1);
   v += Math.max(0, m.coils / (cons.maxCoils ?? Infinity) - 1);
+  v += Math.max(0, m.wallStress / (cons.maxWallStress ?? Infinity) - 1);
   if (cons.requireRank6 && !m.rank6) v += 1;
   return isFinite(v) ? v : 1e6;
 }

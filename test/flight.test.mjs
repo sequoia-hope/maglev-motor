@@ -5,6 +5,7 @@ import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbanc
 import { quat } from '../src/math.js';
 import { groupWrench } from '../src/physics.js';
 import { buildGrouping } from '../src/grouping.js';
+import { stackUp, mechDefaultsFor, DEFAULT_MECH } from '../src/mechanical.js';
 import { readFileSync } from 'fs';
 
 // Pull the presets straight out of app.js so the test exercises what ships.
@@ -23,12 +24,18 @@ for (const [key, preset] of Object.entries(PRESETS)) {
   const q = QUALITY[cfg.sim.quality];
   console.log(`\n=== ${key}: ${preset.label} ===`);
 
-  const tr = makeTranslator({ ...cfg.translator, gap: cfg.sim.gap, maxOrder: q.maxOrder });
+  // Mirror the app: the mechanical stack supplies the platen mass.
+  const stack = stackUp(cfg, cfg.mech ?? mechDefaultsFor(cfg, DEFAULT_MECH));
+  const tr = makeTranslator({ ...cfg.translator,
+    platenMass: cfg.translator.platenMass || stack.platenMass,
+    gap: cfg.sim.gap, maxOrder: q.maxOrder });
   const stator = makeStator({ ...cfg.stator, ringsPerCoil: q.ringsPerCoil, segmentsPerSide: q.segmentsPerSide });
   const a = analysePose(stator, tr, [0, 0, cfg.sim.gap], quat.identity(), cfg.sim.iMax, cfg.sim.grouping);
-  console.log(`  mass ${(tr.mass * 1000).toFixed(0)} g · ${stator.coils.length} coils (${a.activeCoils} active) · ${a.amplifiers} amplifiers [${cfg.sim.grouping}] · peak B ${tr.peakGapField.toFixed(3)} T`);
+  console.log(`  mass ${(tr.mass * 1000).toFixed(0)} g · gap floor ${(stack.gapFloor * 1000).toFixed(2)}mm · ${stator.coils.length} coils (${a.activeCoils} active) · ${a.amplifiers} amplifiers [${cfg.sim.grouping}] · peak B ${tr.peakGapField.toFixed(3)} T`);
   console.log(`  lift ${a.liftMargin.toFixed(2)}x · accel ${(a.maxAccel / 9.81).toFixed(2)} g · hover ${a.hoverPower.toFixed(2)} W · cond ${a.conditionNumber.toFixed(1)} · sigmaMin ${a.sigmaMin.toExponential(2)}`);
   check('can hover', a.liftMargin > 1, `${a.liftMargin.toFixed(2)}x`);
+  check('air gap clears the mechanical tolerance stack', cfg.sim.gap >= stack.gapFloor,
+    `${(cfg.sim.gap * 1000).toFixed(2)} mm vs floor ${(stack.gapFloor * 1000).toFixed(2)} mm`);
   check('has 6-DOF authority', a.sigmaMin > 1e-4 * a.sigma[0], `sigmaMin/sigmaMax = ${(a.sigmaMin / a.sigma[0]).toExponential(2)}`);
 
   // WORKSPACE CHECK. A single centred pose is the weakest possible test: it is
