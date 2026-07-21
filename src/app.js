@@ -148,6 +148,8 @@ const app = {
   dist: makeDisturbance(),
   camDesign: makeCamera(),
   camSim: makeCamera(),
+  view: { section: { axis: 'none', frac: 0.5 }, zScale: 1 },
+  viewSim: { section: { axis: 'none', frac: 0.5 }, zScale: 1 },
   running: true,
   tab: 'design',
   traj: 'hover',
@@ -371,6 +373,7 @@ function setupDesignCharts() {
       cam: app.camDesign, stator: app.stator, tr: app.tr,
       state: { r: [0, 0, app.cfg.sim.gap], q: quat.identity() },
       currents: app.analysis.hoverCurrents, idxMap: app.analysis.Wm.idx,
+      section: app.view.section, zScale: app.view.zScale,
     });
   });
   attachOrbit(document.getElementById('designView'), app.camDesign, () => redraw('designView'));
@@ -547,6 +550,7 @@ function setupSimCharts() {
       cam: app.camSim, stator: app.stator, tr: app.tr, state: app.state,
       currents: app.lastCurrents, idxMap: app.lastIdx,
       target: app.lastTarget?.r, trail: app.hist.trail,
+      section: app.viewSim.section, zScale: app.viewSim.zScale,
     });
   });
   attachOrbit(document.getElementById('simView'), app.camSim, () => redraw('simView'));
@@ -716,6 +720,28 @@ function setupChrome() {
   });
   document.getElementById('btnResetSim').addEventListener('click', resetSimulation);
   document.getElementById('btnKick').addEventListener('click', () => kick(app.dist, app.tr, 0.6, 25));
+
+  // Section / vertical-exaggeration controls for both 3-D views.
+  const wireView = (v, axisId, fracId, zId, zOutId, canvasId) => {
+    const axis = document.getElementById(axisId);
+    const frac = fracId && document.getElementById(fracId);
+    const z = document.getElementById(zId);
+    const zOut = document.getElementById(zOutId);
+    const upd = () => {
+      v.section.axis = axis.value;
+      if (frac) v.section.frac = +frac.value;
+      v.zScale = +z.value;
+      zOut.textContent = z.value;
+      if (frac) frac.disabled = axis.value === 'none';
+      redraw(canvasId);
+    };
+    axis.addEventListener('change', upd);
+    frac?.addEventListener('input', upd);
+    z.addEventListener('input', upd);
+    upd();
+  };
+  wireView(app.view, 'secAxis', 'secFrac', 'zScale', 'zScaleOut', 'designView');
+  wireView(app.viewSim, 'secAxisSim', null, 'zScaleSim', 'zScaleSimOut', 'simView');
 
   window.addEventListener('resize', () => { if (app.tab === 'design') redrawAll(); });
 }

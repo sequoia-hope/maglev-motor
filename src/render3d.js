@@ -116,6 +116,55 @@ function magnetColor(mx, my, mz, Br, pal) {
   return `hsl(${((ang * 180) / Math.PI + 360) % 360}, 45%, ${l}%)`;
 }
 
+/** Solid-geometry renderer. Every part is drawn as an extruded box with its
+ *  real thickness -- magnet stack, winding build height, platen plate -- because
+ *  those thicknesses ARE the design, and a flat quad hides all of them.
+ *
+ *  Two viewing aids, both of which distort the picture on purpose and are
+ *  labelled as such in the UI:
+ *    - a section plane that hides everything past a cut, so you can see the air
+ *      gap and the layer stack in cross-section;
+ *    - a vertical exaggeration, because a 1.5 mm air gap under a 72 mm platen
+ *      is otherwise a sub-pixel sliver.
+ */
+
+const LIGHT = (() => {
+  const v = [0.35, -0.55, 0.76];
+  const l = Math.hypot(...v);
+  return [v[0] / l, v[1] / l, v[2] / l];
+})();
+
+// Corner order: 0-3 bottom face CCW seen from above, 4-7 the matching top.
+const BOX_FACES = [
+  [4, 5, 6, 7], [3, 2, 1, 0],
+  [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [3, 0, 4, 7],
+];
+
+function hslToRgb(hDeg, s, l) {
+  const h = ((hDeg % 360) + 360) / 360 % 1;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h * 12) % 12;
+    return l - a * Math.max(-1, Math.min(Math.min(k - 3, 9 - k), 1));
+  };
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+}
+
+function divergingRGB(t, pal) {
+  const u = Math.max(-1, Math.min(1, t));
+  const mix = (a, b, f) => a.map((v, i) => Math.round(v + (b[i] - v) * f));
+  const blue = [42, 120, 214], red = [208, 59, 59];
+  const mid = pal === PALETTE.dark ? [56, 56, 53] : [240, 239, 236];
+  return u < 0 ? mix(mid, blue, -u) : mix(mid, red, u);
+}
+
+function magnetRGB(mx, my, mz, Br, pal) {
+  const vert = mz / Br;
+  if (Math.abs(vert) > 0.6) return divergingRGB(vert, pal);
+  const ang = (Math.atan2(my, mx) * 180) / Math.PI;
+  return hslToRgb(ang, 0.45, pal === PALETTE.dark ? 0.62 : 0.52);
+}
+
 export function render(canvas, scene) {
   const pal = theme();
   const ctx = canvas.getContext('2d');
@@ -130,9 +179,54 @@ export function render(canvas, scene) {
   ctx.fillRect(0, 0, w, h);
 
   const { cam, stator, tr, state, currents, idxMap, target, trail } = scene;
-  const faces = [];
+  const zs = scene.zScale ?? 1;
+  const sec = scene.section ?? { axis: 'none', frac: 0.5 };
   const B = cameraBasis(cam, w, h);
-  const P = (p) => project(B, p);
+  const P = (p) => project(B, [p[0], p[1], p[2] * zs]);
+
+  // Section test on an element's centre. Simple hiding rather than true
+  // clipping: the exposed side faces of what survives read as the cut.
+  const cutAt = (() => {
+    if (sec.axis === 'none') return null;
+    const half = Math.max(tr.cfg.platenSize, 0.02) * 1.2;
+    return -half + 2 * half * (sec.frac ?? 0.5);
+  })();
+  const sectioned = (x, y) => {
+    if (cutAt === null) return false;
+    return (sec.axis === 'x' ? x : y) > cutAt;
+  };
+
+  const faces = [];
+  /** Push the visible faces of an axis-aligned-in-local-frame box.
+   *  `corners` are eight world-space points, already in draw order. */
+  const pushBox = (corners, rgb, opts = {}) => {
+    const pts = corners.map((c) => P(c));
+    for (const f of BOX_FACES) {
+      if (opts.skipBottom && f === BOX_FACES[1]) continue;
+      const a = corners[f[0]], b = corners[f[1]], c = corners[f[2]];
+      // Normal from the world corners, with z already exaggerated so shading
+      // matches what is actually drawn.
+      const ux = b[0] - a[0], uy = b[1] - a[1], uz = (b[2] - a[2]) * zs;
+      const vx = c[0] - b[0], vy = c[1] - b[1], vz = (c[2] - b[2]) * zs;
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      nx /= nl; ny /= nl; nz /= nl;
+      // Backface cull against the eye.
+      const ex = a[0] - B.eye[0], ey = a[1] - B.eye[1], ez = a[2] * zs - B.eye[2];
+      if (nx * ex + ny * ey + nz * ez > 0) continue;
+      const q = f.map((i) => pts[i]);
+      if (q.some((p) => !p)) continue;
+      const lam = Math.max(0, nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]);
+      const k = 0.52 + 0.48 * lam;
+      faces.push({
+        d: (q[0].d + q[2].d) / 2,
+        pts: q,
+        fill: `rgb(${Math.round(rgb[0] * k)},${Math.round(rgb[1] * k)},${Math.round(rgb[2] * k)})`,
+        stroke: opts.stroke,
+        alpha: opts.alpha,
+      });
+    }
+  };
 
   // --- stator coils --------------------------------------------------------
   let iPeak = 1e-9;
@@ -140,43 +234,48 @@ export function render(canvas, scene) {
   const curOf = new Map();
   if (currents && idxMap) idxMap.forEach((ci, j) => curOf.set(ci, currents[j]));
 
+  const ct = stator.thickness;
+  const inactiveRGB = pal === PALETTE.dark ? [46, 46, 44] : [225, 224, 217];
+  // Far-away coils are drawn flat: they carry no current and no information,
+  // and a 625-coil stator at six faces each is not worth the frame time.
+  const detailR = tr.footprintRadius * 2.2;
+
   stator.coils.forEach((c, ci) => {
+    if (sectioned(c.x, c.y)) return;
     const hx = c.outer[0] / 2, hy = c.outer[1] / 2;
-    const z = c.z;
-    const pts = [
-      P([c.x - hx, c.y - hy, z]), P([c.x + hx, c.y - hy, z]),
-      P([c.x + hx, c.y + hy, z]), P([c.x - hx, c.y + hy, z]),
-    ];
-    if (pts.some((p) => !p)) return;
+    const top = c.z + ct / 2, bot = c.z - ct / 2;
     const cur = curOf.get(ci) ?? 0;
     const active = curOf.has(ci);
-    faces.push({
-      d: (pts[0].d + pts[2].d) / 2,
-      draw: () => {
-        quadPath(ctx, pts);
-        ctx.fillStyle = active ? divergingColor(cur / iPeak, pal) : pal.plane;
-        ctx.fill();
-        ctx.strokeStyle = active ? pal.axis : pal.grid;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        // Winding window hint.
-        const ix = c.inner[0] / 2, iy = c.inner[1] / 2;
-        const ipts = [
-          P([c.x - ix, c.y - iy, z]), P([c.x + ix, c.y - iy, z]),
-          P([c.x + ix, c.y + iy, z]), P([c.x - ix, c.y + iy, z]),
-        ];
-        if (!ipts.some((p) => !p)) {
-          quadPath(ctx, ipts);
-          ctx.fillStyle = pal.surface;
-          ctx.globalAlpha = 0.85;
-          ctx.fill();
-          ctx.globalAlpha = 1;
-        }
-      },
-    });
+    const rgb = active ? divergingRGB(cur / iPeak, pal) : inactiveRGB;
+    const near = Math.abs(c.x - state.r[0]) < detailR && Math.abs(c.y - state.r[1]) < detailR;
+
+    if (!near) {
+      const q = [[c.x - hx, c.y - hy, top], [c.x + hx, c.y - hy, top],
+        [c.x + hx, c.y + hy, top], [c.x - hx, c.y + hy, top]].map(P);
+      if (q.some((p) => !p)) return;
+      faces.push({ d: (q[0].d + q[2].d) / 2, pts: q, fill: `rgb(${rgb})` });
+      return;
+    }
+    pushBox([
+      [c.x - hx, c.y - hy, bot], [c.x + hx, c.y - hy, bot],
+      [c.x + hx, c.y + hy, bot], [c.x - hx, c.y + hy, bot],
+      [c.x - hx, c.y - hy, top], [c.x + hx, c.y - hy, top],
+      [c.x + hx, c.y + hy, top], [c.x - hx, c.y + hy, top],
+    ], rgb, { skipBottom: true, stroke: active ? pal.axis : null });
+
+    // Winding window, drawn on the top face so the coil reads as a coil.
+    const ix = c.inner[0] / 2, iy = c.inner[1] / 2;
+    const q = [[c.x - ix, c.y - iy, top], [c.x + ix, c.y - iy, top],
+      [c.x + ix, c.y + iy, top], [c.x - ix, c.y + iy, top]].map(P);
+    if (!q.some((p) => !p)) {
+      faces.push({
+        d: (q[0].d + q[2].d) / 2 - 1e-7, pts: q,
+        fill: pal === PALETTE.dark ? 'rgb(18,18,17)' : 'rgb(246,245,242)',
+      });
+    }
   });
 
-  // --- translator ----------------------------------------------------------
+  // --- translator: magnet cells, extruded to their real thickness ----------
   const R = quat.toMat3(state.q);
   const toWorld = (u, v, zz) => [
     state.r[0] + R[0] * u + R[1] * v + R[2] * zz,
@@ -185,78 +284,76 @@ export function render(canvas, scene) {
   ];
 
   const tile = tr.tile;
-  const cellW = tile.lx / tile.nx;
-  const cellH = tile.ly / tile.ny;
-  const platenTop = tr.cfg.magnetThickness;
+  const cellW = tile.lx / tile.nx, cellH = tile.ly / tile.ny;
+  const magT = tr.cfg.magnetThickness;
 
   tr.patches.forEach((pt) => {
-    const ct = pt.cos, st = pt.sin;
-    const nu = Math.ceil(pt.w / cellW), nv = Math.ceil(pt.h / cellH);
+    const pc = pt.cos, ps = pt.sin;
+    const nu = Math.floor(pt.w / cellW), nv = Math.floor(pt.h / cellH);
     for (let jv = 0; jv < nv; jv++) {
       for (let iu = 0; iu < nu; iu++) {
         const px = -pt.w / 2 + (iu + 0.5) * cellW;
         const py = -pt.h / 2 + (jv + 0.5) * cellH;
-        if (Math.abs(px) > pt.w / 2 || Math.abs(py) > pt.h / 2) continue;
-        // Which tile cell is this?
         const tx = ((px % tile.lx) + tile.lx) % tile.lx;
         const ty = ((py % tile.ly) + tile.ly) % tile.ly;
         const ci = Math.min(tile.nx - 1, Math.floor((tx / tile.lx) * tile.nx));
         const cj = Math.min(tile.ny - 1, Math.floor((ty / tile.ly) * tile.ny));
         const k = (cj * tile.nx + ci) * 3;
-        const col = magnetColor(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2], tile.Br, pal);
+        const rgb = magnetRGB(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2], tile.Br, pal);
 
-        const corners = [
-          [-cellW / 2, -cellH / 2], [cellW / 2, -cellH / 2],
-          [cellW / 2, cellH / 2], [-cellW / 2, cellH / 2],
-        ].map(([a, b]) => {
-          const u = pt.u + (px + a) * ct - (py + b) * st;
-          const v = pt.v + (px + a) * st + (py + b) * ct;
-          return P(toWorld(u, v, 0));
-        });
-        if (corners.some((p) => !p)) continue;
-        faces.push({
-          d: (corners[0].d + corners[2].d) / 2,
-          draw: () => {
-            quadPath(ctx, corners);
-            ctx.fillStyle = col;
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(0,0,0,0.18)';
-            ctx.lineWidth = 0.5;
-            ctx.stroke();
-          },
-        });
+        const local = (a, b) => [pt.u + (px + a) * pc - (py + b) * ps,
+          pt.v + (px + a) * ps + (py + b) * pc];
+        const g = 0.06 * cellW; // hairline gap so individual magnets read
+        const cs = [[-cellW / 2 + g, -cellH / 2 + g], [cellW / 2 - g, -cellH / 2 + g],
+          [cellW / 2 - g, cellH / 2 - g], [-cellW / 2 + g, cellH / 2 - g]];
+        const wc = cs.map(([a, b]) => local(a, b));
+        if (sectioned(...toWorld(wc[0][0], wc[0][1], 0))) continue;
+        pushBox([
+          ...wc.map(([u, v]) => toWorld(u, v, 0)),
+          ...wc.map(([u, v]) => toWorld(u, v, magT)),
+        ], rgb);
       }
     }
   });
 
-  // Platen body (top slab), drawn as a translucent box lid.
+  // Platen backing plate above the magnets: the structure they mount to.
+  // Tiled rather than drawn as one slab, so the section cut bites it the same
+  // way it bites the magnets instead of leaving a lid floating over the void.
   {
     const s = tr.cfg.platenSize / 2;
-    const lid = [[-s, -s], [s, -s], [s, s], [-s, s]].map(([u, v]) => P(toWorld(u, v, platenTop)));
-    if (!lid.some((p) => !p)) {
-      faces.push({
-        d: (lid[0].d + lid[2].d) / 2 - 1e-6,
-        draw: () => {
-          quadPath(ctx, lid);
-          ctx.fillStyle = pal === PALETTE.dark ? 'rgba(255,255,255,0.10)' : 'rgba(11,11,11,0.10)';
-          ctx.fill();
-          ctx.strokeStyle = pal.ink2;
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-        },
-      });
+    const plateT = Math.max(tr.cfg.platenSize * 0.02, 0.0015);
+    const plateRGB = pal === PALETTE.dark ? [120, 118, 112] : [176, 174, 166];
+    const N = 12, step = (2 * s) / N;
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const u0 = -s + i * step, v0 = -s + j * step;
+        const cs = [[u0, v0], [u0 + step, v0], [u0 + step, v0 + step], [u0, v0 + step]];
+        const mid = toWorld(u0 + step / 2, v0 + step / 2, magT);
+        if (sectioned(mid[0], mid[1])) continue;
+        pushBox([
+          ...cs.map(([u, v]) => toWorld(u, v, magT)),
+          ...cs.map(([u, v]) => toWorld(u, v, magT + plateT)),
+        // Translucent: at true scale a solid plate buries the magnet array,
+        // which is the one thing you actually came to look at.
+        ], plateRGB, { alpha: 0.3 });
+      }
     }
   }
 
   faces.sort((a, b) => b.d - a.d);
-  for (const f of faces) f.draw();
+  for (const f of faces) {
+    quadPath(ctx, f.pts);
+    if (f.alpha !== undefined) ctx.globalAlpha = f.alpha;
+    ctx.fillStyle = f.fill;
+    ctx.fill();
+    if (f.stroke) { ctx.strokeStyle = f.stroke; ctx.lineWidth = 0.6; ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  }
 
-  // --- overlays (always on top) -------------------------------------------
+  // --- overlays ------------------------------------------------------------
   ctx.lineWidth = 2;
-
   if (trail && trail.length > 1) {
-    ctx.strokeStyle = pal.s3;
-    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = pal.s3; ctx.globalAlpha = 0.7;
     ctx.beginPath();
     let started = false;
     for (const p of trail) {
@@ -264,36 +361,52 @@ export function render(canvas, scene) {
       if (!q) { started = false; continue; }
       if (!started) { ctx.moveTo(q.x, q.y); started = true; } else ctx.lineTo(q.x, q.y);
     }
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.stroke(); ctx.globalAlpha = 1;
   }
-
   if (target) {
     const t = P(target);
     if (t) {
-      ctx.strokeStyle = pal.s2;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.arc(t.x, t.y, 7, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.strokeStyle = pal.s2; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.arc(t.x, t.y, 7, 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
     }
   }
 
-  // Air-gap indicator: a dropped line from the platen centre to the stator.
+  // Air-gap callout: the whole point of the section view.
   {
-    const a = P(state.r), b = P([state.r[0], state.r[1], 0]);
+    const gx = state.r[0] - tr.cfg.platenSize * 0.62;
+    const gy = state.r[1];
+    const a = P([gx, gy, 0]), b = P([gx, gy, state.r[2]]);
     if (a && b) {
-      ctx.strokeStyle = pal.muted;
-      ctx.setLineDash([2, 3]);
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = pal.s2; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-      ctx.setLineDash([]);
+      for (const p of [a, b]) {
+        ctx.beginPath(); ctx.moveTo(p.x - 4, p.y); ctx.lineTo(p.x + 4, p.y); ctx.stroke();
+      }
+      ctx.fillStyle = pal.s2;
+      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(`${(state.r[2] * 1000).toFixed(2)} mm gap`,
+        Math.min(a.x, b.x) - 6, (a.y + b.y) / 2);
     }
   }
 
-  // Axis triad, bottom-left. Directions come straight from the camera basis so
-  // it always agrees with the view.
+  // Scale caveat, stated on the canvas so an exaggerated view is never
+  // mistaken for the real proportions.
+  if (zs !== 1) {
+    ctx.fillStyle = pal.warning;
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(`vertical scale ×${zs}`, 12, 12);
+  }
+  if (sec.axis !== 'none') {
+    ctx.fillStyle = pal.muted;
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(`section: ${sec.axis} cut`, 12, zs !== 1 ? 28 : 12);
+  }
+
+  // Axis triad, bottom-left.
   const org = { x: 46, y: h - 40 };
   const axes = [
     { v: [1, 0, 0], c: pal.s8, l: 'x' },
@@ -305,13 +418,10 @@ export function render(canvas, scene) {
     const sx = a.v[0] * B.right[0] + a.v[1] * B.right[1] + a.v[2] * B.right[2];
     const sy = -(a.v[0] * B.up[0] + a.v[1] * B.up[1] + a.v[2] * B.up[2]);
     const l = Math.hypot(sx, sy) || 1;
-    ctx.strokeStyle = a.c;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(org.x, org.y);
-    ctx.lineTo(org.x + (sx / l) * 22, org.y + (sy / l) * 22);
-    ctx.stroke();
-    ctx.fillStyle = a.c;
+    ctx.strokeStyle = a.c; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(org.x, org.y);
+    ctx.lineTo(org.x + (sx / l) * 22, org.y + (sy / l) * 22); ctx.stroke();
+    ctx.fillStyle = a.c; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
     ctx.fillText(a.l, org.x + (sx / l) * 30 - 3, org.y + (sy / l) * 30 + 4);
   }
 }

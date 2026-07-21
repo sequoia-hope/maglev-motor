@@ -42,7 +42,20 @@
 
       <div class="grid2">
         <figure class="card tall">
-          <figcaption>Machine view <span class="hint">drag to orbit &middot; scroll to zoom &middot; coil colour = hover current</span></figcaption>
+          <figcaption>Machine view <span class="hint">drag to orbit &middot; scroll to zoom</span>
+            <span class="viewctl">
+              <select id="secAxis" class="inline" title="Section cut">
+                <option value="none">no cut</option>
+                <option value="x">cut along x</option>
+                <option value="y">cut along y</option>
+              </select>
+              <input type="range" id="secFrac" min="0" max="1" step="0.02" value="0.5" title="Cut position">
+              <label title="Exaggerate the vertical axis so thin layers and the air gap are visible">z&times;
+                <input type="range" id="zScale" min="1" max="12" step="0.5" value="1">
+                <output id="zScaleOut">1</output>
+              </label>
+            </span>
+          </figcaption>
           <canvas id="designView"></canvas>
         </figure>
         <figure class="card tall">
@@ -173,7 +186,19 @@
 
       <div class="grid-sim">
         <figure class="card view">
-          <figcaption>Live view</figcaption>
+          <figcaption>Live view
+            <span class="viewctl">
+              <select id="secAxisSim" class="inline">
+                <option value="none">no cut</option>
+                <option value="x">cut along x</option>
+                <option value="y">cut along y</option>
+              </select>
+              <label>z&times;
+                <input type="range" id="zScaleSim" min="1" max="12" step="0.5" value="1">
+                <output id="zScaleSimOut">1</output>
+              </label>
+            </span>
+          </figcaption>
           <canvas id="simView"></canvas>
         </figure>
         <div class="sim-side">

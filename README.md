@@ -93,6 +93,22 @@ The headline: **8 amplifiers track exactly as well as 121** on the four-array
 cross, at roughly double the hover power. That is the published design, and the
 model reproduces it. The racetrack is the exception — see limitations below.
 
+### Reading the machine view
+
+Every part is drawn as an extruded solid with its real thickness — magnet
+stack, winding build height, backing plate — because those thicknesses *are*
+the design. Two viewing aids, both of which distort the picture deliberately
+and label themselves on the canvas when active:
+
+- **Section cut** along x or y, with a draggable plane. Hides everything past
+  the cut so you can see the layer stack and the air gap in cross-section.
+- **Vertical exaggeration** (z×1–12). A 1.5 mm air gap under a 72 mm platen is
+  otherwise a sub-pixel sliver.
+
+The air gap carries a live dimension callout, since it is the variable
+everything else trades against. The backing plate is drawn translucent so the
+magnet array stays visible at true scale.
+
 ### Design search
 
 A 1-D sweep answers "what is the best pole pitch, holding everything else
@@ -228,7 +244,7 @@ src/control.js      6-DOF PID with gravity + acceleration feedforward, trajector
 src/analysis.js     design sweeps (gap, pole pitch, capability maps, ripple)
 src/grouping.js     phase grouping: commutating many coils from few amplifiers
 src/optimise.js     constrained multi-dimensional design search
-src/render3d.js     dependency-free 3-D canvas renderer
+src/render3d.js     dependency-free solid-geometry 3-D canvas renderer
 src/plots.js        line charts, heatmaps, bar strips with hover readouts
 src/app.js          parameter UI, presets, the frame loop
 ```
