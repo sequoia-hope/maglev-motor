@@ -149,9 +149,14 @@ src/app.js          parameter UI, presets, the frame loop
 - **Magnet μ<sub>r</sub> = 1** (real NdFeB ≈ 1.05).
 - **Winding packing is a flat 0.7**, reasonable for layer winding, optimistic
   for a hand-wound scramble winding (~0.5).
-- **No driver model.** Channel count is reported but voltage, back-EMF and the
-  cost of one H-bridge per coil are not simulated — and channel count is usually
-  the real thing that stops you building it.
+- **No driver model, and no phase grouping.** The allocator gives every coil an
+  independent current, because that maximises controllability and keeps `W`
+  clean. Real machines exploit the platen's symmetry to commutate coils in
+  groups: Zhu/Teo/Pang drive roughly 60 coils from **eight** amplifiers. So the
+  channel count reported here is an *upper bound on drive complexity for
+  independent control*, not a property of the topology — a grouped design of the
+  same geometry could need an order of magnitude fewer amplifiers, at some cost
+  in controllability. Voltage limits and back-EMF are not modelled at all.
 - The wrench matrix is rebuilt at the control rate, not every dynamics substep.
 
 ## Source literature

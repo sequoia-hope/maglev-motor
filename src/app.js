@@ -14,7 +14,7 @@ import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, thermal } f
 const PRESETS = {
   pcb: {
     label: 'Desktop PCB stage (buildable)',
-    blurb: 'One tileable 96 mm PCB stator tile, small 2-D Halbach platen. No coil winding — but 144 coils still means 144 driver channels, and the 1.5 mm gap is unforgiving.',
+    blurb: 'One tileable 96 mm PCB stator tile, small 2-D Halbach platen. No coil winding — but 144 independently driven coils is a lot of electronics, and the 1.5 mm gap is unforgiving.',
     cfg: {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.072, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
@@ -306,12 +306,15 @@ function renderTiles() {
     })(),
     tile('Condition number', sig(a.conditionNumber, 3), '', a.conditionNumber > 50 ? 'warn' : ''),
     (() => {
-      // Channel count is usually what actually stops you building the thing.
-      // One H-bridge per coil is the naive wiring; a switching matrix only has
-      // to drive the coils under the platen, which is the `active` number.
+      // UPPER BOUND, not a requirement. This model gives every coil its own
+      // current because that maximises controllability and keeps W clean.
+      // Real machines group coils into phases using the platen's symmetry --
+      // Zhu/Teo/Pang drive ~60 coils from EIGHT amplifiers. So read this as the
+      // cost of independent per-coil drive, not as the cost of the topology.
+      // The live count is what a switching matrix must actually service.
       const n = app.stator.coils.length;
-      const cls = n > 128 ? 'crit' : n > 32 ? 'warn' : 'good';
-      return tile('Driver channels', n, `${a.activeCoils} live at once`, cls);
+      const cls = a.activeCoils > 64 ? 'crit' : a.activeCoils > 16 ? 'warn' : 'good';
+      return tile('Coils driven at once', a.activeCoils, `of ${n}`, cls);
     })(),
   ].join('');
 }
@@ -707,6 +710,11 @@ function renderAbout() {
       A truly finite array needs a surface-charge model.</li>
       <li><strong>No eddy currents, no iron, no back-EMF-limited drivers.</strong> The
       current source is ideal. Real drivers run out of voltage at speed.</li>
+      <li><strong>Every coil is driven independently.</strong> That maximises
+      controllability and keeps the wrench matrix clean, but real machines group
+      coils into phases using the platen's symmetry — Zhu/Teo/Pang drive about
+      60 coils from eight amplifiers. Treat the coil count as an upper bound on
+      drive complexity, not as a property of the topology.</li>
       <li><strong>Thermal estimate is crude</strong> — a fixed natural-convection
       coefficient over the stator footprint. It exists to flag designs that will obviously
       melt, not to size a heatsink.</li>
