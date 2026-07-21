@@ -851,6 +851,8 @@ import { scatter } from './plots.js';
 
 const opt = {
   enabled: new Set(['pitch', 'magnetThickness', 'coilPitchRatio', 'windingHeight', 'gap']),
+  ranges: {},          // per-dimension search range overrides
+  searchGrouping: true,
   constraints: { ...DEFAULT_CONSTRAINTS },
   autoConstraints: true,
   objective: 'accel',
@@ -875,13 +877,42 @@ const METRIC_AXES = {
   cond: { label: 'Condition number', get: (m) => m.cond },
 };
 
+// Some dimensions are not stored directly in the config. The coil-pitch ratio
+// is the honest variable (lambda/3 vs lambda/2 is what matters) but what gets
+// stored is the coil pitch, so it needs its own accessor.
+const DIM_VALUE = {
+  coilPitchRatio: {
+    get: (cfg) => cfg.translator.pitch / cfg.stator.coilPitch,
+    set: (cfg, v) => { cfg.stator.coilPitch = cfg.translator.pitch / Math.max(v, 0.1); },
+  },
+};
+
+function dimGet(k, cfg) {
+  const d = DIMENSIONS[k];
+  return DIM_VALUE[k] ? DIM_VALUE[k].get(cfg) : get(cfg, d.path);
+}
+function dimSet(k, cfg, v) {
+  const d = DIMENSIONS[k];
+  if (DIM_VALUE[k]) DIM_VALUE[k].set(cfg, v); else set(cfg, d.path, v);
+}
+function dimRange(k) {
+  const d = DIMENSIONS[k];
+  const r = opt.ranges[k];
+  return { min: r ? r.min : d.min, max: r ? r.max : d.max };
+}
+function dimSkipped(k) {
+  const d = DIMENSIONS[k];
+  return !!(d.skipIf && d.skipIf(app.cfg));
+}
+
+/** Dimensions the search will vary. Everything NOT returned here is pinned at
+ *  its current config value -- that is the whole point of the checkbox. */
 function optDims() {
   const d = {};
   for (const k of opt.enabled) {
     const spec = DIMENSIONS[k];
-    if (!spec) continue;
-    if (spec.skipIf && spec.skipIf(app.cfg)) continue;
-    d[k] = spec;
+    if (!spec || dimSkipped(k)) continue;
+    d[k] = { ...spec, ...dimRange(k) };
   }
   return d;
 }
@@ -898,23 +929,7 @@ function buildOptUI() {
   const updBudget = () => { opt.budget = +budget.value; budgetOut.textContent = `${opt.budget}`; };
   budget.addEventListener('input', updBudget); updBudget();
 
-  const dimsEl = document.getElementById('optDims');
-  dimsEl.innerHTML = Object.entries(DIMENSIONS).map(([k, d]) => `
-    <div class="dimrow" data-dim="${k}">
-      <input type="checkbox" id="dim-${k}" ${opt.enabled.has(k) ? 'checked' : ''}>
-      <label for="dim-${k}">${d.label}</label>
-      <span class="range">${(d.min * d.scale).toFixed(d.scale === 1 ? 1 : 1)}–${(d.max * d.scale).toFixed(d.scale === 1 ? 1 : 1)} ${d.unit}</span>
-    </div>`).join('') + `
-    <div class="dimrow"><input type="checkbox" id="dim-grouping" checked>
-      <label for="dim-grouping">${CATEGORICAL.grouping.label}</label>
-      <span class="range">4 options</span></div>`;
-  dimsEl.addEventListener('change', (e) => {
-    const row = e.target.closest('.dimrow');
-    if (!row || !row.dataset.dim) return;
-    if (e.target.checked) opt.enabled.add(row.dataset.dim);
-    else opt.enabled.delete(row.dataset.dim);
-    refreshOptDimStates();
-  });
+  renderOptDims();
 
   const cons = [
     ['minWorstLift', 'Min worst-case lift (× weight)', 0.1, 10, 0.1],
@@ -956,6 +971,92 @@ function buildOptUI() {
   syncOptConstraints();
 }
 
+/** Build the dimension panel. Each row is either SEARCHED (editable min/max) or
+ *  PINNED (editable single value that writes straight back to the live config).
+ *  Pinning is the point: with ten coupled variables you usually know four of
+ *  them from the application and want the search to spend its budget on the
+ *  rest. */
+function renderOptDims() {
+  const el = document.getElementById('optDims');
+  const fmtv = (k, v) => {
+    const d = DIMENSIONS[k];
+    const x = v * d.scale;
+    return String(Number(x.toPrecision(4)));
+  };
+  const nSearch = Object.keys(optDims()).length + (opt.searchGrouping ? 1 : 0);
+  const nTotal = Object.keys(DIMENSIONS).filter((k) => !dimSkipped(k)).length + 1;
+
+  let html = Object.entries(DIMENSIONS).map(([k, d]) => {
+    const skipped = dimSkipped(k);
+    const on = opt.enabled.has(k) && !skipped;
+    const r = dimRange(k);
+    const body = on
+      ? `<input type="number" data-role="min" data-dim="${k}" value="${fmtv(k, r.min)}" step="any">
+         <span class="dash">–</span>
+         <input type="number" data-role="max" data-dim="${k}" value="${fmtv(k, r.max)}" step="any">`
+      : `<span class="pinned">pinned</span>
+         <input type="number" data-role="fix" data-dim="${k}" value="${fmtv(k, dimGet(k, app.cfg))}" step="any" ${skipped ? 'disabled' : ''}>`;
+    return `<div class="dimrow${skipped ? ' off' : ''}" data-dim="${k}"${skipped ? ' title="Not applicable to this coil topology"' : ''}>
+      <input type="checkbox" id="dim-${k}" data-toggle="${k}" ${on ? 'checked' : ''} ${skipped ? 'disabled' : ''}>
+      <label for="dim-${k}">${d.label}</label>
+      <span class="rangeedit">${body}<span class="unit">${d.unit}</span></span>
+    </div>`;
+  }).join('');
+
+  html += `<div class="dimrow" data-dim="grouping">
+    <input type="checkbox" id="dim-grouping" data-toggle="grouping" ${opt.searchGrouping ? 'checked' : ''}>
+    <label for="dim-grouping">${CATEGORICAL.grouping.label}</label>
+    <span class="rangeedit">${opt.searchGrouping
+      ? `<span class="pinned">all ${CATEGORICAL.grouping.values.length}</span>`
+      : `<span class="pinned">pinned</span>
+         <select data-role="fixgrouping">${CATEGORICAL.grouping.values.map((v) =>
+           `<option value="${v}"${v === app.cfg.sim.grouping ? ' selected' : ''}>${v}</option>`).join('')}</select>`}
+    </span></div>`;
+
+  html += `<div class="dimnote">Searching <b>${nSearch}</b> of ${nTotal}. Unticked
+    variables are held at the value shown, and editing one here changes the live
+    design immediately.</div>`;
+  el.innerHTML = html;
+
+  el.querySelectorAll('[data-toggle]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const k = cb.dataset.toggle;
+      if (k === 'grouping') opt.searchGrouping = cb.checked;
+      else if (cb.checked) opt.enabled.add(k); else opt.enabled.delete(k);
+      renderOptDims();
+    });
+  });
+
+  el.querySelectorAll('input[type="number"][data-dim]').forEach((inp) => {
+    inp.addEventListener('change', () => {
+      const k = inp.dataset.dim, d = DIMENSIONS[k];
+      const v = (+inp.value) / d.scale;
+      if (!isFinite(v)) { renderOptDims(); return; }
+      if (inp.dataset.role === 'fix') {
+        dimSet(k, app.cfg, v);
+        rebuild(false);
+        buildParamUI();          // keep the sidebar honest about what changed
+      } else {
+        const r = { ...dimRange(k) };
+        r[inp.dataset.role] = v;
+        if (r.min > r.max) { const t = r.min; r.min = r.max; r.max = t; }
+        opt.ranges[k] = r;
+      }
+      renderOptDims();
+    });
+  });
+
+  const gsel = el.querySelector('[data-role="fixgrouping"]');
+  if (gsel) {
+    gsel.addEventListener('change', () => {
+      app.cfg.sim.grouping = gsel.value;
+      rebuild(false);
+      buildParamUI();
+      renderOptDims();
+    });
+  }
+}
+
 /** Re-derive topology-dependent constraint defaults, unless the user has
  *  overridden them by hand. */
 function syncOptConstraints() {
@@ -967,13 +1068,7 @@ function syncOptConstraints() {
 }
 
 function refreshOptDimStates() {
-  document.querySelectorAll('#optDims .dimrow[data-dim]').forEach((row) => {
-    const k = row.dataset.dim;
-    const spec = DIMENSIONS[k];
-    const skipped = spec.skipIf && spec.skipIf(app.cfg);
-    row.classList.toggle('off', skipped || !opt.enabled.has(k));
-    row.title = skipped ? 'Not applicable to the current coil topology' : '';
-  });
+  if (document.getElementById('optDims')) renderOptDims();
 }
 
 function startSearch() {
@@ -983,7 +1078,7 @@ function startSearch() {
     document.getElementById('optStatus').textContent = 'select at least one dimension';
     return;
   }
-  const cats = document.getElementById('dim-grouping').checked ? CATEGORICAL : {};
+  const cats = opt.searchGrouping ? CATEGORICAL : {};
   opt.running = true;
   opt.results = null;
   document.getElementById('btnOptRun').disabled = true;

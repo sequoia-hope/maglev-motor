@@ -114,6 +114,14 @@ a table row, or by clicking a point in the design-space scatter. Applying
 **re-verifies at full solver quality**, since the search runs coarse; the two
 agree to ~3%.
 
+**Pin what you already know.** With ten coupled variables you usually know
+several of them from the application — the platen has to be 120 mm, the gap has
+to clear a 2 mm contamination budget — and want the budget spent on the rest.
+Untick a dimension and it is held at the value shown, editable right there
+(edits flow straight into the live design). Ticked dimensions get an editable
+min/max, so you can also just narrow a range rather than pin it outright. The
+panel reports how many of the variables are actually being searched.
+
 Three things the search does that a sweep cannot:
 
 - **Reports which bounds are binding.** If the winner sits on a search bound,

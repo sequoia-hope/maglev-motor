@@ -222,7 +222,27 @@ th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: upp
 }
 .dimrow label { flex: 1; cursor: pointer; }
 .dimrow input[type="checkbox"] { accent-color: var(--accent); }
-.dimrow .range { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.dimrow .rangeedit {
+  display: flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  font-size: 11px; color: var(--muted);
+}
+.dimrow .rangeedit input[type="number"] {
+  width: 62px; text-align: right; padding: 2px 4px; font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.dimrow .rangeedit select { padding: 2px 4px; font-size: 11px; }
+.dimrow .dash { color: var(--muted); }
+.dimrow .unit { min-width: 26px; color: var(--muted); }
+.dimrow .pinned {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 4px;
+}
+.dimnote {
+  font-size: 11px; color: var(--muted); line-height: 1.5;
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+}
+.dimnote b { color: var(--ink-2); }
 .dimrow.off { opacity: .45; }
 .conrow label { flex: 1; }
 .conrow input[type="number"] { width: 78px; text-align: right; }

@@ -110,7 +110,50 @@ const check = (n, c, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ?
   check('active-bound detection runs', Array.isArray(ab));
 }
 
-// 7. Reproducibility: same seed, same answer.
+// 7. Pinning: a dimension left out of the search must keep the base value
+//    exactly, in every candidate. This is what lets you fix the variables the
+//    application already decides and spend the budget on the rest.
+{
+  const base = JSON.parse(JSON.stringify(PRESETS.wound.cfg));
+  base.translator.pitch = 0.030;
+  base.translator.platenSize = 0.11;
+  const dims = { magnetThickness: DIMENSIONS.magnetThickness, gap: DIMENSIONS.gap };
+  const it = search(base, {
+    dims, cats: {}, objective: 'lift', constraints: constraintsFor(base),
+    samples: 80, refineFrom: 3, refineSteps: 3,
+  });
+  let r = it.next(); while (!r.done) r = it.next();
+  const out = r.value;
+
+  const pitchDrift = Math.max(...out.results.map((x) => Math.abs(x.cfg.translator.pitch - 0.030)));
+  const platenDrift = Math.max(...out.results.map((x) => Math.abs(x.cfg.translator.platenSize - 0.11)));
+  check('pinned pole pitch is never varied', pitchDrift < 1e-12, `max drift ${pitchDrift.toExponential(1)} m`);
+  check('pinned platen size is never varied', platenDrift < 1e-12, `max drift ${platenDrift.toExponential(1)} m`);
+
+  const varied = new Set(out.results.map((x) => x.cand.magnetThickness.toFixed(6)));
+  check('searched dimensions genuinely vary', varied.size > 10, `${varied.size} distinct values`);
+
+  // Grouping is categorical: excluded from `cats`, it must stay put too.
+  const gDrift = out.results.some((x) => x.cfg.sim.grouping !== base.sim.grouping);
+  check('pinned drive grouping is never varied', !gDrift, base.sim.grouping);
+}
+
+// 8. Narrowing a dimension's range must be respected.
+{
+  const base = JSON.parse(JSON.stringify(PRESETS.wound.cfg));
+  const narrowed = { ...DIMENSIONS.pitch, min: 0.030, max: 0.034 };
+  const it = search(base, {
+    dims: { pitch: narrowed, gap: DIMENSIONS.gap }, cats: {}, objective: 'lift',
+    constraints: constraintsFor(base), samples: 60, refineFrom: 2, refineSteps: 3,
+  });
+  let r = it.next(); while (!r.done) r = it.next();
+  const out = r.value;
+  const outside = out.results.filter((x) => x.cand.pitch < 0.030 - 1e-12 || x.cand.pitch > 0.034 + 1e-12);
+  check('a narrowed search range is respected', outside.length === 0,
+    `${outside.length} of ${out.results.length} escaped [30, 34] mm`);
+}
+
+// 9. Reproducibility: same seed, same answer.
 {
   const base = JSON.parse(JSON.stringify(PRESETS.wound.cfg));
   const dims = { pitch: DIMENSIONS.pitch, gap: DIMENSIONS.gap };
