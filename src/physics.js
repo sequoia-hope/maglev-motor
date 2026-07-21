@@ -256,9 +256,31 @@ export function capability(Wm, dir, iMax) {
   const lim = res.coilI ?? res.i;
   let peak = 0;
   for (let j = 0; j < lim.length; j++) peak = Math.max(peak, Math.abs(lim[j]));
-  if (peak < 1e-12) return { magnitude: 0, currents: res.i };
+  if (!(peak > 1e-12)) return { magnitude: 0, currents: res.i, unreachable: true };
+
+  // How much of the REQUESTED wrench did the allocator actually deliver?
+  // This must be checked, not assumed. The damped least-norm solve degrades
+  // gracefully when a wrench direction is unreachable -- it returns tiny
+  // currents that achieve almost nothing rather than blowing up. Scaling those
+  // currents to the limit and reporting the scale factor as a force then
+  // claims an astronomical capability for a machine that produces none: a
+  // stator whose air-gap field has underflowed to 1e-18 T reported a lift
+  // margin of 3e13. Normalising by the achieved component makes the answer
+  // collapse to zero, which is the truth.
+  let dot = 0, dd = 0, aa = 0;
+  for (let a = 0; a < 6; a++) {
+    dot += res.achieved[a] * dir[a];
+    dd += dir[a] * dir[a];
+    aa += res.achieved[a] * res.achieved[a];
+  }
+  const along = dot / (dd || 1);                    // achieved per unit requested
+  const parallel = (dot * dot) / ((aa || 1e-300) * (dd || 1));
+  if (!(along > 1e-6) || parallel < 0.99) {
+    return { magnitude: 0, currents: res.i, unreachable: true };
+  }
+
   const scale = iMax / peak;
-  return { magnitude: scale, currents: res.i.map((v) => v * scale) };
+  return { magnitude: scale * along, currents: res.i.map((v) => v * scale) };
 }
 
 /** Full static report at one pose -- this is what the Design tab shows. */
@@ -294,7 +316,7 @@ export function analysePose(stator, tr, r, q, iMax, groupMode = 'independent') {
     hoverPower: copperLoss(stator, Wm, hover.i),
     hoverSaturated: hover.saturated,
     sigma: sv,
-    conditionNumber: sv[5] > 1e-12 ? sv[0] / sv[5] : Infinity,
+    conditionNumber: sv[5] > 1e-9 * (sv[0] || 1) ? sv[0] / sv[5] : Infinity,
     sigmaMin: sv[5],
   };
 }

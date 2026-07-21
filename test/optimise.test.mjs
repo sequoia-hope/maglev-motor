@@ -153,7 +153,58 @@ const check = (n, c, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ?
     `${outside.length} of ${out.results.length} escaped [30, 34] mm`);
 }
 
-// 9. Reproducibility: same seed, same answer.
+// 9. REGRESSION. A damped least-norm solve degrades gracefully when a wrench
+//    direction is unreachable: it returns tiny currents that achieve almost
+//    nothing. capability() used to assume the requested unit wrench had been
+//    delivered and simply scale the currents to the limit -- so dividing by a
+//    near-zero current reported an astronomical force for a machine producing
+//    none. A stator whose air-gap field had underflowed to 1e-18 T claimed a
+//    lift margin of 3e13.
+{
+  const base = JSON.parse(JSON.stringify(PRESETS.wound.cfg));
+  base.translator.arrayType = 'halbach2d';
+  base.translator.layout = 'single';
+  base.stator.coilType = 'square';
+  const cons = constraintsFor(base);
+
+  // Pole pitch far below the model's declared floor: the air-gap field decays
+  // as exp(-k*d) with k = 2*pi/lambda, so a sub-millimetre pitch has no field
+  // at any real air gap.
+  let worstSeen = 0, nonFinite = 0;
+  for (const pitch of [0.0005, 0.0008, 0.0014, 0.002, 0.003]) {
+    for (const gap of [0.001, 0.003, 0.006]) {
+      for (const ratio of [0.8, 2, 3, 6]) {
+        const cfg = applyCandidate(base, { pitch, gap, coilPitchRatio: ratio, magnetThickness: 0.004 });
+        const m = evaluate(cfg, cons);
+        if (!isFinite(m.worstLift)) nonFinite++;
+        else worstSeen = Math.max(worstSeen, m.worstLift);
+        if (m.peakB < 1e-4 && m.feasible) {
+          check('a design with no air-gap field is never feasible', false,
+            `peakB ${m.peakB.toExponential(2)} T reported feasible`);
+        }
+      }
+    }
+  }
+  check('a field-free machine never reports absurd lift', worstSeen < 1e3,
+    `max reported ${worstSeen.toExponential(2)}x`);
+  check('no non-finite lift margins', nonFinite === 0, `${nonFinite} non-finite`);
+}
+
+// 10. capability() must report zero for a wrench direction it cannot reach,
+//     not a number derived from how little current the solver happened to use.
+{
+  const base = JSON.parse(JSON.stringify(PRESETS.wound.cfg));
+  base.translator.arrayType = 'halbach2d';
+  base.translator.layout = 'single';
+  const cfg = applyCandidate(base, { pitch: 0.0014, gap: 0.006, coilPitchRatio: 3 });
+  const m = evaluate(cfg, constraintsFor(base));
+  check('unreachable wrench yields zero capability, not infinity',
+    m.worstLift < 1e-3 && m.accel < 1e-3,
+    `lift ${m.worstLift.toExponential(2)} accel ${m.accel.toExponential(2)}`);
+  check('and it is reported infeasible', !m.feasible, `reason: ${m.reason}`);
+}
+
+// 11. Reproducibility: same seed, same answer.
 {
   const base = JSON.parse(JSON.stringify(PRESETS.wound.cfg));
   const dims = { pitch: DIMENSIONS.pitch, gap: DIMENSIONS.gap };

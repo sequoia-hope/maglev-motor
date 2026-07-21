@@ -148,6 +148,8 @@ export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARC
   m.gapFloor = gapFloor;
 
   const fails = [];
+  if (!(m.peakB > 1e-4)) fails.push('no usable air-gap field');
+  if (!isFinite(m.hoverPower)) fails.push('cannot hover within the current limit');
   if (!(cfg.sim.gap >= gapFloor - 1e-9)) fails.push('gap below buildable floor');
   if (!(m.worstLift >= constraints.minWorstLift)) fails.push('lift');
   if (!(m.deltaT <= constraints.maxDeltaT)) fails.push('thermal');

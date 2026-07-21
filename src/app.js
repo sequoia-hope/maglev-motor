@@ -921,6 +921,18 @@ function dimSet(k, cfg, v) {
   const d = DIMENSIONS[k];
   if (DIM_VALUE[k]) DIM_VALUE[k].set(cfg, v); else set(cfg, d.path, v);
 }
+/** The sidebar slider bounds for a dimension, i.e. the range over which the
+ *  rest of the app claims to be valid. The optimiser panel's free-text boxes
+ *  must not be a back door around them -- typing a 1.4 mm pole pitch into a
+ *  model whose declared floor is 8 mm produces an air-gap field that has
+ *  underflowed to ~1e-18 T, which is not a design, it is arithmetic. */
+function dimLimits(k) {
+  const d = DIMENSIONS[k];
+  if (k === 'coilPitchRatio') return { lo: d.min, hi: d.max };
+  const f = PARAMS.flatMap((g) => g.fields).find((x) => x.path === d.path);
+  return f ? { lo: f.min, hi: f.max } : { lo: d.min, hi: d.max };
+}
+
 function dimRange(k) {
   const d = DIMENSIONS[k];
   const r = opt.ranges[k];
@@ -1016,12 +1028,13 @@ function renderOptDims() {
     const skipped = dimSkipped(k);
     const on = opt.enabled.has(k) && !skipped;
     const r = dimRange(k);
+    const lim = dimLimits(k);
     const body = on
-      ? `<input type="number" data-role="min" data-dim="${k}" value="${fmtv(k, r.min)}" step="any">
+      ? `<input type="number" data-role="min" data-dim="${k}" value="${fmtv(k, r.min)}" step="any" min="${lim.lo * d.scale}" max="${lim.hi * d.scale}">
          <span class="dash">–</span>
-         <input type="number" data-role="max" data-dim="${k}" value="${fmtv(k, r.max)}" step="any">`
+         <input type="number" data-role="max" data-dim="${k}" value="${fmtv(k, r.max)}" step="any" min="${lim.lo * d.scale}" max="${lim.hi * d.scale}">`
       : `<span class="pinned">pinned</span>
-         <input type="number" data-role="fix" data-dim="${k}" value="${fmtv(k, dimGet(k, app.cfg))}" step="any" ${skipped ? 'disabled' : ''}>`;
+         <input type="number" data-role="fix" data-dim="${k}" value="${fmtv(k, dimGet(k, app.cfg))}" step="any" min="${lim.lo * d.scale}" max="${lim.hi * d.scale}" ${skipped ? 'disabled' : ''}>`;
     return `<div class="dimrow${skipped ? ' off' : ''}" data-dim="${k}"${skipped ? ' title="Not applicable to this coil topology"' : ''}>
       <input type="checkbox" id="dim-${k}" data-toggle="${k}" ${on ? 'checked' : ''} ${skipped ? 'disabled' : ''}>
       <label for="dim-${k}">${d.label}</label>
@@ -1058,15 +1071,21 @@ function renderOptDims() {
       const k = inp.dataset.dim, d = DIMENSIONS[k];
       const v = (+inp.value) / d.scale;
       if (!isFinite(v)) { renderOptDims(); return; }
+      const lim = dimLimits(k);
+      const cl = Math.min(Math.max(v, lim.lo), lim.hi);
       if (inp.dataset.role === 'fix') {
-        dimSet(k, app.cfg, v);
+        dimSet(k, app.cfg, cl);
         rebuild(false);
         buildParamUI();          // keep the sidebar honest about what changed
       } else {
         const r = { ...dimRange(k) };
-        r[inp.dataset.role] = v;
+        r[inp.dataset.role] = cl;
         if (r.min > r.max) { const t = r.min; r.min = r.max; r.max = t; }
         opt.ranges[k] = r;
+      }
+      if (cl !== v) {
+        document.getElementById('optStatus').textContent =
+          `${d.label} clamped to ${(cl * d.scale).toPrecision(3)} ${d.unit} (valid range ${(lim.lo * d.scale).toPrecision(3)}–${(lim.hi * d.scale).toPrecision(3)})`;
       }
       renderOptDims();
     });
