@@ -3,6 +3,8 @@ import { makeStator } from '../src/coils.js';
 import { analysePose, buildWrench, allocatePrioritised, copperLoss, makeState, step } from '../src/physics.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance } from '../src/control.js';
 import { quat } from '../src/math.js';
+import { groupWrench } from '../src/physics.js';
+import { buildGrouping } from '../src/grouping.js';
 import { readFileSync } from 'fs';
 
 // Pull the presets straight out of app.js so the test exercises what ships.
@@ -23,8 +25,8 @@ for (const [key, preset] of Object.entries(PRESETS)) {
 
   const tr = makeTranslator({ ...cfg.translator, gap: cfg.sim.gap, maxOrder: q.maxOrder });
   const stator = makeStator({ ...cfg.stator, ringsPerCoil: q.ringsPerCoil, segmentsPerSide: q.segmentsPerSide });
-  const a = analysePose(stator, tr, [0, 0, cfg.sim.gap], quat.identity(), cfg.sim.iMax);
-  console.log(`  mass ${(tr.mass * 1000).toFixed(0)} g · ${stator.coils.length} coils (${a.activeCoils} active) · ${tr.harm.n} harmonics · peak B ${tr.peakGapField.toFixed(3)} T`);
+  const a = analysePose(stator, tr, [0, 0, cfg.sim.gap], quat.identity(), cfg.sim.iMax, cfg.sim.grouping);
+  console.log(`  mass ${(tr.mass * 1000).toFixed(0)} g · ${stator.coils.length} coils (${a.activeCoils} active) · ${a.amplifiers} amplifiers [${cfg.sim.grouping}] · peak B ${tr.peakGapField.toFixed(3)} T`);
   console.log(`  lift ${a.liftMargin.toFixed(2)}x · accel ${(a.maxAccel / 9.81).toFixed(2)} g · hover ${a.hoverPower.toFixed(2)} W · cond ${a.conditionNumber.toFixed(1)} · sigmaMin ${a.sigmaMin.toExponential(2)}`);
   check('can hover', a.liftMargin > 1, `${a.liftMargin.toFixed(2)}x`);
   check('has 6-DOF authority', a.sigmaMin > 1e-4 * a.sigma[0], `sigmaMin/sigmaMax = ${(a.sigmaMin / a.sigma[0]).toExponential(2)}`);
@@ -38,7 +40,7 @@ for (const [key, preset] of Object.entries(PRESETS)) {
   for (let iy = 0; iy <= 6; iy++) {
     for (let ix = 0; ix <= 6; ix++) {
       const x = -reach + (2 * reach * ix) / 6, y = -reach + (2 * reach * iy) / 6;
-      const m = analysePose(stator, tr, [x, y, cfg.sim.gap], quat.identity(), cfg.sim.iMax).liftMargin;
+      const m = analysePose(stator, tr, [x, y, cfg.sim.gap], quat.identity(), cfg.sim.iMax, cfg.sim.grouping).liftMargin;
       if (m < worstLift) { worstLift = m; worstAt = [x, y]; }
     }
   }
@@ -58,7 +60,9 @@ for (const [key, preset] of Object.entries(PRESETS)) {
     for (let i = 0; i < T / dt; i++) {
       const target = TRAJECTORIES[trajName].at(state.t, tp);
       const { w } = control(ctrl, state, tr, dt, target);
-      const Wm = buildWrench(stator, tr, state.r, state.q);
+      const bw = buildWrench(stator, tr, state.r, state.q);
+      const Wm = cfg.sim.grouping === 'independent' ? bw
+        : groupWrench(bw, buildGrouping(stator, tr, state.r, state.q, cfg.sim.grouping, bw.idx));
       const wLift = [0, 0, tr.mass * 9.80665, 0, 0, 0];
       const alloc = allocatePrioritised(Wm, wLift, w.map((v, i) => v - wLift[i]), cfg.sim.iMax);
       ctrl.sat = alloc.saturated;

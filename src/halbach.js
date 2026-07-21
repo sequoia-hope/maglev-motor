@@ -301,15 +301,18 @@ export function makeTranslator(cfg) {
   if (layout === 'single') {
     patches.push({ u: 0, v: 0, w: platenSize, h: platenSize, theta: 0 });
   } else if (layout === 'quad') {
-    // Kim / Teo four-array cross: two arrays give x-thrust, two give y-thrust,
-    // and the pair difference gives the corresponding tilt torques.
-    const armW = platenSize * 0.42;
-    const armL = platenSize * 0.42;
+    // Kim / Teo four-array cross. Each array thrusts TANGENTIALLY -- the arrays
+    // on the x axis push along y, and vice versa. This is not cosmetic: an array
+    // at position r pushing along r contributes r x F = 0, so a radial layout
+    // has no yaw authority whatsoever. Tangential thrust makes differential
+    // force between opposite arms produce Tz, which is how this topology closes
+    // all six degrees of freedom.
+    const arm = platenSize * 0.42;
     const r = platenSize * 0.27;
-    patches.push({ u: -r, v: 0, w: armW, h: armL, theta: 0 });
-    patches.push({ u: r, v: 0, w: armW, h: armL, theta: 0 });
-    patches.push({ u: 0, v: -r, w: armL, h: armW, theta: Math.PI / 2 });
-    patches.push({ u: 0, v: r, w: armL, h: armW, theta: Math.PI / 2 });
+    patches.push({ u: -r, v: 0, w: arm, h: arm, theta: Math.PI / 2 });
+    patches.push({ u: r, v: 0, w: arm, h: arm, theta: Math.PI / 2 });
+    patches.push({ u: 0, v: -r, w: arm, h: arm, theta: 0 });
+    patches.push({ u: 0, v: r, w: arm, h: arm, theta: 0 });
   }
 
   for (const p of patches) {

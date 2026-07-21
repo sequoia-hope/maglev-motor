@@ -1,7 +1,10 @@
 import { ARRAY_TYPES, decompose, peakField, makeTranslator, selfTest, fieldAt } from '../src/halbach.js';
 import { makeStator } from '../src/coils.js';
-import { buildWrench, analysePose, allocate, capability, singularValues } from '../src/physics.js';
+import { buildWrench, analysePose, allocate, capability, singularValues, wrenchOf } from '../src/physics.js';
 import { quat } from '../src/math.js';
+import { buildGrouping, GROUPINGS } from '../src/grouping.js';
+import { groupWrench, coilCurrents } from '../src/physics.js';
+import { makeTranslator as mkTr } from '../src/halbach.js';
 
 let fails = 0;
 const check = (name, cond, detail = '') => {
@@ -111,6 +114,59 @@ for (const M of [2, 3, 4, 6, 8]) {
   const us = Number(process.hrtime.bigint() - t0) / 1000 / N;
   console.log(`\n  buildWrench + allocate: ${us.toFixed(0)} us  ->  ${(1e6 / us).toFixed(0)} Hz max control rate`);
   check('control step is real-time capable at 600 Hz', us < 1667, `${us.toFixed(0)} us/step`);
+}
+
+// 7. Phase grouping: W_eff = W G must be exactly consistent with driving the
+//    implied coil currents directly, and the four-array cross must keep yaw.
+{
+  const tr = mkTr({
+    arrayType: 'halbach1d', layout: 'quad', pitch: 0.040, magnetThickness: 0.010,
+    Br: 1.32, segments: 4, platenSize: 0.14, platenMass: 0, maxOrder: 3, gap: 0.003,
+  });
+  const stator = makeStator({
+    coilType: 'square', coilPitch: 0.0133, coilFill: 0.92, statorSize: 0.30,
+    windingHeight: 0.010, wireDiameter: 4e-4, pcbLayers: 16, pcbTraceWidth: 2.5e-4,
+    pcbCopperThickness: 70e-6, ringsPerCoil: 2, segmentsPerSide: 3,
+  });
+  const q = quat.identity();
+  const base = buildWrench(stator, tr, [0, 0, 0.003], q);
+  const grp = buildGrouping(stator, tr, [0, 0, 0.003], q, 'r1', base.idx);
+  const Wg = groupWrench(base, grp);
+
+  console.log(`\n  grouping: ${grp.nPhases} amplifiers driving ${grp.nCoils} live coils`);
+  check('four-array cross yields the published 8 phases', grp.nPhases === 8, `${grp.nPhases}`);
+
+  // w = (W G) u must equal W (G u) exactly -- the whole point of the composition.
+  const u = new Float64Array(grp.nPhases);
+  for (let p = 0; p < grp.nPhases; p++) u[p] = Math.cos(p * 1.7) * 0.5;
+  const viaGrouped = wrenchOf(Wg, u);
+  const viaCoils = wrenchOf(base, coilCurrents(Wg, u));
+  let err = 0;
+  for (let a = 0; a < 6; a++) err = Math.max(err, Math.abs(viaGrouped[a] - viaCoils[a]));
+  const mag = Math.max(...viaCoils.map(Math.abs));
+  check('W_eff = W G is exact', err < 1e-12 * Math.max(mag, 1), `max deviation ${err.toExponential(2)}`);
+
+  // Tangential thrust is what gives this layout yaw authority. A radial layout
+  // has r x F = 0 for every array and silently loses a degree of freedom.
+  const sv = singularValues(Wg, 0.07);
+  check('8 phases still control all 6 DOF', sv[5] > 1e-4 * sv[0],
+    `cond ${(sv[0] / sv[5]).toFixed(1)}`);
+
+  // A single group per array cannot make torque on a one-array platen.
+  const tr1 = mkTr({
+    arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003,
+    Br: 1.43, segments: 4, platenSize: 0.072, platenMass: 0, maxOrder: 3, gap: 0.0015,
+  });
+  const st1 = makeStator({
+    coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096,
+    windingHeight: 0.0016, wireDiameter: 5e-4, pcbLayers: 16, pcbTraceWidth: 2.5e-4,
+    pcbCopperThickness: 70e-6, ringsPerCoil: 2, segmentsPerSide: 3,
+  });
+  const b1 = buildWrench(st1, tr1, [0, 0, 0.0015], q);
+  const g1 = buildGrouping(st1, tr1, [0, 0, 0.0015], q, 'r1', b1.idx);
+  const s1 = singularValues(groupWrench(b1, g1), 0.036);
+  check('one group on a single array is rank-deficient (as it must be)',
+    s1[5] < 1e-6 * s1[0], `sigma_min/sigma_max = ${(s1[5] / s1[0]).toExponential(1)}`);
 }
 
 console.log(`\n${fails === 0 ? 'ALL CHECKS PASSED' : fails + ' CHECK(S) FAILED'}`);

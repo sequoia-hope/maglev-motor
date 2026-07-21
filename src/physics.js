@@ -18,6 +18,7 @@
 
 import { quat, solveSPD, symEigenvalues } from './math.js';
 import { fieldAt } from './halbach.js';
+import { buildGrouping } from './grouping.js';
 
 const _B = new Float64Array(3);
 
@@ -75,6 +76,41 @@ export function buildWrench(stator, tr, r, q, opts = {}) {
   return { W, idx, n };
 }
 
+/** Compose a grouping onto a wrench matrix: W_eff = W G.
+ *  The result is the same shape of object, so allocate(), singularValues(),
+ *  capability() and the dead-spot maps all work on it without knowing that
+ *  grouping happened. `n` becomes the AMPLIFIER count, not the coil count. */
+export function groupWrench(Wm, grouping) {
+  if (!grouping || grouping.identity) return Wm;
+  const { G, nCoils, nPhases } = grouping;
+  const W = new Float64Array(6 * nPhases);
+  for (let p = 0; p < nPhases; p++) {
+    const gOff = p * nCoils, wOff = p * 6;
+    for (let j = 0; j < nCoils; j++) {
+      const gj = G[gOff + j];
+      if (gj === 0) continue;
+      const o = j * 6;
+      for (let a = 0; a < 6; a++) W[wOff + a] += Wm.W[o + a] * gj;
+    }
+  }
+  return { W, idx: Wm.idx, n: nPhases, grouping, base: Wm };
+}
+
+/** Per-coil currents implied by a phase-current vector. Needed because the
+ *  current limit and the copper loss are properties of COILS, not amplifiers. */
+export function coilCurrents(Wm, u) {
+  if (!Wm.grouping) return u;
+  const { G, nCoils, nPhases } = Wm.grouping;
+  const i = new Float64Array(nCoils);
+  for (let p = 0; p < nPhases; p++) {
+    const up = u[p];
+    if (up === 0) continue;
+    const gOff = p * nCoils;
+    for (let j = 0; j < nCoils; j++) i[j] += G[gOff + j] * up;
+  }
+  return i;
+}
+
 /** Gram matrix G = W W^T (6x6, row-major). */
 function gram(W, n) {
   const G = new Float64Array(36);
@@ -116,6 +152,15 @@ export function allocate(Wm, w, { damping = 1e-9, iMax = Infinity } = {}) {
     cur[j] = v;
     peak = Math.max(peak, Math.abs(v));
   }
+  // The current limit binds on COILS. Under a grouping, one amplifier feeds
+  // many coils with different weights, so the amplifier current says nothing
+  // directly about whether any coil is over its limit -- recover the coil
+  // currents and limit on those.
+  let coilI = coilCurrents(Wm, cur);
+  if (Wm.grouping) {
+    peak = 0;
+    for (let j = 0; j < coilI.length; j++) peak = Math.max(peak, Math.abs(coilI[j]));
+  }
   // Uniform scale-back preserves the wrench DIRECTION when we cannot reach its
   // magnitude, which is far better behaved in a control loop than per-coil
   // clipping (that would distort the wrench and cross-couple the axes).
@@ -123,9 +168,10 @@ export function allocate(Wm, w, { damping = 1e-9, iMax = Infinity } = {}) {
   if (peak > iMax) {
     scale = iMax / peak;
     for (let j = 0; j < n; j++) cur[j] *= scale;
+    coilI = coilCurrents(Wm, cur);
   }
   const achieved = wrenchOf(Wm, cur);
-  return { i: cur, saturated: 1 - scale, achieved, peak: peak * scale };
+  return { i: cur, coilI, saturated: 1 - scale, achieved, peak: peak * scale };
 }
 
 /** Two-priority allocation. Levitation is not negotiable: if the commanded
@@ -139,23 +185,24 @@ export function allocatePrioritised(Wm, primary, secondary, iMax) {
   if (a.saturated > 1e-9 || Wm.n === 0) return { ...a, secondaryScale: 0 };
   const b = allocate(Wm, secondary, { iMax: Infinity });
 
-  // Largest s in [0,1] with |a_j + s*b_j| <= iMax for every coil.
+  // Largest s in [0,1] with |a_j + s*b_j| <= iMax for every COIL. Under a
+  // grouping the headroom test lives in coil space, not amplifier space.
+  const aC = a.coilI ?? a.i, bC = b.coilI ?? b.i;
   let s = 1;
-  for (let j = 0; j < Wm.n; j++) {
-    const bj = b.i[j];
+  for (let j = 0; j < aC.length; j++) {
+    const bj = bC[j];
     if (Math.abs(bj) < 1e-15) continue;
-    const room = bj > 0 ? iMax - a.i[j] : -iMax - a.i[j];
+    const room = bj > 0 ? iMax - aC[j] : -iMax - aC[j];
     const sj = room / bj;
     if (sj < s) s = Math.max(sj, 0);
   }
   const cur = new Float64Array(Wm.n);
+  for (let j = 0; j < Wm.n; j++) cur[j] = a.i[j] + s * b.i[j];
+  const coilI = coilCurrents(Wm, cur);
   let peak = 0;
-  for (let j = 0; j < Wm.n; j++) {
-    cur[j] = a.i[j] + s * b.i[j];
-    peak = Math.max(peak, Math.abs(cur[j]));
-  }
+  for (let j = 0; j < coilI.length; j++) peak = Math.max(peak, Math.abs(coilI[j]));
   return {
-    i: cur, peak, saturated: 1 - s, secondaryScale: s,
+    i: cur, coilI, peak, saturated: 1 - s, secondaryScale: s,
     achieved: wrenchOf(Wm, cur),
   };
 }
@@ -172,8 +219,9 @@ export function wrenchOf(Wm, cur) {
 }
 
 export function copperLoss(stator, Wm, cur) {
+  const i = Wm.grouping ? coilCurrents(Wm, cur) : cur;
   let p = 0;
-  for (let j = 0; j < Wm.n; j++) p += cur[j] * cur[j] * stator.coils[Wm.idx[j]].R;
+  for (let j = 0; j < Wm.idx.length; j++) p += i[j] * i[j] * stator.coils[Wm.idx[j]].R;
   return p;
 }
 
@@ -204,16 +252,20 @@ export function singularValues(Wm, charLength) {
 export function capability(Wm, dir, iMax) {
   const res = allocate(Wm, dir, { iMax: Infinity });
   if (!res.i.length) return { magnitude: 0, currents: res.i };
+  // Scale until the hottest COIL hits the limit, not the hottest amplifier.
+  const lim = res.coilI ?? res.i;
   let peak = 0;
-  for (let j = 0; j < res.i.length; j++) peak = Math.max(peak, Math.abs(res.i[j]));
+  for (let j = 0; j < lim.length; j++) peak = Math.max(peak, Math.abs(lim[j]));
   if (peak < 1e-12) return { magnitude: 0, currents: res.i };
   const scale = iMax / peak;
   return { magnitude: scale, currents: res.i.map((v) => v * scale) };
 }
 
 /** Full static report at one pose -- this is what the Design tab shows. */
-export function analysePose(stator, tr, r, q, iMax) {
-  const Wm = buildWrench(stator, tr, r, q);
+export function analysePose(stator, tr, r, q, iMax, groupMode = 'independent') {
+  const base = buildWrench(stator, tr, r, q);
+  const Wm = groupMode === 'independent' ? base
+    : groupWrench(base, buildGrouping(stator, tr, r, q, groupMode, base.idx));
   const g = 9.80665;
   const weight = tr.mass * g;
   const charLength = tr.cfg.platenSize / 2;
@@ -228,7 +280,8 @@ export function analysePose(stator, tr, r, q, iMax) {
 
   return {
     Wm,
-    activeCoils: Wm.n,
+    activeCoils: base.idx.length,
+    amplifiers: Wm.n,
     weight,
     liftCapacity: lift.magnitude,
     liftMargin: lift.magnitude / weight,

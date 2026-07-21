@@ -36,6 +36,7 @@ that relationship is exactly linear, everything else falls out of it:
 | Are there dead spots? | poses where σ<sub>min</sub>(`W`) collapses |
 | How hot does it get? | `Σ iⱼ²Rⱼ` |
 | Will it fly? | integrate a rigid body driven by `W·i` |
+| How few amplifiers can I get away with? | `W_eff = W·G` for a grouping `G` |
 
 ### The field model
 
@@ -60,6 +61,36 @@ sinc factor, which is where the classic discrete-Halbach amplitude penalty
 
 Force and torque come from Lorentz integration of `I·dl × B` over every coil
 filament, negated by Newton's third law.
+
+### Phase grouping
+
+Real machines do not give every coil its own current source. Coils are wired or
+switched into a few phase groups and commutated against the magnet phase —
+Zhu/Teo/Pang drive ~120 live coils from **eight** amplifiers. Model it as a
+linear map `i = G·u` from phase currents to coil currents, and the wrench matrix
+simply composes:
+
+```
+w = W·i = (W·G)·u
+```
+
+so allocation, singular values and dead-spot maps all work on `W_eff` unchanged
+(`test/physics.test.mjs` checks `W_eff = W·G` is exact to 4e-16). `G` holds
+sinusoidal commutation weights over spatial regions that subdivide each magnet
+array and follow the platen — the physically realisable kind. What it costs:
+
+| Preset | Drive | Amplifiers | Cond. | 6-DOF? | Hover | Tracking |
+|---|---|---|---|---|---|---|
+| PCB | independent | 144 | 2.6 | yes | 7.5 W | 42 µm |
+| PCB | 2×2 per array | **16** | 5.6 | yes | 11.4 W | 42 µm |
+| Wound (cross) | independent | 121 | 2.5 | yes | 38.6 W | 66 µm |
+| Wound (cross) | 1 per array | **8** | 3.0 | yes | 72.8 W | 66 µm |
+| Racetrack | independent | 108 | 6.2 | yes | 38.6 W | 206 µm |
+| Racetrack | 3×3 per array | 36 | 20.4 | yes | 60.4 W | *worst-case lift 0.98×* |
+
+The headline: **8 amplifiers track exactly as well as 121** on the four-array
+cross, at roughly double the hover power. That is the published design, and the
+model reproduces it. The racetrack is the exception — see limitations below.
 
 ### Validation
 
@@ -117,6 +148,16 @@ exists to surface:
   weight** in bands a few mm wide — the platen fell straight through them.
   Staggering alternate columns by half a segment took worst-case lift from 0.16×
   to 1.44×.
+- **Grouping is nearly free on the right layout, and impossible on the wrong
+  one.** Eight amplifiers match 121 on the four-array cross; the racetrack loses
+  so much capability that worst-case lift falls below 1× weight. Which topology
+  you pick determines whether you need 8 drivers or 108.
+- **A radial four-array cross has no yaw authority at all.** Each array at
+  position `r` thrusting along `r` contributes `r × F = 0`. The arrays must
+  thrust *tangentially*. This bug was invisible under per-coil control (single
+  coils can still make yaw) and only surfaced once array-level grouping forced
+  the layout's structure to matter — fixing it also improved independent-drive
+  conditioning from 5.1 to 2.5.
 - **Never judge a stator at its centred pose.** That pose is a symmetry point.
   `flight.test.mjs` now sweeps a ±30 mm workspace and demands the design hover
   *everywhere*; the racetrack dead bands were invisible to a centred check.
@@ -149,14 +190,12 @@ src/app.js          parameter UI, presets, the frame loop
 - **Magnet μ<sub>r</sub> = 1** (real NdFeB ≈ 1.05).
 - **Winding packing is a flat 0.7**, reasonable for layer winding, optimistic
   for a hand-wound scramble winding (~0.5).
-- **No driver model, and no phase grouping.** The allocator gives every coil an
-  independent current, because that maximises controllability and keeps `W`
-  clean. Real machines exploit the platen's symmetry to commutate coils in
-  groups: Zhu/Teo/Pang drive roughly 60 coils from **eight** amplifiers. So the
-  channel count reported here is an *upper bound on drive complexity for
-  independent control*, not a property of the topology — a grouped design of the
-  same geometry could need an order of magnitude fewer amplifiers, at some cost
-  in controllability. Voltage limits and back-EMF are not modelled at all.
+- **Commutation weights are sampled at each coil's centre.** Accurate for
+  compact coils (square, PCB spiral), poor for long racetracks whose two long
+  sides span a wide range of magnet phase. Some of the racetrack's poor
+  behaviour under grouping is this approximation rather than the topology.
+- **No driver electrical model.** Amplifier count is reported, but voltage
+  limits, back-EMF and the switching matrix itself are not simulated.
 - The wrench matrix is rebuilt at the control rate, not every dynamics substep.
 
 ## Source literature

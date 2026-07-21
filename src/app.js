@@ -3,7 +3,8 @@
 import { quat, clamp } from './math.js';
 import { ARRAY_TYPES, makeTranslator, selfTest } from './halbach.js';
 import { COIL_TYPES, makeStator } from './coils.js';
-import { analysePose, buildWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
+import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
+import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
 import { render, makeCamera, fitCamera, attachOrbit, theme } from './render3d.js';
 import { lineChart, heatmap, barStrip, trackHover } from './plots.js';
@@ -14,29 +15,29 @@ import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, thermal } f
 const PRESETS = {
   pcb: {
     label: 'Desktop PCB stage (buildable)',
-    blurb: 'One tileable 96 mm PCB stator tile, small 2-D Halbach platen. No coil winding — but 144 independently driven coils is a lot of electronics, and the 1.5 mm gap is unforgiving.',
+    blurb: 'One tileable 96 mm PCB stator tile, small 2-D Halbach platen. No coil winding, and 2x2 commutation regions cut it to 16 amplifiers for 144 coils. The 1.5 mm gap is the unforgiving part.',
     cfg: {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.072, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
-      sim: { gap: 0.0015, iMax: 4, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced' },
+      sim: { gap: 0.0015, iMax: 4, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r2' },
     },
   },
   wound: {
     label: 'Hand-wound square coils (Zhu/Teo/Pang)',
-    blurb: 'Four 1-D Halbach arrays in a cross over a grid of square coils. Every part is off-the-shelf: cube magnets and magnet wire.',
+    blurb: 'Four 1-D Halbach arrays in a cross, thrusting tangentially, over a grid of square coils. Driven as the published eight-phase scheme: 8 amplifiers for ~120 live coils, full 6-DOF.',
     cfg: {
       translator: { arrayType: 'halbach1d', layout: 'quad', pitch: 0.040, magnetThickness: 0.010, Br: 1.32, segments: 4, platenSize: 0.14, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'square', coilPitch: 0.0133, coilFill: 0.92, statorSize: 0.30, windingHeight: 0.010, wireDiameter: 0.0004, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
-      sim: { gap: 0.003, iMax: 6, bwPos: 16, bwAtt: 30, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced' },
+      sim: { gap: 0.003, iMax: 6, bwPos: 16, bwAtt: 30, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r1' },
     },
   },
   racetrack: {
     label: 'Racetrack stator (Jansen / ASML)',
-    blurb: 'Two orthogonal banks of segmented, staggered rectangular coils under a 2-D Halbach platen. Fewest driver channels per unit stroke, and the topology real lithography stages use — but it runs hot and its lift ripples most across the workspace.',
+    blurb: 'Two orthogonal banks of segmented, staggered rectangular coils under a 2-D Halbach platen — the topology real lithography stages use. Fewest coils per unit area, but it runs hot and is the one preset that will NOT tolerate phase grouping: switch the drive to 3x3 regions and watch worst-case lift fall below 1x weight.',
     cfg: {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.050, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.12, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'racetrack', coilPitch: 0.0167, coilFill: 0.9, statorSize: 0.30, windingHeight: 0.009, wireDiameter: 0.0006, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
-      sim: { gap: 0.0015, iMax: 8, bwPos: 14, bwAtt: 26, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced' },
+      sim: { gap: 0.0015, iMax: 8, bwPos: 14, bwAtt: 26, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
     },
   },
   baseline: {
@@ -45,7 +46,7 @@ const PRESETS = {
     cfg: {
       translator: { arrayType: 'alternating', layout: 'single', pitch: 0.040, magnetThickness: 0.010, Br: 1.32, segments: 4, platenSize: 0.14, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'square', coilPitch: 0.0133, coilFill: 0.92, statorSize: 0.30, windingHeight: 0.010, wireDiameter: 0.0004, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
-      sim: { gap: 0.003, iMax: 6, bwPos: 16, bwAtt: 30, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced' },
+      sim: { gap: 0.003, iMax: 6, bwPos: 16, bwAtt: 30, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r2' },
     },
   },
 };
@@ -113,6 +114,9 @@ const PARAMS = [
     fields: [
       { path: 'sim.gap', type: 'range', label: 'Nominal air gap', min: 0.0005, max: 0.030, step: 0.0005, ...mm, digits: 2 },
       { path: 'sim.iMax', type: 'range', label: 'Current limit per coil', min: 0.2, max: 30, step: 0.1, scale: 1, unit: 'A', digits: 1 },
+      { path: 'sim.grouping', type: 'select', label: 'Drive / phase grouping',
+        options: Object.entries(GROUPINGS).map(([k, v]) => [k, v.label]),
+        help: (c) => `${GROUPINGS[c.sim.grouping].note}${app.analysis ? ` Currently ${app.analysis.amplifiers} amplifier${app.analysis.amplifiers === 1 ? '' : 's'} for ${app.analysis.activeCoils} live coils.` : ''}` },
       { path: 'sim.quality', type: 'select', label: 'Solver quality',
         options: Object.entries(QUALITY).map(([k, v]) => [k, v.label]),
         help: (c) => `${QUALITY[c.sim.quality].controlHz} Hz control rate, harmonics to order ${QUALITY[c.sim.quality].maxOrder}, ${QUALITY[c.sim.quality].segmentsPerSide * 4 * QUALITY[c.sim.quality].ringsPerCoil} filaments per coil.` },
@@ -182,7 +186,8 @@ function rebuild(resetSim = false) {
     segmentsPerSide: q.segmentsPerSide,
   });
   app.analysis = analysePose(
-    app.stator, app.tr, [0, 0, app.cfg.sim.gap], quat.identity(), app.cfg.sim.iMax);
+    app.stator, app.tr, [0, 0, app.cfg.sim.gap], quat.identity(),
+    app.cfg.sim.iMax, app.cfg.sim.grouping);
   app.pitchRows = null;
   app.trajParams.gap = app.cfg.sim.gap;
   for (const cam of [app.camDesign, app.camSim]) {
@@ -306,15 +311,11 @@ function renderTiles() {
     })(),
     tile('Condition number', sig(a.conditionNumber, 3), '', a.conditionNumber > 50 ? 'warn' : ''),
     (() => {
-      // UPPER BOUND, not a requirement. This model gives every coil its own
-      // current because that maximises controllability and keeps W clean.
-      // Real machines group coils into phases using the platen's symmetry --
-      // Zhu/Teo/Pang drive ~60 coils from EIGHT amplifiers. So read this as the
-      // cost of independent per-coil drive, not as the cost of the topology.
-      // The live count is what a switching matrix must actually service.
-      const n = app.stator.coils.length;
-      const cls = a.activeCoils > 64 ? 'crit' : a.activeCoils > 16 ? 'warn' : 'good';
-      return tile('Coils driven at once', a.activeCoils, `of ${n}`, cls);
+      // Amplifiers is the number that decides whether you can build it. Under
+      // a grouping it decouples from the coil count entirely.
+      const amp = a.amplifiers;
+      const cls = amp > 64 ? 'crit' : amp > 16 ? 'warn' : 'good';
+      return tile('Amplifiers', amp, `${a.activeCoils} live coils`, cls);
     })(),
   ].join('');
 }
@@ -562,7 +563,10 @@ function simulate(frameDt) {
     const target = TRAJECTORIES[app.traj].at(app.state.t, tp);
     app.lastTarget = target;
     const { w, ep, ea } = control(app.ctrl, app.state, app.tr, dt, target);
-    const Wm = buildWrench(app.stator, app.tr, app.state.r, app.state.q);
+    const base = buildWrench(app.stator, app.tr, app.state.r, app.state.q);
+    const Wm = app.cfg.sim.grouping === 'independent' ? base
+      : groupWrench(base, buildGrouping(app.stator, app.tr, app.state.r, app.state.q,
+        app.cfg.sim.grouping, base.idx));
     // Levitation first, manoeuvring with whatever headroom is left.
     const wLift = [0, 0, app.tr.mass * 9.80665, 0, 0, 0];
     const alloc = allocatePrioritised(Wm, wLift,
@@ -571,10 +575,14 @@ function simulate(frameDt) {
     const wrench = applyDisturbance(app.dist, alloc.achieved, dt, app.tr);
     step(app.state, app.tr, wrench, dt);
 
-    app.lastCurrents = alloc.i;
-    app.lastIdx = Wm.idx;
+    // Display and limits are in COIL space even when driving few amplifiers.
+    app.lastCurrents = alloc.coilI ?? alloc.i;
+    app.lastPhases = alloc.i;
+    app.lastIdx = base.idx;
     peakI = 0;
-    for (let j = 0; j < alloc.i.length; j++) peakI = Math.max(peakI, Math.abs(alloc.i[j]));
+    for (let j = 0; j < app.lastCurrents.length; j++) {
+      peakI = Math.max(peakI, Math.abs(app.lastCurrents[j]));
+    }
     power = copperLoss(app.stator, Wm, alloc.i);
 
     // Sample the scopes at a fixed rate rather than every control step.
@@ -710,11 +718,10 @@ function renderAbout() {
       A truly finite array needs a surface-charge model.</li>
       <li><strong>No eddy currents, no iron, no back-EMF-limited drivers.</strong> The
       current source is ideal. Real drivers run out of voltage at speed.</li>
-      <li><strong>Every coil is driven independently.</strong> That maximises
-      controllability and keeps the wrench matrix clean, but real machines group
-      coils into phases using the platen's symmetry — Zhu/Teo/Pang drive about
-      60 coils from eight amplifiers. Treat the coil count as an upper bound on
-      drive complexity, not as a property of the topology.</li>
+      <li><strong>Commutation weights are sampled at each coil's centre.</strong>
+      Fine for compact coils; poor for long racetracks, whose long sides span a
+      wide range of magnet phase. Some of the racetrack's poor behaviour under
+      grouping is this approximation rather than the topology itself.</li>
       <li><strong>Thermal estimate is crude</strong> — a fixed natural-convection
       coefficient over the stator footprint. It exists to flag designs that will obviously
       melt, not to size a heatsink.</li>
@@ -723,6 +730,19 @@ function renderAbout() {
       against the textbook closed form for a discrete Halbach array. If it says FAIL, don't
       trust anything else on screen.</li>
     </ul>
+
+    <h2>Phase grouping</h2>
+    <p>Real machines do not give every coil its own amplifier. Coils are wired or
+    switched into a few groups and commutated against the magnet phase. Since
+    <code>i = G·u</code>, the wrench matrix just composes to <code>W·G</code> and
+    everything downstream still works — so the <strong>Drive</strong> selector
+    lets you ask "how few amplifiers can this design get away with?".</p>
+    <p>On the four-array cross, <strong>8 amplifiers track exactly as well as
+    121</strong>, at roughly double the hover power — that is the published
+    eight-phase scheme. On the racetrack it fails outright. Watch the condition
+    number and the capability map as you coarsen the grouping: too few groups and
+    the wrench matrix loses rank, and the platen becomes uncontrollable in tilt
+    or yaw no matter how much current you have.</p>
 
     <h2>Reading the design tab</h2>
     <ul>
