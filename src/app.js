@@ -16,6 +16,15 @@ import { renderExploded } from './exploded.js';
 // ---------------------------------------------------------------- presets ---
 
 const PRESETS = {
+  desk40: {
+    label: '40 mm desktop platen (searched)',
+    blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 40 magnets in 49 pockets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.0209, magnetThickness: 0.002, Br: 1.32, segments: 4, platenSize: 0.040, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'square', coilPitch: 0.00677, coilFill: 0.92, statorSize: 0.080, windingHeight: 0.0038, wireDiameter: 0.0002, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
+      sim: { gap: 0.00249, iMax: 7.5, bwPos: 20, bwAtt: 38, zeta: 1.0, kiPos: 0.5, kiAtt: 0.5, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
+    },
+  },
   pcb: {
     label: 'Desktop PCB stage (buildable)',
     blurb: 'One tileable 96 mm PCB stator tile, small 2-D Halbach platen. No coil winding, and 2x2 commutation regions cut it to 16 amplifiers for 144 coils. The 1.5 mm gap is the unforgiving part.',
@@ -41,15 +50,6 @@ const PRESETS = {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.050, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.12, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'racetrack', coilPitch: 0.0167, coilFill: 0.9, statorSize: 0.30, windingHeight: 0.009, wireDiameter: 0.0006, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
       sim: { gap: 0.0015, iMax: 8, bwPos: 14, bwAtt: 26, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
-    },
-  },
-  desk40: {
-    label: '40 mm desktop platen (searched)',
-    blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 40 magnets in 49 pockets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire.',
-    cfg: {
-      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.0209, magnetThickness: 0.002, Br: 1.32, segments: 4, platenSize: 0.040, platenMass: 0, maxOrder: 3 },
-      stator: { coilType: 'square', coilPitch: 0.00677, coilFill: 0.92, statorSize: 0.080, windingHeight: 0.0038, wireDiameter: 0.0002, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
-      sim: { gap: 0.00249, iMax: 7.5, bwPos: 20, bwAtt: 38, zeta: 1.0, kiPos: 0.5, kiAtt: 0.5, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
     },
   },
   baseline: {
@@ -173,7 +173,7 @@ const PARAMS = [
 // ------------------------------------------------------------------ state ---
 
 const app = {
-  presetKey: 'pcb',
+  presetKey: 'desk40',
   cfg: null,
   tr: null,
   stator: null,
@@ -207,6 +207,12 @@ const set = (o, path, v) => {
 
 function loadPreset(key) {
   app.presetKey = key;
+  // The dropdown is a view of presetKey, not a second copy of it. Setting it
+  // here is what stops the boot preset and the label above it from disagreeing
+  // -- which they did, silently, the moment the default stopped being the first
+  // entry in PRESETS.
+  const sel = document.getElementById('presetSelect');
+  if (sel && sel.value !== key) sel.value = key;
   app.cfg = deep(PRESETS[key].cfg);
   if (!app.cfg.mech) app.cfg.mech = mechDefaultsFor(app.cfg, DEFAULT_MECH);
   rebuild(true);
@@ -878,7 +884,9 @@ function setupChrome() {
     const b = document.querySelector(`#tabs button[data-tab="${name}"]`);
     if (!b) return;
     app.tab = name;
+    app.closeDrawer?.();
     document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('active', x === b));
+    b.scrollIntoView({ block: 'nearest', inline: 'nearest' }); // the tab strip scrolls on a phone
     document.querySelectorAll('.tabpane').forEach((p) => p.classList.toggle('active', p.id === `pane-${name}`));
     if (name === 'design') redrawAll();
     if (name === 'build') { renderBuild(); redraw('explodedView'); }
@@ -891,6 +899,31 @@ function setupChrome() {
   // A tab is worth linking to, and it makes the view scriptable.
   window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
   app.showTab = showTab;   // the initial hash is applied at boot, once there is a machine to draw
+
+  // --- parameter drawer (narrow screens only) ------------------------------
+  // The sidebar is always in the DOM; below 820 px the stylesheet lifts it out
+  // of the flow and this toggles it in. Anything that takes the user's
+  // attention elsewhere -- a tab, the scrim, Escape -- closes it, because a
+  // drawer left open over the chart you just asked for is worse than no drawer.
+  {
+    const sidebar = document.getElementById('sidebar');
+    const scrim = document.getElementById('scrim');
+    const btn = document.getElementById('paramsToggle');
+    const setDrawer = (open) => {
+      sidebar.classList.toggle('open', open);
+      scrim.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+    };
+    app.closeDrawer = () => setDrawer(false);
+    btn.addEventListener('click', () => setDrawer(!sidebar.classList.contains('open')));
+    scrim.addEventListener('click', () => setDrawer(false));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
+    // Widening past the breakpoint puts the sidebar back in the flow, so the
+    // scrim must not be left covering the page.
+    // Must match the media query in style.css that lifts the sidebar out of flow.
+    window.matchMedia('(max-width: 820px), (max-height: 500px)')
+      .addEventListener('change', () => setDrawer(false));
+  }
 
   document.getElementById('themeToggle').addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme');
@@ -1112,7 +1145,7 @@ function renderAbout() {
 // ------------------------------------------------------------------- boot ---
 
 setupChrome();
-loadPreset('pcb');
+loadPreset('desk40');
 setupDesignCharts();
 setupSimCharts();
 setupBuildCharts();

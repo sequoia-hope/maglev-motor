@@ -141,24 +141,12 @@ function orientStrongSideDown(tile) {
   }
 }
 
+// Insertion order is the order of the topology dropdown, and the first entry is
+// what an unset config falls back to -- so the checkerboard leads. It is the only
+// topology that closes x, y and lift from a single array out of nothing but
+// stock magnets, which makes it the right thing to land on before you have
+// decided anything else.
 export const ARRAY_TYPES = {
-  // Classic 1D Halbach (Kim & Trumper). segments = magnets per wavelength.
-  // Strong side faces -z, toward the coils.
-  halbach1d: {
-    label: '1-D Halbach',
-    note: 'Kim/Trumper. Simplest to build from stock cube magnets. Gives lift + one thrust axis per array, so you need at least two orientations.',
-    build: ({ pitch, thickness, Br, segments }) =>
-      makeTile({
-        nx: segments, ny: 1, lx: pitch, ly: pitch, thickness, Br,
-        origin: 0,
-        fn: (x, _y, lx) => {
-          const k = TWO_PI / lx;
-          // Handedness chosen so the strong side is -z.
-          return [-Math.sin(k * x), 0, Math.cos(k * x)];
-        },
-      }),
-  },
-
   // 2-D checkerboard Halbach (Jansen). Vertical magnets on a checkerboard with
   // horizontal "flux-steering" magnets between them.
   halbach2d: {
@@ -176,6 +164,23 @@ export const ARRAY_TYPES = {
             r * Math.cos(kx * x) * Math.sin(ky * y),
             Math.cos(kx * x) * Math.cos(ky * y),
           ];
+        },
+      }),
+  },
+
+  // Classic 1D Halbach (Kim & Trumper). segments = magnets per wavelength.
+  // Strong side faces -z, toward the coils.
+  halbach1d: {
+    label: '1-D Halbach',
+    note: 'Kim/Trumper. Simplest to build from stock cube magnets. Gives lift + one thrust axis per array, so you need at least two orientations.',
+    build: ({ pitch, thickness, Br, segments }) =>
+      makeTile({
+        nx: segments, ny: 1, lx: pitch, ly: pitch, thickness, Br,
+        origin: 0,
+        fn: (x, _y, lx) => {
+          const k = TWO_PI / lx;
+          // Handedness chosen so the strong side is -z.
+          return [-Math.sin(k * x), 0, Math.cos(k * x)];
         },
       }),
   },

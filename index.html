@@ -2,13 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Planar Maglev Motor Simulator</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
+    <button id="paramsToggle" class="ghost drawer-btn" aria-expanded="false" aria-controls="sidebar"
+            title="Show or hide the parameters">&#9776;<span> Parameters</span></button>
     <span class="mark"></span>
     <h1>Planar Maglev Simulator</h1>
     <span class="sub">Halbach translator over a coil stator &middot; harmonic field model, 6-DOF Lorentz coupling</span>
@@ -22,6 +24,8 @@
   </nav>
   <button id="themeToggle" class="ghost" title="Toggle light / dark">◐</button>
 </header>
+
+<div class="scrim" id="scrim" hidden></div>
 
 <div class="layout">
   <aside class="sidebar" id="sidebar">

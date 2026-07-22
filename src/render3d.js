@@ -447,26 +447,58 @@ export function render(canvas, scene) {
   }
 }
 
+/** Orbit and zoom, from a mouse or from fingers.
+ *
+ *  Tracked per pointer rather than as a single drag, because a touchscreen has
+ *  no scroll wheel: one finger orbits, two pinch to zoom, and the zoom has to
+ *  come from the distance between them. The canvas sets touch-action: none so
+ *  the browser does not claim the gesture for scrolling first. */
 export function attachOrbit(canvas, cam, onChange) {
-  let dragging = false, lx = 0, ly = 0;
+  const active = new Map();          // pointerId -> {x, y}
+
+  const setDist = (f) => {
+    cam.dist = Math.max(0.02, Math.min(3, cam.dist * f));
+    cam.userZoomed = true;
+  };
+  const spread = () => {
+    const [a, b] = [...active.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
   canvas.addEventListener('pointerdown', (e) => {
-    dragging = true; lx = e.clientX; ly = e.clientY;
+    active.set(e.pointerId, { x: e.clientX, y: e.clientY });
     canvas.setPointerCapture(e.pointerId);
   });
+
   canvas.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
-    cam.az -= (e.clientX - lx) * 0.008;
-    cam.el = Math.max(0.05, Math.min(1.5, cam.el + (e.clientY - ly) * 0.008));
-    lx = e.clientX; ly = e.clientY;
+    const prev = active.get(e.pointerId);
+    if (!prev) return;
+    if (active.size >= 2) {
+      // Pinch: scale by how much the gap has changed since the last frame.
+      const was = spread();
+      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const now = spread();
+      if (was > 1 && now > 1) setDist(was / now);
+    } else {
+      cam.az -= (e.clientX - prev.x) * 0.008;
+      cam.el = Math.max(0.05, Math.min(1.5, cam.el + (e.clientY - prev.y) * 0.008));
+      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
     onChange?.();
   });
-  const end = () => { dragging = false; };
+
+  const end = (e) => {
+    active.delete(e.pointerId);
+    // Lifting one finger of a pinch must not make the other jump the camera:
+    // the remaining pointer's position is already current, so nothing to do.
+  };
   canvas.addEventListener('pointerup', end);
   canvas.addEventListener('pointercancel', end);
+  canvas.addEventListener('lostpointercapture', end);
+
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    cam.dist = Math.max(0.02, Math.min(3, cam.dist * Math.exp(e.deltaY * 0.001)));
-    cam.userZoomed = true;
+    setDist(Math.exp(e.deltaY * 0.001));
     onChange?.();
   }, { passive: false });
 }
