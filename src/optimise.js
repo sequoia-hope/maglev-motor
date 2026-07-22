@@ -48,6 +48,17 @@ export const DIMENSIONS = {
   coilPitchRatio: { label: 'Coil pitch ratio λ/n', path: null, min: 1.8, max: 4.5, unit: '', scale: 1 },
   windingHeight: { label: 'Winding height', path: 'stator.windingHeight', min: 0.002, max: 0.015, unit: 'mm', scale: 1000, skipIf: (c) => c.stator.coilType === 'pcb' },
   wireDiameter: { label: 'Wire diameter', path: 'stator.wireDiameter', min: 0.0002, max: 0.0012, unit: 'mm', scale: 1000, skipIf: (c) => c.stator.coilType === 'pcb' },
+  // A PCB stator's only levers are the board itself. Without these the search
+  // cannot touch copper cross-section -- which is what sets current density, the
+  // constraint a PCB stator dies on -- so it would report every PCB design
+  // infeasible while sitting on the one knob that would fix it. Copper weight
+  // snaps to buyable half-ounce steps; layer count snaps to even integers,
+  // because boards are pressed in balanced pairs.
+  pcbCopperThickness: { label: 'Copper weight', path: 'stator.pcbCopperThickness', min: 17.5e-6, max: 210e-6, unit: 'µm', scale: 1e6,
+    snap: (v) => Math.max(17.5e-6, Math.round(v / 17.5e-6) * 17.5e-6), skipIf: (c) => c.stator.coilType !== 'pcb' },
+  pcbTraceWidth: { label: 'Trace width', path: 'stator.pcbTraceWidth', min: 0.0001, max: 0.001, unit: 'mm', scale: 1000, skipIf: (c) => c.stator.coilType !== 'pcb' },
+  pcbLayers: { label: 'PCB layers', path: 'stator.pcbLayers', min: 2, max: 32, unit: '', scale: 1,
+    snap: (v) => Math.max(2, Math.round(v / 2) * 2), skipIf: (c) => c.stator.coilType !== 'pcb' },
   gap: { label: 'Air gap', path: 'sim.gap', min: 0.001, max: 0.008, unit: 'mm', scale: 1000 },
   iMax: { label: 'Current limit', path: 'sim.iMax', min: 1, max: 16, unit: 'A', scale: 1 },
 };

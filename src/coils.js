@@ -8,6 +8,12 @@ const CU_RESISTIVITY = 1.68e-8; // ohm-m at 20 C
 // Copper fraction of the winding window for round wire. ~0.7 is good layer
 // winding; hand-wound scramble windings are nearer 0.5.
 const PACKING = 0.7;
+// Multilayer board stackup. Prepreg/core between adjacent copper layers, plus
+// soldermask on the outer faces. 0.1 mm is about as thin as a fab will press a
+// dielectric on a high-layer-count job; it is what makes a 32-layer board over
+// 3 mm thick no matter how you ask for it.
+const PCB_DIELECTRIC = 0.1e-3;
+const PCB_MASK = 25e-6;
 
 /** Discretise one rectangular winding into filament segments.
  *  Returns {mid:Float64Array(3*n), dl:Float64Array(3*n)} in coil-local coords
@@ -91,7 +97,14 @@ export function makeStator(cfg) {
     outer = [w, w];
     inner = [w * 0.4, w * 0.4];
     wireArea = pcbTraceWidth * pcbCopperThickness;
-    thickness = 0.0016;
+    // Board thickness is DERIVED from the stackup, not assumed to be 1.6 mm.
+    // Layers are the only knob that buys turns on a PCB stator, so if the board
+    // never gets thicker, adding layers is free force -- the optimiser walks
+    // straight to 32 layers and reports lift the board cannot deliver. In
+    // reality every layer pushes the copper centroid further from the magnets,
+    // and the field it sits in falls off as exp(-2*pi*z/lambda).
+    thickness = pcbLayers * pcbCopperThickness
+      + (pcbLayers - 1) * PCB_DIELECTRIC + 2 * PCB_MASK;
   } else {
     // Turn count is DERIVED from geometry, never assumed. A winding only holds
     // as many turns as fit in its window: (window area x packing) / wire area.

@@ -53,12 +53,12 @@ const PRESETS = {
     },
   },
   pcb: {
-    label: 'Desktop PCB stage (buildable)',
-    blurb: 'One tileable 96 mm PCB stator tile under a 78 mm 2-D Halbach platen. No coil winding, and 2x2 commutation regions cut it to 16 amplifiers for 225 coils. The 1.5 mm gap is the unforgiving part. 78 mm is 13 cells of 6 mm exactly, so the 78.0 mm array wastes no border and carries 133 magnets; the old 72 mm platen fitted an even 12 cells and so had to drop to 11, at 85 magnets. The cost is travel — 9 mm per side within one tile instead of 12 — which is what tiling the stator is for. The board is the other cost: 20 layers of 3 oz (105 µm) copper on a 6.5 mm coil pitch, not 16 layers of 2 oz on 8 mm. That is what makes this the only preset that passes every default constraint — 2 oz copper ran the traces at 33 A/mm² against a 15 A/mm² limit and 46 K of rise, and no platen size fixes that, because it is a copper cross-section problem rather than a magnet one.',
+    label: 'PCB stage (buildable)',
+    blurb: 'A 96 mm 2-D Halbach platen over a PCB stator, no coil winding. This started life as a tight 78 mm tile on a 24 mm pole pitch, and it was fiction: a real 28-layer board is 7.65 mm thick, so its copper centroid sits nearly 4 mm below the top face, deep in a field that decays as exp(−2π·z/λ). At a 24 mm pole pitch that decay ate the board alive — the design only ever passed because the model froze the board at 1.6 mm no matter how many layers you stacked. Fix the thickness and the honest answer is a longer wave: λ = 48 mm, which is what lets a thick board reach the magnets at all. The board is then 28 layers of 5 oz (175 µm) copper on a 16 mm coil pitch, 144 coils grouped into 36 amplifiers, and it passes every default constraint — 3.9× lift, 15.7 W hover, 11.5 A/mm² against the 15 A/mm² limit, 18 K rise — at a 2.5 mm gap against a 2.25 mm tolerance floor. The stator has to run to 190 mm across, twice the platen: shrink it and the platen reaches an edge where only part of it sees live copper and current density spikes past 40 A/mm². That board size, not the magnets, is the real price of going coil-free.',
     cfg: {
-      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.078, platenMass: 0, maxOrder: 3 },
-      stator: { coilType: 'pcb', coilPitch: 0.0065, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 20, pcbTraceWidth: 0.00025, pcbCopperThickness: 105e-6, lockCoilPitch: false },
-      sim: { gap: 0.0015, iMax: 4, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r2' },
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.048, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.096, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcb', coilPitch: 0.016, coilFill: 0.94, statorSize: 0.190, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 28, pcbTraceWidth: 0.0004, pcbCopperThickness: 175e-6, lockCoilPitch: false },
+      sim: { gap: 0.0025, iMax: 9, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
     },
   },
   wound: {
@@ -167,10 +167,14 @@ const PARAMS = [
         show: (c) => c.stator.coilType !== 'pcb',
         help: (c) => `Thicker wire cuts copper loss but fewer turns fit, and force is proportional to turns. Current build: ${app.stator ? app.stator.effTurns : '?'} turns per coil.` },
       { path: 'stator.pcbLayers', type: 'range', label: 'PCB copper layers', min: 2, max: 32, step: 2, scale: 1, unit: '', digits: 0,
-        show: (c) => c.stator.coilType === 'pcb' },
-      { path: 'stator.pcbTraceWidth', type: 'range', label: 'Trace width / pitch', min: 0.0001, max: 0.001, step: 0.00001, scale: 1000, unit: 'mm', digits: 3,
         show: (c) => c.stator.coilType === 'pcb',
-        help: () => 'Trace + space. 0.1 mm is standard, 0.075 mm is cheap-fab advanced, below that gets expensive fast.' },
+        help: () => `Layers are the only way to buy turns on a PCB stator, but they are not free: the board grows `
+          + `${app.stator ? (app.stator.thickness * 1000).toFixed(2) : '?'} mm thick here, and the copper centroid sinks with it. `
+          + `Past a point the extra layers sit too deep in the field to pay for themselves — watch lift margin, not turn count.` },
+      { path: 'stator.pcbTraceWidth', type: 'range', label: 'Trace width', min: 0.0001, max: 0.001, step: 0.00001, scale: 1000, unit: 'mm', digits: 3,
+        show: (c) => c.stator.coilType === 'pcb',
+        help: () => 'The conductor width. An equal space is assumed beside it, so the turn pitch is twice this — quote it to a fab as "trace/space". '
+          + '0.1 mm is standard, 0.075 mm is cheap-fab advanced, below that gets expensive fast.' },
       { path: 'stator.pcbCopperThickness', type: 'range', label: 'Copper weight', min: 17.5e-6, max: 210e-6, step: 17.5e-6, scale: 1e6, unit: 'µm', digits: 0,
         show: (c) => c.stator.coilType === 'pcb',
         help: () => '35 µm = 1 oz, 70 µm = 2 oz. This sets your resistance and therefore your thermal ceiling.' },
