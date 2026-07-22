@@ -57,7 +57,12 @@ export const DIMENSIONS = {
   pcbCopperThickness: { label: 'Copper weight', path: 'stator.pcbCopperThickness', min: 17.5e-6, max: 210e-6, unit: 'µm', scale: 1e6,
     snap: (v) => Math.max(17.5e-6, Math.round(v / 17.5e-6) * 17.5e-6), skipIf: (c) => c.stator.coilType !== 'pcb' },
   pcbTraceWidth: { label: 'Trace width', path: 'stator.pcbTraceWidth', min: 0.0001, max: 0.001, unit: 'mm', scale: 1000, skipIf: (c) => c.stator.coilType !== 'pcb' },
-  pcbLayers: { label: 'PCB layers', path: 'stator.pcbLayers', min: 2, max: 32, unit: '', scale: 1,
+  // Capped at 12, not the slider's 32: past a dozen layers the board is
+  // prohibitively expensive to fabricate, so the search must not "solve"
+  // feasibility by ordering a board nobody would pay for. The manual slider
+  // still allows more for exploration; the optimiser stays inside the buildable
+  // cost envelope.
+  pcbLayers: { label: 'PCB layers', path: 'stator.pcbLayers', min: 2, max: 12, unit: '', scale: 1,
     snap: (v) => Math.max(2, Math.round(v / 2) * 2), skipIf: (c) => c.stator.coilType !== 'pcb' },
   gap: { label: 'Air gap', path: 'sim.gap', min: 0.001, max: 0.008, unit: 'mm', scale: 1000 },
   iMax: { label: 'Current limit', path: 'sim.iMax', min: 1, max: 16, unit: 'A', scale: 1 },

@@ -54,11 +54,20 @@ const PRESETS = {
   },
   pcb: {
     label: 'PCB stage (buildable)',
-    blurb: 'A 96 mm 2-D Halbach platen over a PCB stator, no coil winding. This started life as a tight 78 mm tile on a 24 mm pole pitch, and it was fiction: a real 28-layer board is 7.65 mm thick, so its copper centroid sits nearly 4 mm below the top face, deep in a field that decays as exp(−2π·z/λ). At a 24 mm pole pitch that decay ate the board alive — the design only ever passed because the model froze the board at 1.6 mm no matter how many layers you stacked. Fix the thickness and the honest answer is a longer wave: λ = 48 mm, which is what lets a thick board reach the magnets at all. The board is then 28 layers of 5 oz (175 µm) copper on a 16 mm coil pitch, 144 coils grouped into 36 amplifiers, and it passes every default constraint — 3.9× lift, 15.7 W hover, 11.5 A/mm² against the 15 A/mm² limit, 18 K rise — at a 2.5 mm gap against a 2.25 mm tolerance floor. The stator has to run to 190 mm across, twice the platen: shrink it and the platen reaches an edge where only part of it sees live copper and current density spikes past 40 A/mm². That board size, not the magnets, is the real price of going coil-free.',
+    blurb: 'A 72 mm 2-D Halbach platen over a PCB stator, no coil winding. Layer count is the whole design problem here. Every layer buys turns but also thickens the board, sinking the copper centroid into a field that decays as exp(−2π·z/λ) — and past 12 layers the board is prohibitively expensive to fabricate anyway, so 12 is a hard ceiling, not a slider you push. That ceiling is why the platen has to stay small and light: with only 12 layers of 5 oz (175 µm) copper the board cannot make enough force to fly a heavy platen at a manufacturable gap. At 72 mm and λ = 36 mm it works — a 3.25 mm board of 144 spirals grouped into 36 amplifiers, passing every default constraint at a 2.0 mm gap over a 1.78 mm floor: 7.2× lift, 6.5 W hover, 13 K rise. The binding limit is current density, 13.9 A/mm² against the 15 A/mm² line — thin traces carrying real hover current is what caps this topology, which is why it flies with lift margin to spare but no room to shrink the copper. For a lighter, cheaper build see the small PCB stage.',
     cfg: {
-      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.048, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.096, platenMass: 0, maxOrder: 3 },
-      stator: { coilType: 'pcb', coilPitch: 0.016, coilFill: 0.94, statorSize: 0.190, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 28, pcbTraceWidth: 0.0004, pcbCopperThickness: 175e-6, lockCoilPitch: false },
-      sim: { gap: 0.0025, iMax: 9, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.036, magnetThickness: 0.004, Br: 1.43, segments: 4, platenSize: 0.072, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcb', coilPitch: 0.012, coilFill: 0.94, statorSize: 0.144, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.0001, pcbCopperThickness: 175e-6, lockCoilPitch: false },
+      sim: { gap: 0.002, iMax: 5, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
+    },
+  },
+  pcbmini: {
+    label: 'PCB stage (small)',
+    blurb: 'The smallest PCB build that still flies: a 48 mm 2-D Halbach platen on a 24 mm pole pitch, 6 mm cells. Same recipe as the larger PCB stage — a 12-layer board (the fabrication cost ceiling), 5 oz copper, 144 spirals, 36 amplifiers — but a lighter platen needs less force, so it closes at a tighter 1.5 mm gap over a 1.30 mm floor with 108 turns per spiral instead of 168. It passes every default constraint: 5.6× lift, 3.0 W hover, 14 K rise, and it is current-density limited at 14.4 A/mm² against the 15 A/mm² line, the same wall the larger board hits. λ = 24 mm makes 6 mm cells, so the 48 mm platen is 8 cells across and carries 33 magnets in a 7×7 lattice with the pattern nulls left empty. This is the cheapest way onto the topology; the larger stage buys stroke and payload for a bigger, hotter board.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.048, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.0001, pcbCopperThickness: 175e-6, lockCoilPitch: false },
+      sim: { gap: 0.0015, iMax: 4, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
     },
   },
   wound: {
@@ -170,7 +179,8 @@ const PARAMS = [
         show: (c) => c.stator.coilType === 'pcb',
         help: () => `Layers are the only way to buy turns on a PCB stator, but they are not free: the board grows `
           + `${app.stator ? (app.stator.thickness * 1000).toFixed(2) : '?'} mm thick here, and the copper centroid sinks with it. `
-          + `Past a point the extra layers sit too deep in the field to pay for themselves — watch lift margin, not turn count.` },
+          + `Past a point the extra layers sit too deep in the field to pay for themselves — watch lift margin, not turn count. `
+          + `And past 12 layers the board gets prohibitively expensive to fabricate, so the optimiser will not go there even though this slider will.` },
       { path: 'stator.pcbTraceWidth', type: 'range', label: 'Trace width', min: 0.0001, max: 0.001, step: 0.00001, scale: 1000, unit: 'mm', digits: 3,
         show: (c) => c.stator.coilType === 'pcb',
         help: () => 'The conductor width. An equal space is assumed beside it, so the turn pitch is twice this — quote it to a fab as "trace/space". '
