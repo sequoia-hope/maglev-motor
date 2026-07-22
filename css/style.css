@@ -179,7 +179,21 @@ figcaption .hint { font-weight: 400; color: var(--muted); font-size: 11px; }
   border-radius: var(--radius); padding: 9px 11px;
 }
 .tile .k { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile .v { font-size: 19px; font-weight: 600; margin-top: 2px; line-height: 1.15; }
+.tile .v {
+  font-size: 19px; font-weight: 600; margin-top: 2px; line-height: 1.15;
+  /* These tiles update every frame while the sim runs, so anything that lets a
+     value change the tile's HEIGHT moves the whole page under the reader. The
+     unit is a span inside .v, so "0.533/ 7.5 A" wrapped its trailing A onto a
+     second line whenever the value gained a digit -- taller tile, taller row,
+     taller column, and in portrait (where the tiles sit under the live view) the
+     entire layout below it jumped. nowrap pins it to exactly one line at every
+     breakpoint, which a fixed height could not do without hardcoding a number
+     per font size. Tabular figures stop the horizontal twitch for the same
+     reason: every digit is then the same width, so the number does not resize
+     as it counts. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
 .tiles.compact .tile .v { font-size: 16px; }
 .tile .u { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 2px; }
 .tile.good .v { color: var(--good); }
