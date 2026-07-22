@@ -6,6 +6,7 @@ import {
   applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES, arraySymmetry, imperialName,
 } from './halbach.js';
 import { COIL_TYPES, makeStator } from './coils.js';
+import { buildKiCad } from './kicad.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
 import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
@@ -760,6 +761,38 @@ function renderBuild() {
     Fixed mass ${g(A.fixedMass)}. Stator stands ${(A.statorHeight * 1000).toFixed(1)} mm tall,
     platen ${(A.platenHeight * 1000).toFixed(1)} mm.</p>`;
   document.getElementById('bomCard').innerHTML = h;
+
+  // --- PCB stator export ---------------------------------------------------
+  // The coil board is the one part in this BOM that is a file, not a shape to
+  // machine -- so hand over the file. Only meaningful for PCB coils; a wound
+  // stator has no copper to fabricate.
+  const pcbCard = document.getElementById('pcbExportCard');
+  if (app.cfg.stator.coilType === 'pcb') {
+    const kc = buildKiCad(app.stator, app.cfg);
+    const s = kc.stats;
+    const big = s.segments > 200000;
+    pcbCard.style.display = '';
+    pcbCard.innerHTML = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">PCB stator export</h4>
+      <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">The coil board as a <b>.kicad_pcb</b> you can open in KiCad and send to a fab —
+      ${s.coils} coils on ${s.layers} copper layers, ${s.turnsPerLayer} turns each per layer, series-stacked so every layer's field adds.
+      ${s.segments.toLocaleString()} track segments, ${s.vias.toLocaleString()} buried vias, one net per coil, ${s.traceMm.toFixed(3)} mm trace on a ${s.boardMm.toFixed(0)} mm board.</p>
+      <button id="btnKicad" class="ghost">Download KiCad PCB</button>
+      ${big ? '<p style="font-size:12px;color:var(--warn);margin:8px 0 0">This is a large board — the file runs to a few MB and KiCad will take a moment to open it.</p>' : ''}
+      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Buried vias between adjacent layers make this a real (and, past 12 layers, expensive) stackup — the export writes the board the physics ran, not a simplified one.</p>`;
+    document.getElementById('btnKicad').onclick = () => {
+      const fresh = buildKiCad(app.stator, app.cfg);
+      const blob = new Blob([fresh.text], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `maglev-stator-${app.presetKey ?? 'design'}-${s.layers}L.kicad_pcb`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+  } else {
+    pcbCard.style.display = 'none';
+    pcbCard.innerHTML = '';
+  }
 
   // --- magnet order list ---------------------------------------------------
   const c = A.census, grade = A.grade;
