@@ -3,6 +3,7 @@
 // sorting by centroid depth is exact enough and costs nothing.
 
 import { quat } from './math.js';
+import { cellsAcross } from './halbach.js';
 
 export const PALETTE = {
   light: {
@@ -89,6 +90,8 @@ function cameraBasis(cam, w, h) {
   };
 }
 
+export { cameraBasis, project, magnetRGB, divergingRGB };
+
 function project(B, p) {
   const rx = p[0] - B.eye[0], ry = p[1] - B.eye[1], rz = p[2] - B.eye[2];
   const zc = rx * B.fwd[0] + ry * B.fwd[1] + rz * B.fwd[2];
@@ -165,40 +168,16 @@ function magnetRGB(mx, my, mz, Br, pal) {
   return hslToRgb(ang, 0.45, pal === PALETTE.dark ? 0.62 : 0.52);
 }
 
-export function render(canvas, scene) {
-  const pal = theme();
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-    canvas.width = w * dpr; canvas.height = h * dpr;
-  }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = pal.surface;
-  ctx.fillRect(0, 0, w, h);
-
-  const { cam, stator, tr, state, currents, idxMap, target, trail } = scene;
-  const zs = scene.zScale ?? 1;
-  const sec = scene.section ?? { axis: 'none', frac: 0.5 };
-  const B = cameraBasis(cam, w, h);
+/** Depth-sorted face buffer over a camera basis. Shared by the machine view and
+ *  the exploded assembly view so both get identical shading, culling and
+ *  vertical exaggeration -- an assembly drawing that lit its parts differently
+ *  from the machine view would read as a different machine. */
+export function makePainter(B, zs = 1) {
+  const faces = [];
   const P = (p) => project(B, [p[0], p[1], p[2] * zs]);
 
-  // Section test on an element's centre. Simple hiding rather than true
-  // clipping: the exposed side faces of what survives read as the cut.
-  const cutAt = (() => {
-    if (sec.axis === 'none') return null;
-    const half = Math.max(tr.cfg.platenSize, 0.02) * 1.2;
-    return -half + 2 * half * (sec.frac ?? 0.5);
-  })();
-  const sectioned = (x, y) => {
-    if (cutAt === null) return false;
-    return (sec.axis === 'x' ? x : y) > cutAt;
-  };
-
-  const faces = [];
   /** Push the visible faces of an axis-aligned-in-local-frame box.
-   *  `corners` are eight world-space points, already in draw order. */
+   *  `corners` are eight world-space points: 0-3 bottom CCW from above, 4-7 top. */
   const pushBox = (corners, rgb, opts = {}) => {
     const pts = corners.map((c) => P(c));
     for (const f of BOX_FACES) {
@@ -226,6 +205,65 @@ export function render(canvas, scene) {
         alpha: opts.alpha,
       });
     }
+  };
+
+  const pushQuad = (corners, fill, opts = {}) => {
+    const q = corners.map((c) => P(c));
+    if (q.some((p) => !p)) return;
+    faces.push({ d: (q[0].d + q[2].d) / 2 + (opts.bias ?? 0), pts: q, fill, stroke: opts.stroke, alpha: opts.alpha });
+  };
+
+  const paint = (ctx) => {
+    faces.sort((a, b) => b.d - a.d);
+    for (const f of faces) {
+      quadPath(ctx, f.pts);
+      if (f.alpha !== undefined) ctx.globalAlpha = f.alpha;
+      ctx.fillStyle = f.fill;
+      ctx.fill();
+      if (f.stroke) { ctx.strokeStyle = f.stroke; ctx.lineWidth = 0.6; ctx.stroke(); }
+      ctx.globalAlpha = 1;
+    }
+  };
+
+  return { faces, P, pushBox, pushQuad, paint };
+}
+
+/** Set up a canvas for a device-pixel-ratio-correct 2-D draw and clear it. */
+export function prepCanvas(canvas, pal) {
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+    canvas.width = w * dpr; canvas.height = h * dpr;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = pal.surface;
+  ctx.fillRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+export function render(canvas, scene) {
+  const pal = theme();
+  const { ctx, w, h } = prepCanvas(canvas, pal);
+
+  const { cam, stator, tr, state, currents, idxMap, target, trail } = scene;
+  const zs = scene.zScale ?? 1;
+  const sec = scene.section ?? { axis: 'none', frac: 0.5 };
+  const B = cameraBasis(cam, w, h);
+  const painter = makePainter(B, zs);
+  const { faces, P, pushBox } = painter;
+
+  // Section test on an element's centre. Simple hiding rather than true
+  // clipping: the exposed side faces of what survives read as the cut.
+  const cutAt = (() => {
+    if (sec.axis === 'none') return null;
+    const half = Math.max(tr.cfg.platenSize, 0.02) * 1.2;
+    return -half + 2 * half * (sec.frac ?? 0.5);
+  })();
+  const sectioned = (x, y) => {
+    if (cutAt === null) return false;
+    return (sec.axis === 'x' ? x : y) > cutAt;
   };
 
   // --- stator coils --------------------------------------------------------
@@ -289,7 +327,7 @@ export function render(canvas, scene) {
 
   tr.patches.forEach((pt) => {
     const pc = pt.cos, ps = pt.sin;
-    const nu = Math.floor(pt.w / cellW), nv = Math.floor(pt.h / cellH);
+    const nu = cellsAcross(pt.w, cellW), nv = cellsAcross(pt.h, cellH);
     for (let jv = 0; jv < nv; jv++) {
       for (let iu = 0; iu < nu; iu++) {
         const px = -pt.w / 2 + (iu + 0.5) * cellW;
@@ -340,15 +378,7 @@ export function render(canvas, scene) {
     }
   }
 
-  faces.sort((a, b) => b.d - a.d);
-  for (const f of faces) {
-    quadPath(ctx, f.pts);
-    if (f.alpha !== undefined) ctx.globalAlpha = f.alpha;
-    ctx.fillStyle = f.fill;
-    ctx.fill();
-    if (f.stroke) { ctx.strokeStyle = f.stroke; ctx.lineWidth = 0.6; ctx.stroke(); }
-    ctx.globalAlpha = 1;
-  }
+  painter.paint(ctx);
 
   // --- overlays ------------------------------------------------------------
   ctx.lineWidth = 2;

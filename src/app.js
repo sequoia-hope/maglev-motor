@@ -10,6 +10,8 @@ import { render, makeCamera, fitCamera, attachOrbit, theme } from './render3d.js
 import { lineChart, heatmap, barStrip, trackHover } from './plots.js';
 import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan } from './analysis.js';
 import { MATERIALS, PROCESSES, COOLING, DEFAULT_MECH, stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
+import { buildAssembly } from './assembly.js';
+import { renderExploded } from './exploded.js';
 
 // ---------------------------------------------------------------- presets ---
 
@@ -90,7 +92,8 @@ const PARAMS = [
         help: () => 'N52 NdFeB ≈ 1.43 T, N42 ≈ 1.32 T, SmCo ≈ 1.05 T, ferrite ≈ 0.4 T.' },
       { path: 'translator.platenSize', type: 'range', label: 'Platen size', min: 0.03, max: 0.30, step: 0.005, ...mm },
       { path: 'translator.platenMass', type: 'range', label: 'Platen mass (0 = auto)', min: 0, max: 5, step: 0.01, scale: 1000, unit: 'g', digits: 0,
-        help: () => 'Auto estimates magnet mass at 7500 kg/m³ plus 60% for structure.' },
+        help: () => `Leave at 0 and the mass comes from the parts list: ${sig(app.stack.magnetMass * 1000, 3)} g of magnets, `
+          + `${sig(app.stack.pocketMass * 1000, 3)} g retainer, ${sig(app.stack.backingMass * 1000, 3)} g backing plate, plus adhesive. See the Build tab.` },
     ],
   },
   {
@@ -180,6 +183,8 @@ const app = {
   dist: makeDisturbance(),
   camDesign: makeCamera(),
   camSim: makeCamera(),
+  camExp: makeCamera(),
+  viewExp: { explode: 1, zScale: 1 },
   view: { section: { axis: 'none', frac: 0.5 }, zScale: 1 },
   viewSim: { section: { axis: 'none', frac: 0.5 }, zScale: 1 },
   running: true,
@@ -232,9 +237,14 @@ function rebuild(resetSim = false) {
   // Second pass: the tolerance stack's thermal-growth term depends on the
   // temperature rise, which depends on the design we just built.
   app.stack = stackUp(app.cfg, { ...app.cfg.mech, deltaT: stackTemperatureRise(app.analysis.hoverPower, app.stack) });
+  app.assembly = buildAssembly(app.cfg, app.stack, app.tr, app.stator);
   for (const cam of [app.camDesign, app.camSim]) {
     fitCamera(cam, app.cfg.stator.statorSize, app.cfg.translator.platenSize, app.cfg.sim.gap);
   }
+  // The exploded view is taller than the machine and carries a label column, so
+  // it needs to sit further back and look from lower down.
+  fitCamera(app.camExp, app.cfg.stator.statorSize, app.cfg.translator.platenSize, app.cfg.sim.gap);
+  if (!app.camExp.userZoomed) app.camExp.dist *= 1.15;
 
   if (resetSim || !app.state) resetSimulation();
   app.ctrl = makeController(app.cfg.sim);
@@ -405,6 +415,7 @@ function redraw(id) {
 function redrawAll() {
   renderTiles();
   renderStackCards();
+  renderBuild();
   renderDesignTable();
   for (const id of app.charts.keys()) redraw(id);
   renderSelfTest();
@@ -583,11 +594,98 @@ function renderStackCards() {
   document.getElementById('gapCard').innerHTML = g;
 }
 
+// ----------------------------------------------------------------- build ---
+
+function setupBuildCharts() {
+  mountChart('explodedView', () => {
+    renderExploded(document.getElementById('explodedView'), {
+      cam: app.camExp, assembly: app.assembly, tr: app.tr, stator: app.stator,
+      explode: app.viewExp.explode, zScale: app.viewExp.zScale,
+    });
+  });
+  attachOrbit(document.getElementById('explodedView'), app.camExp, () => redraw('explodedView'));
+}
+
+/** Bill of materials, magnet order list, and an explicit list of what the
+ *  drawing does not know. */
+function renderBuild() {
+  const A = app.assembly, st = app.stack;
+  const g = (kg) => `${sig(kg * 1000, 3)} g`;
+
+  let h = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Bill of materials</h4>`;
+  h += '<div class="table-wrap"><table><thead><tr><th>#</th><th style="text-align:left">Part</th><th>Qty</th><th style="text-align:left">Specification</th><th style="text-align:left">Material / process</th><th>Mass</th></tr></thead><tbody>';
+  A.parts.forEach((p, i) => {
+    const isGap = p.kind === 'gap';
+    const style = isGap ? ' style="color:var(--accent);font-weight:600"' : '';
+    h += `<tr${style}><td>${i + 1}</td><td style="text-align:left">${p.name}</td>
+      <td>${isGap ? '—' : p.qty}</td>
+      <td style="text-align:left;color:var(--ink-2)">${p.spec}</td>
+      <td style="text-align:left;color:var(--muted)">${p.material}${p.process !== '—' ? ` · ${p.process}` : ''}</td>
+      <td>${p.mass ? g(p.mass) : '—'}</td></tr>`;
+    h += `<tr><td></td><td colspan="5" style="text-align:left;color:var(--muted);font-size:11px;padding-top:0">${p.note}
+      ${p.critical ? `<br><span style="color:var(--warn)">Watch: ${p.critical}</span>` : ''}</td></tr>`;
+  });
+  for (const c of A.consumables) {
+    h += `<tr><td>—</td><td style="text-align:left">${c.name}</td><td>${c.qty}</td>
+      <td style="text-align:left;color:var(--ink-2)">${c.spec}</td>
+      <td style="text-align:left;color:var(--muted)">${c.material}</td><td>${g(c.mass)}</td></tr>`;
+  }
+  h += '</tbody></table></div>';
+  h += `<p style="font-size:12px;color:var(--ink-2);margin:10px 0 0">
+    Moving mass <b>${g(A.movingMass)}</b> (everything above the gap — this is what the motor lifts).
+    Fixed mass ${g(A.fixedMass)}. Stator stands ${(A.statorHeight * 1000).toFixed(1)} mm tall,
+    platen ${(A.platenHeight * 1000).toFixed(1)} mm.</p>`;
+  document.getElementById('bomCard').innerHTML = h;
+
+  // --- magnet order list ---------------------------------------------------
+  const c = A.census, grade = A.grade;
+  let m = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Magnet order</h4>`;
+  m += `<p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">
+    <b>${c.total}</b> cells at ${(c.cellW * 1000).toFixed(2)} × ${(c.cellH * 1000).toFixed(2)} ×
+    ${(app.cfg.translator.magnetThickness * 1000).toFixed(2)} mm, ${grade.name}
+    (Br ${app.cfg.translator.Br.toFixed(2)} T${grade.exact ? '' : ` — nearest catalogue grade is ${grade.name} at ${grade.Br} T`}).</p>`;
+  const orderAs = { axial: 'through-thickness (stock)', 'in-plane': 'through-length (stock)', diagonal: 'diagonal — CUSTOM' };
+  m += '<div class="table-wrap"><table><thead><tr><th style="text-align:left">Magnetisation on the platen</th><th>Count</th><th style="text-align:left">Order as</th></tr></thead><tbody>';
+  for (const r of c.rows) {
+    const bad = r.cls === 'diagonal';
+    m += `<tr><td style="text-align:left">${r.label}</td><td>${r.n}</td>
+      <td style="text-align:left;color:${bad ? 'var(--crit)' : 'var(--muted)'}">${orderAs[r.cls]}</td></tr>`;
+  }
+  m += `</tbody></table></div>
+    <p style="font-size:12px;color:var(--muted);margin:10px 0 0">
+    ${c.rows.length} orientations, <b>${c.skus.length} part number${c.skus.length === 1 ? '' : 's'}</b>
+    (${c.skus.join(', ')}). Direction on the platen is an assembly step, not a different part —
+    which is exactly why the cells are square.</p>`;
+
+  if (A.sourcing) {
+    m += `<div style="margin-top:10px;padding:10px;border-left:3px solid var(--crit);background:var(--plane)">
+      <p style="font-size:12px;color:var(--crit);margin:0 0 6px"><b>Sourcing problem.</b> ${A.sourcing.problem}
+      Diagonally-magnetised blocks are a custom order — several times the price of stock, with lead time to match.</p>
+      <p style="font-size:12px;color:var(--ink-2);margin:0 0 6px"><b>Cause.</b> ${A.sourcing.cause}</p>
+      <p style="font-size:12px;color:var(--ink-2);margin:0"><b>Fix.</b> ${A.sourcing.remedy}
+      Result: ${A.sourcing.after}</p></div>`;
+  }
+
+  m += `<p style="font-size:12px;color:var(--warn);margin:8px 0 0">
+    Assembly load: neighbours push about ${sig(st.neighbourForce, 2)} N apart, and ${c.total} of them go in
+    one at a time. A jig is not optional at this cell size.</p>`;
+  document.getElementById('magnetOrderCard').innerHTML = m;
+
+  // --- what this drawing does not know -------------------------------------
+  let n = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Not in this drawing</h4>
+    <p style="font-size:12px;color:var(--ink-2);margin:0 0 8px">Every dimension above is derived from the
+    config the physics runs on. These are the parts of a real build that nothing in the model determines,
+    so they are absent rather than invented:</p><ul style="font-size:12px;color:var(--muted);margin:0;padding-left:18px">`;
+  for (const item of A.notModelled) n += `<li style="margin-bottom:4px">${item}</li>`;
+  n += '</ul>';
+  document.getElementById('notModelledCard').innerHTML = n;
+}
+
 function renderDesignTable() {
   const el = document.getElementById('designTable');
   const c = app.cfg, tr = app.tr, st = app.stator, a = app.analysis;
-  const nMag = tr.patches.reduce((n, p) =>
-    n + Math.round(p.w / (tr.tile.lx / tr.tile.nx)) * Math.round(p.h / (tr.tile.ly / tr.tile.ny)), 0);
+  // Same counter the drawing and the BOM use, so the three cannot disagree.
+  const nMag = app.assembly.census.total;
   const wireLen = st.coils.reduce((L, k) => L + k.turns * 2 * (k.outer[0] + k.outer[1]), 0);
   const rows = [
     ['Magnet cells on the platen', `${nMag}`, `${(tr.tile.lx / tr.tile.nx * 1000).toFixed(1)} × ${(tr.tile.ly / tr.tile.ny * 1000).toFixed(1)} × ${(c.translator.magnetThickness * 1000).toFixed(1)} mm each`],
@@ -772,15 +870,23 @@ function setupChrome() {
     loadPreset(app.presetKey);
   });
 
+  const showTab = (name) => {
+    const b = document.querySelector(`#tabs button[data-tab="${name}"]`);
+    if (!b) return;
+    app.tab = name;
+    document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('active', x === b));
+    document.querySelectorAll('.tabpane').forEach((p) => p.classList.toggle('active', p.id === `pane-${name}`));
+    if (name === 'design') redrawAll();
+    if (name === 'build') { renderBuild(); redraw('explodedView'); }
+    if (name === 'optimise') { redraw('optScatter'); redraw('optSlice'); }
+  };
   document.getElementById('tabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-tab]');
-    if (!b) return;
-    app.tab = b.dataset.tab;
-    document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('active', x === b));
-    document.querySelectorAll('.tabpane').forEach((p) => p.classList.toggle('active', p.id === `pane-${app.tab}`));
-    if (app.tab === 'design') redrawAll();
-    if (app.tab === 'optimise') { redraw('optScatter'); redraw('optSlice'); }
+    if (b) { history.replaceState(null, '', `#${b.dataset.tab}`); showTab(b.dataset.tab); }
   });
+  // A tab is worth linking to, and it makes the view scriptable.
+  window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
+  app.showTab = showTab;   // the initial hash is applied at boot, once there is a machine to draw
 
   document.getElementById('themeToggle').addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme');
@@ -866,7 +972,28 @@ function setupChrome() {
   wireView(app.view, 'secAxis', 'secFrac', 'zScale', 'zScaleOut', 'designView');
   wireView(app.viewSim, 'secAxisSim', null, 'zScaleSim', 'zScaleSimOut', 'simView');
 
-  window.addEventListener('resize', () => { if (app.tab === 'design') redrawAll(); });
+  const wireExplode = () => {
+    const e = document.getElementById('explodeAmt');
+    const eo = document.getElementById('explodeOut');
+    const z = document.getElementById('zScaleExp');
+    const zo = document.getElementById('zScaleExpOut');
+    const upd = () => {
+      app.viewExp.explode = +e.value;
+      app.viewExp.zScale = +z.value;
+      eo.textContent = (+e.value).toFixed(2);
+      zo.textContent = z.value;
+      redraw('explodedView');
+    };
+    e.addEventListener('input', upd);
+    z.addEventListener('input', upd);
+    upd();
+  };
+  wireExplode();
+
+  window.addEventListener('resize', () => {
+    if (app.tab === 'design') redrawAll();
+    if (app.tab === 'build') redraw('explodedView');
+  });
 }
 
 function renderAbout() {
@@ -984,8 +1111,10 @@ setupChrome();
 loadPreset('pcb');
 setupDesignCharts();
 setupSimCharts();
+setupBuildCharts();
 renderAbout();
 redrawAll();
+if (location.hash.length > 1) app.showTab(location.hash.slice(1));
 requestAnimationFrame(frame);
 
 // ============================================================== optimiser ===

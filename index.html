@@ -16,6 +16,7 @@
   <nav class="tabs" id="tabs">
     <button data-tab="design" class="active">Design</button>
     <button data-tab="optimise">Optimise</button>
+    <button data-tab="build">Build</button>
     <button data-tab="simulate">Simulate</button>
     <button data-tab="about">Notes &amp; sources</button>
   </nav>
@@ -162,6 +163,32 @@
       </div>
 
       <div class="card" id="optTable"></div>
+    </section>
+
+    <!-- ============================= BUILD ============================ -->
+    <section class="tabpane" id="pane-build">
+      <figure class="card tall">
+        <figcaption>Exploded assembly <span class="hint">drag to orbit &middot; scroll to zoom</span>
+          <span class="viewctl">
+            <label title="Separate the parts along the assembly axis. A viewing transform only — thicknesses and the air gap stay at true scale.">explode
+              <input type="range" id="explodeAmt" min="0" max="2" step="0.05" value="1">
+              <output id="explodeOut">1.0</output>
+            </label>
+            <label title="Exaggerate the vertical axis so thin layers are visible">z&times;
+              <input type="range" id="zScaleExp" min="1" max="12" step="0.5" value="1">
+              <output id="zScaleExpOut">1</output>
+            </label>
+          </span>
+        </figcaption>
+        <canvas id="explodedView"></canvas>
+      </figure>
+
+      <div class="card" id="bomCard"></div>
+
+      <div class="grid2">
+        <div class="card" id="magnetOrderCard"></div>
+        <div class="card" id="notModelledCard"></div>
+      </div>
     </section>
 
     <!-- =========================== SIMULATE =========================== -->

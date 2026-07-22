@@ -23,6 +23,18 @@
 import { smoothstep } from './math.js';
 
 const TWO_PI = Math.PI * 2;
+
+/** How many whole cells of width `cell` fit across `span`.
+ *
+ *  The epsilon is not decoration. A 72 mm patch of 6 mm cells evaluates to
+ *  11.999999999999998, so a bare Math.floor drops an entire row AND column --
+ *  144 magnets drawn and billed as 121, a 16% undercount that showed up as the
+ *  renderer and the design table disagreeing with each other. Anything that
+ *  counts cells must come through here. */
+export function cellsAcross(span, cell) {
+  if (!(cell > 0)) return 0;
+  return Math.max(0, Math.floor(span / cell + 1e-6));
+}
 const sinc = (x) => (Math.abs(x) < 1e-9 ? 1 : Math.sin(x) / x);
 
 // --- tile builders ----------------------------------------------------------
