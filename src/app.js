@@ -1,7 +1,10 @@
 // App shell: parameter UI, design analyses, and the real-time flight loop.
 
 import { quat, clamp } from './math.js';
-import { ARRAY_TYPES, makeTranslator, selfTest } from './halbach.js';
+import {
+  ARRAY_TYPES, makeTranslator, selfTest,
+  applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES,
+} from './halbach.js';
 import { COIL_TYPES, makeStator } from './coils.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
 import { GROUPINGS, buildGrouping } from './grouping.js';
@@ -16,6 +19,18 @@ import { renderExploded } from './exploded.js';
 // ---------------------------------------------------------------- presets ---
 
 const PRESETS = {
+  cube5: {
+    label: '5 mm cubes (nothing custom)',
+    blurb: 'Designed backwards from the shopping list: 108 plain 5 mm N42 cubes, no custom magnetisation, no ground-to-size blocks. Four cubes per wavelength is the only stock-magnetised choice, so λ = 20 mm is not a variable — it is what 5 mm cubes give you. Everything else was searched around it: 60 mm platen, 225 hand-wound coils, 2.2 mm gap with 1.6 mm of tolerance margin under it.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single',
+        driveByMagnet: true, cubicMagnets: true, magnetSize: 0.005,
+        pitch: 0.020, magnetThickness: 0.005, Br: 1.32, segments: 4,
+        platenSize: 0.060, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'square', coilPitch: 0.0078, coilFill: 0.92, statorSize: 0.120, windingHeight: 0.004, wireDiameter: 0.0003, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: true },
+      sim: { gap: 0.0022, iMax: 7.5, bwPos: 18, bwAtt: 34, zeta: 1.0, kiPos: 0.5, kiAtt: 0.5, maxTilt: 0.06, quality: 'balanced', grouping: 'r2' },
+    },
+  },
   desk40: {
     label: '40 mm desktop platen (searched)',
     blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 40 magnets in 49 pockets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire.',
@@ -82,12 +97,34 @@ const PARAMS = [
       { path: 'translator.layout', type: 'select', label: 'Platen layout',
         options: [['single', 'One continuous array'], ['quad', 'Four arrays in a cross']],
         help: () => 'A cross of four 1-D arrays is the classic way to get all six DOF from single-axis Halbach strips. A single 2-D array does it alone.' },
+      { path: 'translator.driveByMagnet', type: 'check', label: 'Design around a stock magnet',
+        help: () => 'Off, you choose a pole pitch and the cell size is whatever λ/M happens to be — usually a number no supplier stocks, so every block is a custom grind. On, the magnet is the input and the pitch is the consequence: λ = size × M, in steps rather than continuously. That step is real, not a modelling limitation.' },
+      { path: 'translator.magnetSize', type: 'range', label: 'Magnet size (square cell)',
+        min: 0.002, max: 0.025, step: 0.001, ...mm, digits: 1,
+        show: (c) => c.translator.driveByMagnet,
+        help: (c) => {
+          const s = c.translator.magnetSize, n = nearestStockMagnet(s);
+          const stock = Math.abs(n - s) < 1e-9;
+          return `${stock ? 'Catalogue size' : `Not a stock size — nearest is ${(n * 1000).toFixed(0)} mm`}. `
+            + `Stocked: ${STOCK_MAGNET_SIZES.map((v) => (v * 1000).toFixed(0)).join(', ')} mm. `
+            + `With ${c.translator.segments} per wavelength this gives λ = ${(s * c.translator.segments * 1000).toFixed(1)} mm.`;
+        } },
+      { path: 'translator.cubicMagnets', type: 'check', label: 'Cube stock (thickness = width)',
+        show: (c) => c.translator.driveByMagnet,
+        help: () => 'Cubes are the cheapest thing on the shelf and the easiest to orient in a jig, but they tie thickness to pitch: you cannot thin the array without also shortening the wavelength. Turn this off to buy blocks and choose the thickness separately.' },
       { path: 'translator.pitch', type: 'range', label: 'Pole pitch λ', min: 0.008, max: 0.080, step: 0.001, ...mm,
-        help: () => 'The dominant design variable. Air-gap field decays as exp(−2πz/λ), so usable flying height scales directly with pitch.' },
+        disabled: (c) => c.translator.driveByMagnet,
+        help: (c) => (c.translator.driveByMagnet
+          ? `Derived: ${(c.translator.magnetSize * 1000).toFixed(1)} mm × ${c.translator.segments} = ${(c.translator.pitch * 1000).toFixed(1)} mm. Change the magnet or the segment count to move it.`
+          : 'The dominant design variable. Air-gap field decays as exp(−2πz/λ), so usable flying height scales directly with pitch.') },
       { path: 'translator.segments', type: 'range', label: 'Magnets per wavelength', min: 2, max: 8, step: 1, scale: 1, unit: '', digits: 0,
-        help: () => 'Discretisation of the ideal rotating magnetisation. Amplitude penalty is sin(π/M)/(π/M): 0.64 at M=2, 0.90 at M=4, 0.96 at M=6.' },
+        help: (c) => 'Discretisation of the ideal rotating magnetisation. Amplitude penalty is sin(π/M)/(π/M): 0.64 at M=2, 0.90 at M=4, 0.96 at M=6.'
+          + (c.translator.driveByMagnet ? ' With the magnet fixed this is your only pitch control, and it moves λ a whole magnet at a time.' : '') },
       { path: 'translator.magnetThickness', type: 'range', label: 'Magnet thickness', min: 0.002, max: 0.030, step: 0.001, ...mm,
-        help: () => 'Diminishing returns past about λ/4: the (1−exp(−k·D)) term saturates.' },
+        disabled: (c) => c.translator.driveByMagnet && c.translator.cubicMagnets,
+        help: (c) => (c.translator.driveByMagnet && c.translator.cubicMagnets
+          ? 'Locked to the cube edge. Uncheck "cube stock" to buy blocks and set it independently.'
+          : 'Diminishing returns past about λ/4: the (1−exp(−k·D)) term saturates.') },
       { path: 'translator.Br', type: 'range', label: 'Remanence Br', min: 0.4, max: 1.45, step: 0.01, scale: 1, unit: 'T', digits: 2,
         help: () => 'N52 NdFeB ≈ 1.43 T, N42 ≈ 1.32 T, SmCo ≈ 1.05 T, ferrite ≈ 0.4 T.' },
       { path: 'translator.platenSize', type: 'range', label: 'Platen size', min: 0.03, max: 0.30, step: 0.005, ...mm },
@@ -220,6 +257,10 @@ function loadPreset(key) {
 }
 
 function rebuild(resetSim = false) {
+  // Before anything reads pitch or thickness. A magnet-driven config has no
+  // independent pole pitch, and letting a stale one through would build a
+  // translator whose cells are not the size of the magnets in the BOM.
+  applyMagnetDrive(app.cfg.translator);
   const q = QUALITY[app.cfg.sim.quality];
   if (!app.cfg.mech) app.cfg.mech = mechDefaultsFor(app.cfg, DEFAULT_MECH);
   // Mechanical stack first: it supplies the platen mass the physics needs.
@@ -298,6 +339,19 @@ function makeField(f) {
       updateHelp();
       if (typeof syncOptConstraints === 'function') { syncOptConstraints(); refreshOptDimStates(); }
     });
+  } else if (f.type === 'check') {
+    wrap.innerHTML = `<div class="row"><label><input type="checkbox"${val ? ' checked' : ''}> ${f.label}</label></div>
+      <div class="help"></div>`;
+    const box = wrap.querySelector('input');
+    box.addEventListener('change', () => {
+      set(app.cfg, f.path, box.checked);
+      // A checkbox here changes which OTHER fields mean anything, so the whole
+      // panel has to re-read the config rather than just this row.
+      rebuild(true);
+      syncFields();
+      refreshFieldVisibility();
+      if (typeof syncOptConstraints === 'function') { syncOptConstraints(); refreshOptDimStates(); }
+    });
   } else {
     const disp = (v) => `${(v * f.scale).toFixed(f.digits)}${f.unit ? ' ' + f.unit : ''}`;
     wrap.innerHTML = `<div class="row"><label>${f.label}</label><span class="val">${disp(val)}</span></div>
@@ -311,10 +365,40 @@ function makeField(f) {
       out.textContent = disp(v);
       set(app.cfg, f.path, v);
       clearTimeout(pending);
-      pending = setTimeout(() => rebuild(false), 40);
+      pending = setTimeout(() => {
+        rebuild(false);
+        // This field may be an input to a derived one (magnet size -> pitch),
+        // so every OTHER row has to be re-read. Skipping the row under the
+        // cursor keeps a drag from fighting its own slider.
+        syncFields(f.path);
+        updateHelp();
+      }, 40);
     });
   }
   return wrap;
+}
+
+/** Push the config back into the sidebar. Needed because some fields are
+ *  derived from others -- pole pitch from magnet size, thickness from cube edge
+ *  -- and a slider showing a stale number is a slider that lies about the
+ *  machine being simulated. */
+function syncFields(exceptPath = null) {
+  for (const el of document.querySelectorAll('.field')) {
+    const path = el.dataset.path;
+    if (!path || path === exceptPath) continue;
+    const f = PARAMS.flatMap((g) => g.fields).find((x) => x.path === path);
+    if (!f) continue;
+    const v = get(app.cfg, path);
+    if (f.type === 'check') {
+      el.querySelector('input').checked = !!v;
+    } else if (f.type === 'select') {
+      el.querySelector('select').value = v;
+    } else {
+      el.querySelector('input').value = v;
+      el.querySelector('.val').textContent =
+        `${(v * f.scale).toFixed(f.digits)}${f.unit ? ' ' + f.unit : ''}`;
+    }
+  }
 }
 
 function refreshFieldVisibility() {
@@ -322,6 +406,9 @@ function refreshFieldVisibility() {
     const f = PARAMS.flatMap((g) => g.fields).find((x) => x.path === el.dataset.path);
     if (!f) return;
     el.style.display = f.show && !f.show(app.cfg) ? 'none' : '';
+    // A derived field is shown, not hidden: you still want to read the pole
+    // pitch your magnets produced. It just stops being something you can drag.
+    el.classList.toggle('derived', !!(f.disabled && f.disabled(app.cfg)));
   });
   updateHelp();
 }
@@ -1510,8 +1597,16 @@ function renderOptBest() {
         <span>mass <b>${sig(m.mass * 1000, 3)} g</b></span>
         <span>cond <b>${sig(m.cond, 3)}</b></span>
       </div>
+      ${m.yaw?.[45] ? `<div class="metrics" style="border-top:1px solid var(--border);padding-top:8px">
+        <span style="color:var(--muted)">rotated 45°:</span>
+        <span>lift <b>${sig(m.yaw[45].worstLift, 3)}×</b></span>
+        <span>hover <b>${sig(m.yaw[45].hoverPower, 3)} W</b></span>
+        <span>lift/W <b>${sig(m.yaw[45].worstLift / Math.max(m.yaw[45].hoverPower, 1e-9), 3)}</b></span>
+        <span style="color:var(--muted)">vs aligned ${sig(m.yaw[0].worstLift / Math.max(m.yaw[0].hoverPower, 1e-9), 3)}</span>
+      </div>` : ''}
       <div class="params">
-        <code>λ ${p(cfg.translator.pitch)} mm</code>
+        <code>λ ${p(cfg.translator.pitch)} mm${cfg.translator.driveByMagnet ? ` = ${p(cfg.translator.magnetSize)} × ${cfg.translator.segments}` : ''}</code>
+        ${cfg.translator.driveByMagnet ? `<code>magnet ${p(cfg.translator.magnetSize)} mm ${cfg.translator.cubicMagnets ? 'cubes' : 'blocks'}</code>` : ''}
         <code>magnet ${p(cfg.translator.magnetThickness)} mm</code>
         <code>platen ${p(cfg.translator.platenSize, 1000, 0)} mm</code>
         <code>coil pitch ${p(cfg.stator.coilPitch, 1000, 2)} mm (λ/${sig(cfg.translator.pitch / cfg.stator.coilPitch, 3)})</code>

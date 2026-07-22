@@ -24,17 +24,6 @@ import { smoothstep } from './math.js';
 
 const TWO_PI = Math.PI * 2;
 
-/** How many whole cells of width `cell` fit across `span`.
- *
- *  The epsilon is not decoration. A 72 mm patch of 6 mm cells evaluates to
- *  11.999999999999998, so a bare Math.floor drops an entire row AND column --
- *  144 magnets drawn and billed as 121, a 16% undercount that showed up as the
- *  renderer and the design table disagreeing with each other. Anything that
- *  counts cells must come through here. */
-export function cellsAcross(span, cell) {
-  if (!(cell > 0)) return 0;
-  return Math.max(0, Math.floor(span / cell + 1e-6));
-}
 const sinc = (x) => (Math.abs(x) < 1e-9 ? 1 : Math.sin(x) / x);
 
 // --- tile builders ----------------------------------------------------------
@@ -229,6 +218,51 @@ export const ARRAY_TYPES = {
   },
 };
 
+// --- driving the design from the magnet you can actually buy -----------------
+//
+// Normally the pole pitch is the free variable and the cell size falls out of it
+// as pitch/segments. That is the right order for exploring physics and the wrong
+// order for building anything: the optimiser happily returns a 20.9 mm pitch in
+// four segments, i.e. 5.225 mm cells, and nobody stocks a 5.225 mm magnet. Every
+// block becomes a custom grind, which costs more than the rest of the machine.
+//
+// Driving it the other way makes the magnet the input and the pitch the
+// consequence: pick a size off a supplier's shelf, pick how many magnets make a
+// wavelength, and the pole pitch is whatever those two say it is. The pitch then
+// moves in steps, not continuously -- which is a real and unavoidable property
+// of building from stock parts, not a limitation of the model.
+
+/** Block edge lengths every NdFeB supplier stocks, in metres. Cubes in these
+ *  sizes are catalogue items; anything between them is a custom order. */
+export const STOCK_MAGNET_SIZES = [
+  0.002, 0.003, 0.004, 0.005, 0.006, 0.008, 0.010, 0.012, 0.015, 0.020, 0.025,
+];
+
+/** Snap to the nearest stocked size. */
+export function nearestStockMagnet(size) {
+  let best = STOCK_MAGNET_SIZES[0];
+  for (const s of STOCK_MAGNET_SIZES) if (Math.abs(s - size) < Math.abs(best - size)) best = s;
+  return best;
+}
+
+/** Enforce the magnet-driven relationship on a translator config, in place.
+ *
+ *  Call this on any config before anything reads pitch or thickness -- the whole
+ *  point is that when `driveByMagnet` is set there is no independent pole pitch
+ *  to read, only a derived one, and a config where the two disagree describes a
+ *  machine that cannot be assembled. Also backfills `magnetSize` for configs
+ *  written before this existed, so the field is always meaningful. */
+export function applyMagnetDrive(t) {
+  if (!(t.magnetSize > 0)) t.magnetSize = t.pitch / Math.max(t.segments, 1);
+  if (!t.driveByMagnet) return t;
+  t.segments = Math.max(2, Math.round(t.segments));
+  t.pitch = t.magnetSize * t.segments;
+  // Cube stock is the cheap case: one part number, and thickness is not a
+  // separate thing you can choose.
+  if (t.cubicMagnets) t.magnetThickness = t.magnetSize;
+  return t;
+}
+
 // --- where the magnets physically sit ---------------------------------------
 
 /** The magnet patches for a layout. Extracted so the mass model, the BOM and
@@ -259,6 +293,58 @@ export function layoutPatches(layout, platenSize) {
   return patches;
 }
 
+/** Cell indices of the tile lattice that fit wholly inside a patch of width
+ *  `span`, as [first, last] inclusive.
+ *
+ *  The epsilon is not decoration. 72 mm of 6 mm cells evaluates to
+ *  11.999999999999998, so a bare floor drops an entire row AND column -- 144
+ *  magnets drawn and billed as 121, a 16% undercount that once showed up as the
+ *  renderer and the design table disagreeing with each other.
+ *
+ *  The lattice is NOT free to start at the patch edge. Magnetisation is
+ *  piecewise-constant on cell boundaries at multiples of `cell` measured from
+ *  the patch centre -- that is where the harmonic model puts them, and the field
+ *  evaluator reads it there. A block laid out from the patch edge instead lands
+ *  half a cell out of phase whenever the patch is an odd number of cells wide,
+ *  so it straddles two magnetisation cells: not one magnet, and not buildable.
+ *  Anchoring here instead costs up to one cell of unused border, which is real
+ *  -- a platen is only as big as a whole number of magnets. */
+function latticeRange(span, cell) {
+  if (!(cell > 0) || !(span > 0)) return [0, -1];
+  const half = span / 2;
+  const eps = 1e-6;
+  return [Math.ceil(-half / cell - eps), Math.floor(half / cell + eps) - 1];
+}
+
+/** The cells of one axis: where each sits in patch coordinates, and which tile
+ *  cell it takes its magnetisation from.
+ *
+ *  Only an axis the magnetisation actually varies along is quantised. A 1-D
+ *  Halbach tile is one cell tall -- its blocks are bars, uniform along y -- so
+ *  there is no phase to get wrong and no reason to give up a strip of platen to
+ *  a lattice that carries no information. Quantising it anyway is how the
+ *  four-array cross ended up reporting zero magnets: a 58.8 mm arm could not fit
+ *  a 40 mm bar centred on a lattice it did not need to obey. */
+function axisCells(span, cell, n) {
+  const out = [];
+  if (!(cell > 0) || !(span > 0)) return out;
+  if (n === 1) {
+    // Free axis: pack whole cells and centre them on the patch.
+    const m = Math.floor(span / cell + 1e-6);
+    for (let j = 0; j < m; j++) out.push({ c: -span / 2 + (j + 0.5) * cell, i: 0 });
+    return out;
+  }
+  const [a, b] = latticeRange(span, cell);
+  for (let i = a; i <= b; i++) out.push({ c: (i + 0.5) * cell, i: ((i % n) + n) % n });
+  return out;
+}
+
+/** How many whole tile cells fit across a patch of width `span`. `n` is the
+ *  number of tile cells on that axis; pass 1 for an axis with no periodicity. */
+export function latticeCount(span, cell, n = 2) {
+  return axisCells(span, cell, n).length;
+}
+
 /** Visit every cell of every patch, in patch-local coordinates.
  *
  *  One walk, used by the mass model, the BOM and both renderers, because the
@@ -268,17 +354,13 @@ export function layoutPatches(layout, platenSize) {
 export function eachCell(tile, patches, fn) {
   const cellW = tile.lx / tile.nx, cellH = tile.ly / tile.ny;
   for (const pt of patches) {
-    const nu = cellsAcross(pt.w, cellW), nv = cellsAcross(pt.h, cellH);
-    for (let jv = 0; jv < nv; jv++) {
-      for (let iu = 0; iu < nu; iu++) {
-        const px = -pt.w / 2 + (iu + 0.5) * cellW;
-        const py = -pt.h / 2 + (jv + 0.5) * cellH;
-        const tx = ((px % tile.lx) + tile.lx) % tile.lx;
-        const ty = ((py % tile.ly) + tile.ly) % tile.ly;
-        const ci = Math.min(tile.nx - 1, Math.floor((tx / tile.lx) * tile.nx));
-        const cj = Math.min(tile.ny - 1, Math.floor((ty / tile.ly) * tile.ny));
-        fn(px, py, (cj * tile.nx + ci) * 3, pt);
-      }
+    // Cell i spans [i*cell, (i+1)*cell), so its magnetisation is tile cell
+    // i mod n -- an exact integer operation, with no chance for a cell boundary
+    // to be decided by floating-point noise.
+    const us = axisCells(pt.w, cellW, tile.nx);
+    const vs = axisCells(pt.h, cellH, tile.ny);
+    for (const v of vs) {
+      for (const u of us) fn(u.c, v.c, (v.i * tile.nx + u.i) * 3, pt);
     }
   }
 }
@@ -292,6 +374,27 @@ export function eachCell(tile, patches, fn) {
  *  than assuming a solid slab. */
 export function cellIsEmpty(tile, k) {
   return Math.hypot(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2]) <= 1e-9 * tile.Br;
+}
+
+/** True if every block in the tile is magnetised along one of its own axes.
+ *
+ *  Buying a stock SIZE is only half of buying a stock magnet. A supplier's
+ *  catalogue block is magnetised through its thickness or through its length; a
+ *  block magnetised at 51 degrees is a custom order whatever its dimensions.
+ *  That distinction is what decides whether "5 mm cubes" means a bag of cubes or
+ *  a bespoke magnetising fixture, and it depends on the segment count: only
+ *  M = 2 and M = 4 put the ideal rotating magnetisation on axes at every sample,
+ *  because only then are the angles multiples of 90 degrees. */
+export function tileIsStockMagnetised(tile, tolDeg = 10) {
+  const n = tile.nx * tile.ny;
+  for (let i = 0; i < n; i++) {
+    const k = i * 3;
+    const L = Math.hypot(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2]);
+    if (L <= 1e-9 * tile.Br) continue;             // empty pocket: nothing to buy
+    const elev = Math.abs((Math.asin(tile.cells[k + 2] / L) * 180) / Math.PI);
+    if (elev > tolDeg && elev < 90 - tolDeg) return false;
+  }
+  return true;
 }
 
 /** Fraction of the platen's cells that actually hold a magnet. Counted over the
@@ -444,6 +547,7 @@ export function makeTranslator(cfg) {
 
   return {
     cfg, tile, harm, patches, mass, inertia, magnetMass, fill,
+    stockMagnetised: tileIsStockMagnetised(tile),
     faceZ: 0, // magnet face is the platen origin plane; +z is up, away from coils
     footprintRadius: Math.max(...patches.map((p) =>
       Math.hypot(Math.abs(p.u) + p.w / 2, Math.abs(p.v) + p.h / 2))),

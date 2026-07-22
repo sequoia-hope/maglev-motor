@@ -16,8 +16,7 @@
 // for a soft one: no amount of low hover power compensates for a machine that
 // cannot lift itself at some point in its workspace.
 
-import { quat } from './math.js';
-import { makeTranslator } from './halbach.js';
+import { makeTranslator, applyMagnetDrive, nearestStockMagnet } from './halbach.js';
 import { makeStator } from './coils.js';
 import { analysePose } from './physics.js';
 import { stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
@@ -30,8 +29,21 @@ const SEARCH_QUALITY = { ringsPerCoil: 1, segmentsPerSide: 2, maxOrder: 2 };
  *  fraction of pole pitch, which is how the ratio actually matters (lambda/3 is
  *  the three-phase choice, lambda/2 is the degenerate one). */
 export const DIMENSIONS = {
-  pitch: { label: 'Pole pitch λ', path: 'translator.pitch', min: 0.012, max: 0.070, unit: 'mm', scale: 1000 },
-  magnetThickness: { label: 'Magnet thickness', path: 'translator.magnetThickness', min: 0.002, max: 0.015, unit: 'mm', scale: 1000 },
+  pitch: { label: 'Pole pitch λ', path: 'translator.pitch', min: 0.012, max: 0.070, unit: 'mm', scale: 1000,
+    // When the magnet is the input, the pitch is an output. Searching it too
+    // would let the search propose a pitch its own magnets cannot produce.
+    skipIf: (c) => c.translator.driveByMagnet },
+  // Stock sizes only. `snap` is applied to every sampled and refined value, so
+  // the search cannot wander onto a 5.2 mm magnet nobody sells.
+  magnetSize: { label: 'Magnet size (stock)', path: 'translator.magnetSize',
+    min: 0.002, max: 0.025, unit: 'mm', scale: 1000, snap: nearestStockMagnet,
+    skipIf: (c) => !c.translator.driveByMagnet },
+  // With the magnet fixed, this is the ONLY way to move the pole pitch, which
+  // makes it a first-class search variable rather than a modelling detail.
+  segments: { label: 'Magnets per wavelength', path: 'translator.segments',
+    min: 2, max: 8, unit: '', scale: 1, snap: Math.round },
+  magnetThickness: { label: 'Magnet thickness', path: 'translator.magnetThickness', min: 0.002, max: 0.015, unit: 'mm', scale: 1000,
+    skipIf: (c) => c.translator.driveByMagnet && c.translator.cubicMagnets },
   platenSize: { label: 'Platen size', path: 'translator.platenSize', min: 0.05, max: 0.18, unit: 'mm', scale: 1000 },
   coilPitchRatio: { label: 'Coil pitch ratio λ/n', path: null, min: 1.8, max: 4.5, unit: '', scale: 1 },
   windingHeight: { label: 'Winding height', path: 'stator.windingHeight', min: 0.002, max: 0.015, unit: 'mm', scale: 1000, skipIf: (c) => c.stator.coilType === 'pcb' },
@@ -52,6 +64,20 @@ export const OBJECTIVES = {
   // build, where flatness and assembly tolerance dominate.
   gap: { label: 'Max air gap (most buildable)', better: 'max', get: (m) => m.gap * 1000, unit: 'mm' },
   liftPerWatt: { label: 'Max lift per watt', better: 'max', get: (m) => m.worstLift / Math.max(m.hoverPower, 1e-6), unit: '×/W' },
+  // A square coil grid under a square magnet array is at its most favourable
+  // when the two are aligned; 45 degrees is the far corner of yaw, where the
+  // array's periodicity is sqrt(2) out of step with the coils'. Optimising
+  // there instead of at 0 buys a machine that does not quietly get worse as it
+  // rotates. Declaring the extra angle here is what makes evaluate() sample it,
+  // so nothing pays for the second pose sweep unless this objective is chosen.
+  liftPerWattYaw45: {
+    label: 'Max lift per watt at 45° yaw', better: 'max', unit: '×/W',
+    yaws: [0, Math.PI / 4],
+    get: (m) => {
+      const y = m.yaw?.[45];
+      return y ? y.worstLift / Math.max(y.hoverPower, 1e-6) : NaN;
+    },
+  },
   power: { label: 'Min hover power', better: 'min', get: (m) => m.hoverPower, unit: 'W' },
   lift: { label: 'Max worst-case lift margin', better: 'max', get: (m) => m.worstLift, unit: '×' },
   amplifiers: { label: 'Min amplifiers', better: 'min', get: (m) => m.amplifiers, unit: '' },
@@ -85,7 +111,15 @@ export const DEFAULT_CONSTRAINTS = {
  *  every PCB design ever built. */
 export function constraintsFor(cfg, base = DEFAULT_CONSTRAINTS) {
   const pcb = cfg.stator.coilType === 'pcb';
-  return { ...base, maxCurrentDensity: pcb ? 60 : 15 };
+  // If the point of the design is that the magnets come off a shelf, then a
+  // design needing custom magnetisation has not solved the problem it was set.
+  // Without this the search cheerfully returns 5 mm cubes at seven segments per
+  // wavelength -- stock size, bespoke magnetisation, 120 custom parts.
+  return {
+    ...base,
+    maxCurrentDensity: pcb ? 60 : 15,
+    requireStockMagnets: base.requireStockMagnets ?? !!cfg.translator.driveByMagnet,
+  };
 }
 
 const get = (o, p) => p.split('.').reduce((a, k) => a[k], o);
@@ -103,6 +137,9 @@ export function applyCandidate(cfg, cand) {
     const d = DIMENSIONS[k];
     if (d?.path) set(c, d.path, v);
   }
+  // Magnet-driven designs derive their pitch from the magnet, and everything
+  // below reads pitch -- so this has to happen before the coil pitch is set.
+  applyMagnetDrive(c.translator);
   // Coil pitch is always derived from the ratio so the two never disagree.
   const ratio = cand.coilPitchRatio ?? (c.translator.pitch / c.stator.coilPitch);
   c.stator.coilPitch = c.translator.pitch / ratio;
@@ -116,7 +153,7 @@ export function applyCandidate(cfg, cand) {
  *  Worst-case lift is sampled over a patch spanning two coil pitches, because
  *  the capability ripple is periodic at the coil pitch -- a centred evaluation
  *  is a symmetry point and systematically flatters the design. */
-export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARCH_QUALITY) {
+export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARCH_QUALITY, yaws = [0]) {
   let tr, stator;
   // The mechanical stack supplies platen mass, the air-gap floor and the
   // thermal path. All three used to be invented constants.
@@ -133,22 +170,34 @@ export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARC
   }
   if (!stator.coils.length) return { feasible: false, reason: 'no coils' };
 
-  const q = quat.identity();
   const span = cfg.stator.coilPitch * 2;
   const N = 3;
   let worstLift = Infinity, worstAcc = Infinity, maxPower = 0, worstSigma = Infinity;
   let a0 = null;
-  for (let iy = 0; iy < N; iy++) {
-    for (let ix = 0; ix < N; ix++) {
-      const x = (ix / N) * span, y = (iy / N) * span;
-      const a = analysePose(stator, tr, [x, y, cfg.sim.gap], q, cfg.sim.iMax, cfg.sim.grouping);
-      if (!a0) a0 = a;
-      worstLift = Math.min(worstLift, a.liftMargin);
-      worstAcc = Math.min(worstAcc, a.maxAccel / 9.80665);
-      worstSigma = Math.min(worstSigma, a.sigmaMin / (a.sigma[0] || 1));
-      if (isFinite(a.hoverPower) && a.hoverSaturated <= 1e-6) maxPower = Math.max(maxPower, a.hoverPower);
-      else maxPower = Infinity;
+  const byYaw = [];
+  for (const yaw of yaws) {
+    // Yaw about z. The platen's own axes rotate away from the coil grid's, so
+    // this is a genuinely different machine to commutate, not the same one
+    // relabelled -- which is exactly why it is worth sampling.
+    const h = yaw / 2;
+    const q = [Math.cos(h), 0, 0, Math.sin(h)];
+    let yLift = Infinity, yPower = 0;
+    for (let iy = 0; iy < N; iy++) {
+      for (let ix = 0; ix < N; ix++) {
+        const x = (ix / N) * span, y = (iy / N) * span;
+        const a = analysePose(stator, tr, [x, y, cfg.sim.gap], q, cfg.sim.iMax, cfg.sim.grouping);
+        if (!a0) a0 = a;
+        worstLift = Math.min(worstLift, a.liftMargin);
+        worstAcc = Math.min(worstAcc, a.maxAccel / 9.80665);
+        worstSigma = Math.min(worstSigma, a.sigmaMin / (a.sigma[0] || 1));
+        yLift = Math.min(yLift, a.liftMargin);
+        if (isFinite(a.hoverPower) && a.hoverSaturated <= 1e-6) {
+          maxPower = Math.max(maxPower, a.hoverPower);
+          yPower = Math.max(yPower, a.hoverPower);
+        } else { maxPower = Infinity; yPower = Infinity; }
+      }
     }
+    byYaw.push({ yaw, worstLift: yLift, hoverPower: yPower });
   }
 
   const J = (a0.hoverPeakCurrent ?? 0) / (stator.wireArea * 1e6);
@@ -160,6 +209,11 @@ export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARC
     activeCoils: a0.activeCoils, cond: a0.conditionNumber, mass: tr.mass,
     peakB: tr.peakGapField, rank6: worstSigma > 1e-4,
     stack, wallStress: stack.wallStress, neighbourForce: stack.neighbourForce,
+    stockMagnets: tr.stockMagnetised,
+    // Per-yaw breakdown, so an objective can ask about one orientation while
+    // feasibility still answers for the worst of all of them.
+    byYaw,
+    yaw: Object.fromEntries(byYaw.map((y) => [Math.round((y.yaw * 180) / Math.PI), y])),
   };
 
   // Computed from the tolerance stack, not from a fraction of the platen.
@@ -182,6 +236,7 @@ export function evaluate(cfg, constraints = DEFAULT_CONSTRAINTS, quality = SEARC
   if (!(m.coils <= (constraints.maxCoils ?? Infinity))) fails.push('coil count');
   if (!(m.wallStress <= (constraints.maxWallStress ?? Infinity))) fails.push('magnet retainer stress');
   if (constraints.requireRank6 && !m.rank6) fails.push('rank');
+  if (constraints.requireStockMagnets && !m.stockMagnets) fails.push('needs custom-magnetised magnets');
   m.feasible = fails.length === 0;
   m.reason = fails.join(', ');
   return m;
@@ -201,6 +256,7 @@ export function violation(m, cons) {
   v += Math.max(0, m.coils / (cons.maxCoils ?? Infinity) - 1);
   v += Math.max(0, m.wallStress / (cons.maxWallStress ?? Infinity) - 1);
   if (cons.requireRank6 && !m.rank6) v += 1;
+  if (cons.requireStockMagnets && !m.stockMagnets) v += 1;
   return isFinite(v) ? v : 1e6;
 }
 
@@ -245,9 +301,17 @@ export function paretoFront(results) {
   return f.filter((r) => !f.some((o) => o !== r && dominates(o.m, r.m)));
 }
 
+/** Some dimensions are not continuous: a magnet comes in stock sizes and a
+ *  wavelength contains a whole number of them. Snapping at the point of
+ *  sampling keeps the rest of the search oblivious to the difference. */
+const snapped = (d, v) => {
+  const s = d.snap ? d.snap(v) : v;
+  return Math.min(d.max, Math.max(d.min, s));
+};
+
 function sample(dims, cats, rnd) {
   const c = {};
-  for (const [k, d] of Object.entries(dims)) c[k] = d.min + (d.max - d.min) * rnd();
+  for (const [k, d] of Object.entries(dims)) c[k] = snapped(d, d.min + (d.max - d.min) * rnd());
   for (const [k, d] of Object.entries(cats)) c[k] = d.values[Math.floor(rnd() * d.values.length)];
   return c;
 }
@@ -274,9 +338,13 @@ export function* search(baseCfg, spec) {
   const results = [];
   let evaluated = 0;
 
+  // An objective may need poses the default sweep does not visit. Ask it once,
+  // here, rather than making every caller remember.
+  const yaws = OBJECTIVES[objective]?.yaws ?? [0];
+
   const run = (cand) => {
     const cfg = applyCandidate(baseCfg, cand);
-    const m = evaluate(cfg, constraints);
+    const m = evaluate(cfg, constraints, SEARCH_QUALITY, yaws);
     const r = {
       cand, cfg, m,
       score: m.feasible ? score(m, objective) : -Infinity,
@@ -314,7 +382,7 @@ export function* search(baseCfg, spec) {
         const d = dims[k];
         for (const dir of [1, -1]) {
           const trial = { ...cur };
-          trial[k] = Math.min(d.max, Math.max(d.min, cur[k] + dir * step * (d.max - d.min)));
+          trial[k] = snapped(d, cur[k] + dir * step * (d.max - d.min));
           if (trial[k] === cur[k]) { done++; continue; }
           const r = run(trial);
           done++;

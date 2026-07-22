@@ -131,6 +131,11 @@ select.inline { font-size: 11px; padding: 2px 4px; margin-left: auto; }
 .field select { width: 100%; margin-top: 3px; }
 .field .help { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.35; }
 .field.disabled { opacity: 0.4; pointer-events: none; }
+/* A DERIVED field still has to be readable -- the pole pitch your magnets
+   produced is a number you want, it is just not one you may drag. */
+.field.derived input[type="range"] { pointer-events: none; opacity: 0.45; }
+.field.derived .val::after { content: ' (derived)'; color: var(--muted); font-size: 10px; }
+.field .row label input[type="checkbox"] { accent-color: var(--accent); margin-right: 4px; vertical-align: -1px; }
 
 .sidebar-foot { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 10px; }
 .selftest { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.4; }

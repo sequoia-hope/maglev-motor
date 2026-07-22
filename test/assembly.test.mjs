@@ -3,11 +3,11 @@
 // count, same air gap, and a stack that actually closes with no gaps or
 // interpenetrating parts.
 
-import { makeTranslator, ARRAY_TYPES, layoutPatches, patchFill, configFill, selfTest } from '../src/halbach.js';
+import { makeTranslator, ARRAY_TYPES, layoutPatches, patchFill, configFill, selfTest, eachCell } from '../src/halbach.js';
 import { makeStator } from '../src/coils.js';
 import { stackUp, mechDefaultsFor, DEFAULT_MECH } from '../src/mechanical.js';
 import { buildAssembly, magnetCensus, nearestGrade, nearestAWG } from '../src/assembly.js';
-import { cellsAcross } from '../src/halbach.js';
+import { latticeCount } from '../src/halbach.js';
 import { readFileSync } from 'fs';
 
 const src = readFileSync('../src/app.js', 'utf8');
@@ -90,12 +90,48 @@ console.log('=== the half-cell shift is real, and it costs nothing ===');
 // Math.floor turned that into 11 -- silently deleting a row AND a column, so
 // the renderer drew 121 magnets while the design table billed 144.
 console.log('\n=== cell counting survives floating point ===');
-check('72 mm / 6 mm counts 12 cells, not 11', cellsAcross(0.072, 0.006) === 12, `${cellsAcross(0.072, 0.006)}`);
-check('a partial cell is not counted', cellsAcross(0.071, 0.006) === 11, `${cellsAcross(0.071, 0.006)}`);
+check('72 mm / 6 mm counts 12 cells, not 11', latticeCount(0.072, 0.006) === 12, `${latticeCount(0.072, 0.006)}`);
+// Counts are of cells on the MAGNETISATION lattice, centred on the patch, so a
+// span that is not a whole number of cells gives up the odd half-cell at each
+// end rather than sliding the grid: 71 mm of 6 mm cells is 10 aligned cells
+// spanning 60 mm, not 11 spanning 66 mm off-centre.
+check('a partial cell is not counted', latticeCount(0.071, 0.006) === 10, `${latticeCount(0.071, 0.006)}`);
 check('exact multiples hold at other sizes',
-  cellsAcross(0.14, 0.01) === 14 && cellsAcross(0.04, 0.0035) === 11,
-  `${cellsAcross(0.14, 0.01)}, ${cellsAcross(0.04, 0.0035)}`);
-check('degenerate cell size does not divide by zero', cellsAcross(0.072, 0) === 0);
+  latticeCount(0.14, 0.01) === 14 && latticeCount(0.04, 0.0035) === 10,
+  `${latticeCount(0.14, 0.01)}, ${latticeCount(0.04, 0.0035)}`);
+check('degenerate cell size does not divide by zero', latticeCount(0.072, 0) === 0);
+
+// The block grid is anchored to the MAGNETISATION lattice, not to the platen
+// edge. Anchoring it to the edge puts it half a cell out of phase whenever the
+// platen is an odd number of cells wide, and every block then straddles two
+// magnetisation cells -- which is not a magnet you can buy, and which made the
+// census return a scrambled, non-periodic pattern.
+console.log('\n=== the block grid is in phase with the magnetisation ===');
+{
+  const t = ARRAY_TYPES.halbach2d.build({ pitch: 0.020, thickness: 0.005, Br: 1.32, segments: 4 });
+  const pts = layoutPatches('single', 0.065);            // 13 cells of 5 mm: odd
+  const seen = [];
+  eachCell(t, pts, (px, py, k) => seen.push({ px, py, k }));
+  const cw = t.lx / t.nx;
+  check('an odd-width platen drops to a whole number of aligned cells',
+    latticeCount(0.065, cw) === 12, `${latticeCount(0.065, cw)} cells of 5 mm in 65 mm`);
+  check('every cell centre sits at the middle of a lattice cell',
+    seen.every((c) => Math.abs(((c.px / cw) % 1 + 1) % 1 - 0.5) < 1e-9),
+    `${seen.length} cells checked`);
+  // Periodicity is the observable consequence: shift by one tile period and the
+  // magnetisation must repeat exactly.
+  // floor, not round: a cell centre is at an exact half-integer of the cell
+  // pitch, and Math.round(-5.5) is -5 while Math.round(5.5) is 6 -- so rounding
+  // folds two different cells onto the same key.
+  const at = new Map(seen.map((c) => [`${Math.floor(c.px / cw)},${Math.floor(c.py / cw)}`, c.k]));
+  let periodic = true;
+  for (const [key, k] of at) {
+    const [i, j] = key.split(',').map(Number);
+    const other = at.get(`${i + t.nx},${j}`);
+    if (other !== undefined && other !== k) periodic = false;
+  }
+  check('magnetisation repeats with the tile period across the platen', periodic);
+}
 
 console.log('\n=== grade / gauge lookup ===');
 check('Br 1.32 T maps to N42', nearestGrade(1.32).name === 'N42', nearestGrade(1.32).name);
