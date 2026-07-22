@@ -1,0 +1,21 @@
+const list=await (await fetch('http://127.0.0.1:9223/json')).json();
+const pg=list.find(t=>t.type==='page')||list[0];
+const sock=new WebSocket(pg.webSocketDebuggerUrl); let id=0; const pend=new Map();
+const send=(m,p={})=>new Promise(r=>{const i=++id;pend.set(i,r);sock.send(JSON.stringify({id:i,method:m,params:p}));});
+await new Promise(r=>sock.addEventListener('open',r));
+const exc=[]; sock.addEventListener('message',e=>{const d=JSON.parse(e.data);if(d.id&&pend.has(d.id)){pend.get(d.id)(d);pend.delete(d.id);}if(d.method==='Runtime.exceptionThrown')exc.push(d.params.exceptionDetails?.exception?.description||'exc');});
+await send('Runtime.enable'); await send('Page.enable');
+await send('Page.navigate',{url:'http://127.0.0.1:8000/'});
+await new Promise(r=>setTimeout(r,1500));
+const evl=async(x)=>{const r=await send('Runtime.evaluate',{expression:x,returnByValue:true,awaitPromise:true});return r.result?.result?.value;};
+await evl(`(()=>{const s=document.getElementById('presetSelect');s.value='pcbmini';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+await new Promise(r=>setTimeout(r,800));
+// click Build tab if present
+await evl(`(()=>{const t=[...document.querySelectorAll('button,[role=tab],.tab,a')].find(e=>/^\\s*Build\\s*$/i.test(e.textContent));if(t)t.click();return t?t.textContent:'no build tab';})()`);
+await new Promise(r=>setTimeout(r,600));
+const card=await evl(`(()=>{const el=document.getElementById('magnetOrderCard');if(!el)return 'no card el';const t=el.querySelector('[style*=var(--good)]');return el.textContent.replace(/\\s+/g,' ').trim();})()`);
+console.log('CARD TEXT:\n'+card);
+const links=await evl(`[...document.querySelectorAll('#magnetOrderCard a')].map(a=>a.href)`);
+console.log('\nLINKS:',links);
+console.log('EXCEPTIONS:',exc.length?exc:'none');
+sock.close();

@@ -29,6 +29,62 @@ export function nearestGrade(Br) {
   return { ...best, exact: Math.abs(best.Br - Br) < 0.015 };
 }
 
+// Real, ORDERABLE catalogue parts, keyed by block footprint / thickness / grade.
+// The magnet order table above already says "through-thickness (stock)" in the
+// abstract; this turns that into a specific part number and price when the
+// design's block matches something a supplier actually stocks. Only verified
+// SKUs go in here -- an unmatched design gets the generic guidance, never an
+// invented part number, which is the whole point of keeping it a lookup rather
+// than a sentence in a blurb. Dimensions in mm; `for` is the census class the
+// line covers ('axial', 'in-plane', or 'both' when one SKU serves both roles).
+const MAGNET_CATALOGUE = [
+  {
+    // pcbmini: a 6×6×3 checkerboard needs an axial block and an in-plane block.
+    // The in-plane one is NOT a custom magnetisation -- it is the stock 6×3×6
+    // size laid on its side, where the 3 mm dimension stands up and one of the
+    // two equal 6 mm edges is the (horizontal) magnetised axis. Two catalogue
+    // SKUs, no custom order. Verified 2026-07 on suprememagnets.com.
+    w: 6, h: 6, t: 3, grade: 'N52', tol: 0.25, vendor: 'Supreme Magnets', verified: '2026-07',
+    lines: [
+      { for: 'axial', order: '6 × 6 × 3 mm N52, magnetised through the 3 mm',
+        url: 'https://suprememagnets.com/products/neodymium-magnet-6x6x3mm-block', unit: 0.70 },
+      { for: 'in-plane', order: '6 × 3 × 6 mm N52, magnetised through a 6 mm edge — laid 3 mm-up it is the in-plane block',
+        url: 'https://suprememagnets.com/products/neodymium-magnet-6x3x6mm-block', unit: 0.49 },
+    ],
+    note: 'The in-plane block is a stock 6×3×6 on its side, so both magnetisations are catalogue items — no custom order, no lead time.',
+  },
+  {
+    // amz316: a true cube is magnetised through thickness only, but rotating it
+    // 90° gives an in-plane dipole with the SAME footprint, so one SKU is the
+    // whole platen. Verified against amazingmagnets.com (see the amz316 blurb).
+    w: 4.7625, h: 4.7625, t: 4.7625, grade: 'N52', tol: 0.15, vendor: 'Amazing Magnets', verified: '2026-07',
+    lines: [
+      { for: 'both', order: '3/16″ (4.76 mm) N52 cube, C188A2-N52, magnetised through thickness',
+        url: 'https://amazingmagnets.com/C188A2-N52/', unit: 0.56 },
+    ],
+    note: 'One part number for the entire platen: a true cube turned in the jig is the in-plane block.',
+  },
+];
+
+/** Concrete order plan for a census, or null when no verified catalogue part
+ *  matches the design's block. Fills in the counts and costs from the census so
+ *  the totals track the actual array, empties and all. */
+function catalogueOrder(census, magTmm, gradeName) {
+  const near = (a, b, tol) => Math.abs(a - b) <= tol;
+  const e = MAGNET_CATALOGUE.find((c) => c.grade === gradeName
+    && near(c.w, census.cellW * 1000, c.tol) && near(c.h, census.cellH * 1000, c.tol)
+    && near(c.t, magTmm, c.tol));
+  if (!e) return null;
+  const qtyFor = (f) => f === 'both' ? census.axial + census.inPlane
+    : f === 'axial' ? census.axial : f === 'in-plane' ? census.inPlane : 0;
+  const lines = e.lines.map((l) => {
+    const qty = qtyFor(l.for);
+    return { ...l, qty, cost: qty * l.unit };
+  }).filter((l) => l.qty > 0);
+  const total = lines.reduce((a, l) => a + l.cost, 0);
+  return { vendor: e.vendor, verified: e.verified, note: e.note, lines, total, skus: lines.length };
+}
+
 /** Standard AWG for a wire diameter, so the winding schedule is orderable. */
 const AWG = [
   [18, 1.024], [20, 0.812], [22, 0.644], [24, 0.511], [26, 0.405],
@@ -249,8 +305,10 @@ export function buildAssembly(cfg, stack, tr, stator) {
     + stack.adhesiveMass;
   const fixedMass = parts.filter((p) => p.side === 'stator').reduce((a, p) => a + p.mass, 0);
 
+  const orderPlan = catalogueOrder(census, magT * 1000, grade.name);
+
   return {
-    parts, consumables, census, grade, awg, sourcing,
+    parts, consumables, census, grade, awg, sourcing, orderPlan,
     movingMass, fixedMass,
     statorHeight: coilTop - (spreaderTop - m.spreaderThickness),
     platenHeight: magT + m.backingThickness,

@@ -783,6 +783,21 @@ function renderBuild() {
     (${c.skus.join(', ')}). Direction on the platen is an assembly step, not a different part —
     which is exactly why the cells are square.</p>`;
 
+  if (A.orderPlan) {
+    const o = A.orderPlan;
+    m += `<div style="margin-top:10px;padding:10px;border-left:3px solid var(--good);background:var(--plane)">
+      <p style="font-size:12px;color:var(--good);margin:0 0 8px"><b>Order list — ${o.vendor}.</b>
+      ${o.skus} catalogue part${o.skus === 1 ? '' : 's'}, verified ${o.verified}. ${o.note}</p>
+      <div class="table-wrap"><table><thead><tr><th style="text-align:left">Order as</th><th>For</th><th>Qty</th><th>Unit</th><th>Line</th></tr></thead><tbody>`;
+    for (const l of o.lines) {
+      m += `<tr><td style="text-align:left"><a href="${l.url}" target="_blank" rel="noopener" style="color:var(--accent)">${l.order}</a></td>
+        <td style="color:var(--muted)">${l.for === 'both' ? 'all blocks' : l.for}</td>
+        <td>${l.qty}</td><td>$${l.unit.toFixed(2)}</td><td>$${l.cost.toFixed(2)}</td></tr>`;
+    }
+    m += `</tbody></table></div>
+      <p style="font-size:12px;color:var(--ink-2);margin:8px 0 0"><b>$${o.total.toFixed(2)}</b> of magnet for the whole platen at list price, before quantity breaks. Order spares — these chip, and you assemble against ${sig(st.neighbourForce, 2)} N of neighbour repulsion.</p></div>`;
+  }
+
   if (A.sourcing) {
     m += `<div style="margin-top:10px;padding:10px;border-left:3px solid var(--crit);background:var(--plane)">
       <p style="font-size:12px;color:var(--crit);margin:0 0 6px"><b>Sourcing problem.</b> ${A.sourcing.problem}

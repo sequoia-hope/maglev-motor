@@ -217,6 +217,33 @@ for (const [key, preset] of Object.entries(PRESETS)) {
   check('magnet mass reconciles with the stack-up',
     close(A.parts.find((p) => p.id === 'magnets').mass, stack.magnetMass, 1e-12));
 
+  // --- the concrete order plan, where one exists, must bill the census -------
+  // The catalogue turns "through-thickness (stock)" into a part number and a
+  // price, so its counts and total have to track the actual array -- otherwise
+  // it is just a nicer-looking wrong number.
+  if (A.orderPlan) {
+    const o = A.orderPlan;
+    const qtyByClass = { axial: census.axial, 'in-plane': census.inPlane };
+    const lineQtyOk = o.lines.every((l) => l.for === 'both'
+      ? l.qty === census.axial + census.inPlane
+      : l.qty === qtyByClass[l.for]);
+    check(`${key}: order plan counts every magnet from the census`, lineQtyOk,
+      o.lines.map((l) => `${l.qty} ${l.for}`).join(', '));
+    check(`${key}: order plan bills only stock (no diagonal custom part)`, census.diagonal === 0);
+    check(`${key}: order total is the sum of its lines`,
+      close(o.total, o.lines.reduce((a, l) => a + l.qty * l.unit, 0), 1e-9),
+      `$${o.total.toFixed(2)}`);
+    check(`${key}: every ordered magnet has a real supplier URL`,
+      o.lines.every((l) => /^https:\/\//.test(l.url)));
+    // Cross-check against the number the blurb states independently: the amz316
+    // prose was verified from the catalogue long before this order plan existed,
+    // so the two agreeing is a real check, not a tautology.
+    if (key === 'amz316') check('amz316: order total matches the $47.60 in its blurb',
+      close(o.total, 47.60, 1e-9), `$${o.total.toFixed(2)}`);
+    if (key === 'pcbmini') check('pcbmini: two Supreme SKUs total $18.06',
+      o.skus === 2 && close(o.total, 18.06, 1e-9), `$${o.total.toFixed(2)}`);
+  }
+
   // --- the stack must physically close -------------------------------------
   const solid = A.parts.filter((p) => p.kind !== 'gap' && p.id !== 'retainer');
   solid.sort((a, b) => a.z0 - b.z0);
