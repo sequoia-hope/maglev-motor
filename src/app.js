@@ -3,7 +3,7 @@
 import { quat, clamp } from './math.js';
 import {
   ARRAY_TYPES, makeTranslator, selfTest,
-  applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES,
+  applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES, arraySymmetry, imperialName,
 } from './halbach.js';
 import { COIL_TYPES, makeStator } from './coils.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
@@ -19,21 +19,33 @@ import { renderExploded } from './exploded.js';
 // ---------------------------------------------------------------- presets ---
 
 const PRESETS = {
+  amz316: {
+    label: '3/16" cubes, one part number (Amazing Magnets)',
+    blurb: 'Every magnet is the same catalogue part: Amazing Magnets C188A2-N52, a 3/16" N52 cube at $0.56 each — 85 magnets in 121 pockets, $47.60 of magnet for the whole platen (25 axial, 60 in-plane, 0 custom). Their cubes are sold magnetised through the thickness only, but a true cube rotates 90° to give an in-plane dipole with the same footprint, so the axial blocks and the flux-steering blocks are the SAME SKU turned in the jig. λ = 19.05 mm because that is 4 × 3/16", not because anything chose it. 11×11 symmetric array, 52.4 mm platen, 225 hand-wound coils on a 94 mm stator, 16 amplifiers on 2×2 commutation regions, and a 2.5 mm gap over a 0.56 mm tolerance floor. Amazing Magnets themselves stock imperial only, so the 5 mm preset is not orderable from THEM — but 5 mm cubes are easy to get elsewhere (Amazon), so both sizes are live options rather than one ruling out the other.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single',
+        driveByMagnet: true, cubicMagnets: true, magnetSize: 0.0047625,
+        pitch: 0.01905, magnetThickness: 0.0047625, Br: 1.45, segments: 4,
+        platenSize: 0.0523875, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'square', coilPitch: 0.00635, coilFill: 0.92, statorSize: 0.094, windingHeight: 0.004, wireDiameter: 0.0002, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
+      sim: { gap: 0.0025, iMax: 7.5, bwPos: 18, bwAtt: 34, zeta: 1.0, kiPos: 0.5, kiAtt: 0.5, maxTilt: 0.06, quality: 'balanced', grouping: 'r2' },
+    },
+  },
   cube5: {
     label: '5 mm cubes (nothing custom)',
-    blurb: 'Designed backwards from the shopping list: 108 plain 5 mm N42 cubes, no custom magnetisation, no ground-to-size blocks. Four cubes per wavelength is the only stock-magnetised choice, so λ = 20 mm is not a variable — it is what 5 mm cubes give you. Everything else was searched around it: 60 mm platen, 225 hand-wound coils, 2.2 mm gap with 1.6 mm of tolerance margin under it.',
+    blurb: 'Designed backwards from the shopping list: 133 plain 5 mm N42 cubes, no custom magnetisation, no ground-to-size blocks. Four cubes per wavelength is the only stock-magnetised choice, so λ = 20 mm is not a variable — it is what 5 mm cubes give you. Everything else was searched around it: 225 hand-wound coils, 2.2 mm gap with 1.6 mm of tolerance margin under it. The platen is 65 mm because that is 13 cells exactly: a symmetric array needs an odd number of cells, and the 65.0 mm array wastes no border at all, where 60 mm would have given up a cell on each side and carried only 85 cubes.',
     cfg: {
       translator: { arrayType: 'halbach2d', layout: 'single',
         driveByMagnet: true, cubicMagnets: true, magnetSize: 0.005,
         pitch: 0.020, magnetThickness: 0.005, Br: 1.32, segments: 4,
-        platenSize: 0.060, platenMass: 0, maxOrder: 3 },
+        platenSize: 0.065, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'square', coilPitch: 0.0078, coilFill: 0.92, statorSize: 0.120, windingHeight: 0.004, wireDiameter: 0.0003, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: true },
       sim: { gap: 0.0022, iMax: 7.5, bwPos: 18, bwAtt: 34, zeta: 1.0, kiPos: 0.5, kiAtt: 0.5, maxTilt: 0.06, quality: 'balanced', grouping: 'r2' },
     },
   },
   desk40: {
     label: '40 mm desktop platen (searched)',
-    blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 40 magnets in 49 pockets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire.',
+    blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 33 magnets in 49 pockets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire. The symmetric lattice suits this one: 7×7 cells, 36.6 mm across on a 40 mm platen, where the old boundary-anchored grid managed only 6×6 and 27 magnets.',
     cfg: {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.0209, magnetThickness: 0.002, Br: 1.32, segments: 4, platenSize: 0.040, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'square', coilPitch: 0.00677, coilFill: 0.92, statorSize: 0.080, windingHeight: 0.0038, wireDiameter: 0.0002, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
@@ -42,10 +54,10 @@ const PRESETS = {
   },
   pcb: {
     label: 'Desktop PCB stage (buildable)',
-    blurb: 'One tileable 96 mm PCB stator tile, small 2-D Halbach platen. No coil winding, and 2x2 commutation regions cut it to 16 amplifiers for 144 coils. The 1.5 mm gap is the unforgiving part.',
+    blurb: 'One tileable 96 mm PCB stator tile under a 78 mm 2-D Halbach platen. No coil winding, and 2x2 commutation regions cut it to 16 amplifiers for 225 coils. The 1.5 mm gap is the unforgiving part. 78 mm is 13 cells of 6 mm exactly, so the 78.0 mm array wastes no border and carries 133 magnets; the old 72 mm platen fitted an even 12 cells and so had to drop to 11, at 85 magnets. The cost is travel — 9 mm per side within one tile instead of 12 — which is what tiling the stator is for. The board is the other cost: 20 layers of 3 oz (105 µm) copper on a 6.5 mm coil pitch, not 16 layers of 2 oz on 8 mm. That is what makes this the only preset that passes every default constraint — 2 oz copper ran the traces at 33 A/mm² against a 15 A/mm² limit and 46 K of rise, and no platen size fixes that, because it is a copper cross-section problem rather than a magnet one.',
     cfg: {
-      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.072, platenMass: 0, maxOrder: 3 },
-      stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.078, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcb', coilPitch: 0.0065, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 20, pcbTraceWidth: 0.00025, pcbCopperThickness: 105e-6, lockCoilPitch: false },
       sim: { gap: 0.0015, iMax: 4, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r2' },
     },
   },
@@ -105,8 +117,13 @@ const PARAMS = [
         help: (c) => {
           const s = c.translator.magnetSize, n = nearestStockMagnet(s);
           const stock = Math.abs(n - s) < 1e-9;
-          return `${stock ? 'Catalogue size' : `Not a stock size — nearest is ${(n * 1000).toFixed(0)} mm`}. `
-            + `Stocked: ${STOCK_MAGNET_SIZES.map((v) => (v * 1000).toFixed(0)).join(', ')} mm. `
+          const inch = imperialName(s);
+          // Naming the inch fraction matters: US distributors stock no metric
+          // cubes at all, so "4.8 mm" is a number you cannot put on an order and
+          // 3/16" is the same part with a SKU behind it.
+          return `${stock ? `Catalogue size${inch ? ` — ${inch} cube` : ' (metric)'}` : `Not a stock size — nearest is ${(n * 1000).toFixed(2)} mm${imperialName(n) ? ` (${imperialName(n)})` : ''}`}. `
+            + `Stocked, mm: ${STOCK_MAGNET_SIZES.map((v) => (v * 1000).toFixed(v < 0.005 ? 2 : 1)).join(', ')}. `
+            + `Imperial sizes are the ones a US supplier actually carries. `
             + `With ${c.translator.segments} per wavelength this gives λ = ${(s * c.translator.segments * 1000).toFixed(1)} mm.`;
         } },
       { path: 'translator.cubicMagnets', type: 'check', label: 'Cube stock (thickness = width)',
@@ -788,6 +805,27 @@ function renderDesignTable() {
     ['Magnet mass', `${sig(app.stack.magnetMass * 1000, 3)} g`,
       `NdFeB at 7500 kg/m³, less the ${(app.stack.wallFraction * 100).toFixed(0)}% displaced by retainer wall`
       + (app.stack.magnetFill < 0.999 ? ` and the ${(100 - app.stack.magnetFill * 100).toFixed(0)}% of cells the pattern leaves empty` : '')],
+    ...(() => {
+      // The array is symmetric by construction, but the platen size decides WHICH
+      // symmetric array and how much border is thrown away. A platen that exactly
+      // fits an even number of cells is the worst case: it gives up a cell on each
+      // side to reach the next odd count down. That is worth a line, because it is
+      // a fifth of the magnet count and the fix is to change one number.
+      // Per PATCH, not per platen: the quad layout's arms are each 0.42 of the
+      // platen, so a platen-wide answer would describe an array nobody built.
+      const pt = tr.patches[0];
+      const sym = arraySymmetry(tr.tile, pt);
+      if (!sym) return [];
+      const many = tr.patches.length > 1;
+      const waste = Math.max(sym.waste[0], sym.waste[1]) * 1000;
+      return [['Array symmetry', `${sym.nx} × ${sym.ny}, rim of ${sym.rim}`,
+        `${(sym.across[0] * 1000).toFixed(1)} × ${(sym.across[1] * 1000).toFixed(1)} mm`
+        + (many ? ` per arm, ${tr.patches.length} arms of ` : ' on a ')
+        + `${(pt.w * 1000).toFixed(1)} × ${(pt.h * 1000).toFixed(1)} mm`
+        + (waste > 0.05
+          ? ` — up to ${waste.toFixed(1)} mm of border unused; ${(sym.next[0] * 1000).toFixed(1)} × ${(sym.next[1] * 1000).toFixed(1)} mm would carry ${sym.nextCells[0]} × ${sym.nextCells[1]}.`
+          : ' — no border wasted.')]];
+    })(),
     ['Coils in stator', `${st.coils.length}`, `${st.effTurns} effective turns each, ${sig(st.coils[0]?.R ?? 0, 3)} Ω`],
     ['Total wire length', `${sig(wireLen, 3)} m`, `${sig(st.copperMass * 1000, 3)} g of copper`],
     ['Driver channels needed', `${a.amplifiers}`,
@@ -1141,8 +1179,24 @@ function renderAbout() {
     <h2>Where the model is approximate</h2>
     <ul>
       <li><strong>Finite array edges</strong> are handled with a half-pitch smooth taper on
-      the periodic field. Errors are largest within about one pole pitch of an array edge.
-      A truly finite array needs a surface-charge model.</li>
+      the periodic field, which is the right answer for the wrong reason. Measured against an
+      exact finite-array calculation (<code>test/reference-field.mjs</code>), the real field is
+      still ~91% of its interior value at the centre of the outermost block and dies over about
+      one <em>air gap</em> — not one half-pitch — so as a field model the taper is far too
+      aggressive. What it accidentally reproduces is the <em>usable</em> array: the documented
+      fix for edge effects is on the coil side, not the magnet side. The field near an edge does
+      not lose amplitude so much as lose its sinusoidal shape in the direction normal to that
+      edge, which breaks the commutation law, and Jansen's answer is to smoothly switch off the
+      coils reaching under the outer magnet row — costing a de-rated band about one magnet row
+      deep. A smoothstep's effective edge sits at its midpoint, <code>pitch/4</code>, which at
+      four segments per wavelength is exactly one magnet cell. So the number is right and the
+      mechanism modelled is not, and nothing here actually de-rates commutation near the rim.</li>
+      <li><strong>Array voids are not an edge problem.</strong> One cell in four of the 2-D
+      checkerboard is empty because the ideal pattern has a null there, and the perimeter
+      therefore ends on a half-empty ring. That is the real array, not a defect: dropping magnets
+      into the nulls changes the force-producing fundamental by 0.00% at 33% more magnet, and
+      only adds higher harmonics plus a net moment the balanced array does not have. No published
+      planar-motor design terminates its perimeter on full or vertical blocks.</li>
       <li><strong>No eddy currents, no iron, no back-EMF-limited drivers.</strong> The
       current source is ideal. Real drivers run out of voltage at speed.</li>
       <li><strong>Commutation weights are sampled at each coil's centre.</strong>

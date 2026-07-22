@@ -10,7 +10,7 @@
 import {
   theme, cameraBasis, makePainter, prepCanvas, magnetRGB,
 } from './render3d.js';
-import { eachCell, cellIsEmpty } from './halbach.js';
+import { eachCell, cellIsEmpty, cellSize } from './halbach.js';
 
 const LABEL_W = 210;   // right-hand callout column
 const ROW_H = 30;
@@ -87,7 +87,7 @@ export function renderExploded(canvas, scene) {
 
     if (p.kind === 'magnets') {
       const tile = tr.tile;
-      const cw = tile.lx / tile.nx, ch = tile.ly / tile.ny;
+      const [cw, ch] = cellSize(tile);
       eachCell(tile, tr.patches, (px, py, k, pt) => {
         // Nulls in the pattern are empty pockets — leave the hole visible, so
         // the drawing shows the array you would actually assemble.

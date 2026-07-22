@@ -14,7 +14,7 @@
 // drawing is worse than an absent one. They are called out as missing instead.
 
 import { MATERIALS, PROCESSES } from './mechanical.js';
-import { eachCell } from './halbach.js';
+import { eachCell, cellSize } from './halbach.js';
 
 // Nearest standard NdFeB grade for a given remanence. Buying is done by grade,
 // not by Br, so the BOM has to speak the catalogue's language.
@@ -80,7 +80,7 @@ function directionOf(mx, my, mz, Br) {
  *  the BOM is the magnet count in the picture. */
 export function magnetCensus(tr) {
   const tile = tr.tile;
-  const cellW = tile.lx / tile.nx, cellH = tile.ly / tile.ny;
+  const [cellW, cellH] = cellSize(tile);
   const bins = new Map();
   let cells = 0;
   eachCell(tile, tr.patches, (_px, _py, k) => {

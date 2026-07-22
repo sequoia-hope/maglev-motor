@@ -7,7 +7,7 @@ import { makeTranslator, ARRAY_TYPES, layoutPatches, patchFill, configFill, self
 import { makeStator } from '../src/coils.js';
 import { stackUp, mechDefaultsFor, DEFAULT_MECH } from '../src/mechanical.js';
 import { buildAssembly, magnetCensus, nearestGrade, nearestAWG } from '../src/assembly.js';
-import { latticeCount } from '../src/halbach.js';
+import { latticeCount, arraySymmetry } from '../src/halbach.js';
 import { readFileSync } from 'fs';
 
 const src = readFileSync('../src/app.js', 'utf8');
@@ -71,14 +71,32 @@ console.log('=== the half-cell shift is real, and it costs nothing ===');
     self.pass, `${(self.relError * 100).toFixed(3)}% from analytic`);
 
   // The checkerboard's nulls are real empty pockets, not zero-field magnets.
-  // 72 mm of 6 mm cells is exactly nine 4x4 tiles, so the platen fill is the
-  // tile fill and the expected 3/4 is checkable by hand.
+  // One cell in four is a null in the INFINITE pattern, but a finite symmetric
+  // array does not inherit that ratio: an odd (2N+1)-cell array is symmetric
+  // precisely because both ends share a parity, and that parity decides whether
+  // the rim rows are the half-empty ones. N odd puts voids in all four corners
+  // and gives (N+1)^2 of them; N even puts the vertical blocks there and gives
+  // N^2. Both are hand-checkable, and neither is 3/4.
   const cbCfg = { arrayType: 'halbach2d', pitch: 0.024, magnetThickness: 0.003, Br: 1.43,
     segments: 4, layout: 'single', platenSize: 0.072 };
   const cb = ARRAY_TYPES.halbach2d.build({ pitch: 0.024, thickness: 0.003, Br: 1.43, segments: 4 });
   const cbFill = patchFill(cb, layoutPatches('single', 0.072));
-  check('the 2-D checkerboard leaves one cell in four empty',
-    Math.abs(cbFill - 0.75) < 1e-12, `fill ${(cbFill * 100).toFixed(1)}%`);
+  // 72 mm of 6 mm cells: 11 cells, N = 5, so 36 voids in 121 pockets.
+  check('the 2-D checkerboard leaves the pattern nulls empty',
+    Math.abs(cbFill - 85 / 121) < 1e-12, `fill ${(cbFill * 100).toFixed(1)}%`);
+  {
+    let ok = true, detail = [];
+    for (const span of [0.072, 0.078, 0.09, 0.096]) {
+      const cells = latticeCount(span, 0.006, 4), N = (cells - 1) / 2;
+      const voids = N % 2 === 0 ? N * N : (N + 1) * (N + 1);
+      const want = (cells * cells - voids) / (cells * cells);
+      const got = patchFill(cb, layoutPatches('single', span));
+      if (Math.abs(got - want) > 1e-12) ok = false;
+      detail.push(`${cells}x${cells}:${(got * 100).toFixed(1)}%`);
+    }
+    check('finite-array fill follows the rim parity, not the 3/4 of the tile',
+      ok, detail.join(' '));
+  }
   check('configFill agrees without building a translator',
     Math.abs(configFill(cbCfg) - cbFill) < 1e-12);
   check('a fully-populated array reports full fill',
@@ -90,15 +108,24 @@ console.log('=== the half-cell shift is real, and it costs nothing ===');
 // Math.floor turned that into 11 -- silently deleting a row AND a column, so
 // the renderer drew 121 magnets while the design table billed 144.
 console.log('\n=== cell counting survives floating point ===');
-check('72 mm / 6 mm counts 12 cells, not 11', latticeCount(0.072, 0.006) === 12, `${latticeCount(0.072, 0.006)}`);
-// Counts are of cells on the MAGNETISATION lattice, centred on the patch, so a
-// span that is not a whole number of cells gives up the odd half-cell at each
-// end rather than sliding the grid: 71 mm of 6 mm cells is 10 aligned cells
-// spanning 60 mm, not 11 spanning 66 mm off-centre.
-check('a partial cell is not counted', latticeCount(0.071, 0.006) === 10, `${latticeCount(0.071, 0.006)}`);
+// The count is now always ODD, because a symmetric array has to be: an even
+// count of a pattern whose cell types repeat every 2 lands opposite parities on
+// opposite edges, and that lopsidedness moved the magnet centroid off the platen
+// centre on every preset. So 72 mm of 6 mm cells is 11 cells spanning 66 mm --
+// one fewer than the lattice could physically hold, which is the price of
+// symmetry and is paid whenever the span is an even multiple of the cell.
+check('72 mm / 6 mm counts 11 symmetric cells', latticeCount(0.072, 0.006) === 11, `${latticeCount(0.072, 0.006)}`);
+// The flip side: an odd count centred on the patch packs BETTER than the old
+// even one whenever the span is not an exact multiple, because it no longer
+// gives up a half cell at each end. 71 mm of 6 mm cells is 11 cells spanning
+// 66 mm, where the old boundary-anchored grid managed only 10 spanning 60 mm.
+check('a partial span still fills symmetrically', latticeCount(0.071, 0.006) === 11, `${latticeCount(0.071, 0.006)}`);
 check('exact multiples hold at other sizes',
-  latticeCount(0.14, 0.01) === 14 && latticeCount(0.04, 0.0035) === 10,
+  latticeCount(0.14, 0.01) === 13 && latticeCount(0.04, 0.0035) === 11,
   `${latticeCount(0.14, 0.01)}, ${latticeCount(0.04, 0.0035)}`);
+check('counts are always odd, so the array can be symmetric',
+  [0.072, 0.071, 0.14, 0.065, 0.04, 0.1, 0.033].every((s) => latticeCount(s, 0.006) % 2 === 1),
+  [0.072, 0.071, 0.14, 0.065, 0.04, 0.1, 0.033].map((s) => latticeCount(s, 0.006)).join(','));
 check('degenerate cell size does not divide by zero', latticeCount(0.072, 0) === 0);
 
 // The block grid is anchored to the MAGNETISATION lattice, not to the platen
@@ -113,11 +140,20 @@ console.log('\n=== the block grid is in phase with the magnetisation ===');
   const seen = [];
   eachCell(t, pts, (px, py, k) => seen.push({ px, py, k }));
   const cw = t.lx / t.nx;
-  check('an odd-width platen drops to a whole number of aligned cells',
-    latticeCount(0.065, cw) === 12, `${latticeCount(0.065, cw)} cells of 5 mm in 65 mm`);
-  check('every cell centre sits at the middle of a lattice cell',
-    seen.every((c) => Math.abs(((c.px / cw) % 1 + 1) % 1 - 0.5) < 1e-9),
+  check('a 13-cell platen holds all 13, symmetrically',
+    latticeCount(0.065, cw) === 13, `${latticeCount(0.065, cw)} cells of 5 mm in 65 mm`);
+  // Block centres now sit at INTEGER multiples of the cell from the patch
+  // centre, not half-integer ones -- that is exactly what makes an odd,
+  // symmetric count possible. The blocks are still each centred on one whole
+  // magnetisation cell; the pattern is what moved, by the half cell that
+  // tr.phase hands to the field evaluator. Checking the old half-integer
+  // convention here would now be checking the asymmetry.
+  check('every cell centre sits on the symmetric lattice',
+    seen.every((c) => Math.abs(((c.px / cw) % 1 + 1.5) % 1 - 0.5) < 1e-9),
     `${seen.length} cells checked`);
+  check('the array is centred on the platen',
+    Math.abs(seen.reduce((a, c) => a + c.px, 0)) < 1e-12
+      && Math.abs(seen.reduce((a, c) => a + c.py, 0)) < 1e-12);
   // Periodicity is the observable consequence: shift by one tile period and the
   // magnetisation must repeat exactly.
   // floor, not round: a cell centre is at an exact half-integer of the cell
@@ -215,6 +251,90 @@ for (const [key, preset] of Object.entries(PRESETS)) {
     }
   }
   check('all parts fully specified', true);
+}
+
+// --- the prose has to agree with the model too -------------------------------
+//
+// Every preset blurb states hard numbers, and prose does not recompute itself
+// when a config is edited. desk40's blurb claimed "40 magnets in 49 pockets"
+// for months after the platen changed under it; the model said 27 in 36. A
+// stated-but-stale number is worse than no number, because it reads like a
+// result and gets designed around. So parse the claims back out of the blurbs
+// and hold them to the model.
+//
+// Only unambiguous, model-derivable claims are matched. A blurb that phrases
+// something differently is simply not checked -- but the count of what WAS
+// checked is printed, so silent zero-coverage is visible rather than reassuring.
+{
+  let claims = 0;
+  for (const [key, preset] of Object.entries(PRESETS)) {
+    const cfg = JSON.parse(JSON.stringify(preset.cfg));
+    const tr = makeTranslator({ ...cfg.translator, ...Q[cfg.sim.quality ?? 'balanced'], gap: cfg.sim.gap });
+    const census = magnetCensus(tr);
+    const blurb = preset.blurb;
+
+    const inPockets = blurb.match(/(\d[\d,]*) magnets in (\d[\d,]*) pockets/);
+    if (inPockets) {
+      claims++;
+      const n = +inPockets[1].replace(/,/g, ''), m = +inPockets[2].replace(/,/g, '');
+      check(`${key}: blurb "${n} magnets in ${m} pockets"`,
+        n === census.total && m === census.cells,
+        `model says ${census.total} in ${census.cells}`);
+    }
+
+    const cubes = blurb.match(/(\d[\d,]*) plain [\d.]+ mm \S+ cubes/);
+    if (cubes) {
+      claims++;
+      const n = +cubes[1].replace(/,/g, '');
+      check(`${key}: blurb "${n} cubes"`, n === census.total, `model says ${census.total}`);
+    }
+
+    const gapMm = blurb.match(/([\d.]+) mm (?:air )?gap/);
+    if (gapMm) {
+      claims++;
+      check(`${key}: blurb "${gapMm[1]} mm gap"`,
+        close(+gapMm[1] / 1000, cfg.sim.gap, 5e-3),
+        `config says ${(cfg.sim.gap * 1000).toFixed(2)} mm`);
+    }
+
+    const span = blurb.match(/([\d.]+) mm across on a ([\d.]+) mm platen/);
+    if (span) {
+      claims++;
+      // The magnet array spans a whole number of lattice cells, which is not the
+      // platen size -- that difference is the symmetry cost, and it is the whole
+      // reason this sentence exists.
+      const across = arraySymmetry(tr.tile, tr.patches[0]).across[0];
+      check(`${key}: blurb "${span[1]} mm array on a ${span[2]} mm platen"`,
+        close(+span[1] / 1000, across, 5e-3) && close(+span[2] / 1000, cfg.translator.platenSize, 1e-6),
+        `model says ${(across * 1000).toFixed(2)} mm on ${(cfg.translator.platenSize * 1000).toFixed(1)} mm`);
+    }
+
+    // "144 coils", "225 hand-wound coils". Deliberately does NOT match the
+    // "~120 live coils" phrasing, which counts coils under the array rather than
+    // coils on the board -- a different quantity that would fail this check for
+    // the right reason and the wrong cause.
+    const coils = blurb.match(/(\d[\d,]*)(?: hand-wound)? coils/);
+    if (coils) {
+      claims++;
+      const q = Q[cfg.sim.quality ?? 'balanced'];
+      const stator = makeStator({ ...cfg.stator, ringsPerCoil: q.ringsPerCoil, segmentsPerSide: q.segmentsPerSide });
+      const n = +coils[1].replace(/,/g, '');
+      check(`${key}: blurb "${n} coils"`, n === stator.coils.length,
+        `model says ${stator.coils.length}`);
+    }
+
+    const lambda = blurb.match(/λ = ([\d.]+) mm/);
+    if (lambda) {
+      claims++;
+      check(`${key}: blurb "λ = ${lambda[1]} mm"`,
+        close(+lambda[1] / 1000, tr.cfg.pitch, 5e-3),
+        `model says ${(tr.cfg.pitch * 1000).toFixed(2)} mm`);
+    }
+  }
+  // A ratchet, not a target: it fails if the parsers above quietly stop matching
+  // (a blurb reworded, a preset renamed), which would otherwise show up as a
+  // green run that checks nothing at all.
+  check('preset blurbs make checkable claims', claims >= 10, `${claims} numeric claims verified`);
 }
 
 console.log(fails ? `\n${fails} FAILURES` : '\nall assembly checks pass');

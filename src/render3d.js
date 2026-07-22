@@ -3,7 +3,7 @@
 // sorting by centroid depth is exact enough and costs nothing.
 
 import { quat } from './math.js';
-import { eachCell, cellIsEmpty } from './halbach.js';
+import { eachCell, cellIsEmpty, cellSize } from './halbach.js';
 
 export const PALETTE = {
   light: {
@@ -322,7 +322,7 @@ export function render(canvas, scene) {
   ];
 
   const tile = tr.tile;
-  const cellW = tile.lx / tile.nx, cellH = tile.ly / tile.ny;
+  const [cellW, cellH] = cellSize(tile);
   const magT = tr.cfg.magnetThickness;
 
   eachCell(tile, tr.patches, (px, py, k, pt) => {

@@ -8,7 +8,7 @@
 //   thickness D the scalar potential of each harmonic decays as exp(-k*d),
 //   so the field below the magnet face is
 //
-//     Bz_hat = 0.5*(1 - exp(-k*D)) * [ Mz_hat - i*(kx*Mx_hat + ky*My_hat)/k ]
+//     Bz_hat = 0.5*(1 - exp(-k*D)) * [ Mz_hat + i*(kx*Mx_hat + ky*My_hat)/k ]
 //     Bx_hat = i*(kx/k)*Bz_hat        By_hat = i*(ky/k)*Bz_hat
 //
 //   with the magnetisation expressed in tesla (i.e. mu0*M, so |m| = Br).
@@ -16,6 +16,22 @@
 //   Halbach one-sided-flux condition, and it falls out of the model rather than
 //   being assumed. selfTest() below checks the fundamental against the textbook
 //   closed form Br*(1-exp(-k*D))*sin(pi/M)/(pi/M).
+//
+//   The sign of that i*S term is load-bearing and was wrong until it was checked
+//   against an independent finite-array calculation (test/field.test.mjs). Both
+//   signs give the same |B|, and both reproduce the closed form above, because
+//   flipping it just swaps which side of the array the model is describing. What
+//   it does NOT preserve is the phase of Bx,By relative to Bz -- Bx_hat =
+//   i*(kx/k)*Bz_hat holds below the array and picks up a minus sign above it. So
+//   the wrong sign yields one side's vertical field wearing the other side's
+//   in-plane field, which is not the field of any physical array. For flat coils
+//   F = J x B makes LIFT come from J cross the in-plane components, so the error
+//   inverted lift against thrust while leaving every magnitude in the UI intact.
+//   Derivation of the sign, for the next person who doubts it: for a slab
+//   0 < z < D with M = M0*(a*sin(kx), 0, cos(kx)), matching phi and Bz at both
+//   faces gives the below-slab potential coefficient E with k*E proportional to
+//   (1 + a)*(exp(-k*D) - 1). It vanishes for a = -1, so a = -1 is the array whose
+//   strong side faces UP, and a = +1 is the one that throws flux DOWN.
 //
 // The transverse decay exp(-k*d) is the single most important fact in the whole
 // design space: doubling the pole pitch doubles the usable air gap.
@@ -119,8 +135,8 @@ function orientStrongSideDown(tile) {
     const g = 0.5 * (1 - Math.exp(-h.k * tile.thickness)) * Math.exp(-h.k * tile.thickness);
     const Sr = (h.kx * h.mxr + h.ky * h.myr) / h.k;
     const Si = (h.kx * h.mxi + h.ky * h.myi) / h.k;
-    below += (g * (h.mzr + Si)) ** 2 + (g * (h.mzi - Sr)) ** 2;
-    above += (g * (h.mzr - Si)) ** 2 + (g * (h.mzi + Sr)) ** 2;
+    below += (g * (h.mzr - Si)) ** 2 + (g * (h.mzi + Sr)) ** 2;
+    above += (g * (h.mzr + Si)) ** 2 + (g * (h.mzi - Sr)) ** 2;
   }
   if (above > below) {
     for (let i = 0; i < tile.cells.length; i += 3) {
@@ -235,8 +251,32 @@ export const ARRAY_TYPES = {
 /** Block edge lengths every NdFeB supplier stocks, in metres. Cubes in these
  *  sizes are catalogue items; anything between them is a custom order. */
 export const STOCK_MAGNET_SIZES = [
+  // Metric cubes, as sold by the usual European/Chinese suppliers.
   0.002, 0.003, 0.004, 0.005, 0.006, 0.008, 0.010, 0.012, 0.015, 0.020, 0.025,
+  // Imperial cubes. A US distributor like Amazing Magnets stocks these and NO
+  // metric size at all, so a design snapped to the metric list above cannot be
+  // ordered from them -- 5 mm in particular does not exist there, the neighbours
+  // being 3/16" and 1/4". Metric cubes are readily available from other channels
+  // (Amazon and the usual import sellers), so both lists are real; which one you
+  // can buy from depends on the supplier, not on the size being exotic.
+  0.0015875, 0.003175, 0.0039688, 0.0047625, 0.00635, 0.0095250, 0.0127,
+  0.0158750, 0.019050,
+].sort((a, b) => a - b);
+
+/** Cube sizes that are catalogue items at a US distributor, with the fraction to
+ *  quote when ordering. Kept next to the sizes so a design can say WHICH part it
+ *  means rather than a bare millimetre figure that rounds to nothing orderable. */
+export const IMPERIAL_CUBES = [
+  [0.0015875, '1/16"'], [0.003175, '1/8"'], [0.0039688, '5/32"'], [0.0047625, '3/16"'],
+  [0.00635, '1/4"'], [0.0095250, '3/8"'], [0.0127, '1/2"'], [0.0158750, '5/8"'],
+  [0.019050, '3/4"'], [0.0254, '1"'],
 ];
+
+/** The inch fraction for a stocked cube size, or null if it is a metric part. */
+export function imperialName(size) {
+  const hit = IMPERIAL_CUBES.find(([m]) => Math.abs(m - size) < 1e-6);
+  return hit ? hit[1] : null;
+}
 
 /** Snap to the nearest stocked size. */
 export function nearestStockMagnet(size) {
@@ -293,27 +333,51 @@ export function layoutPatches(layout, platenSize) {
   return patches;
 }
 
-/** Cell indices of the tile lattice that fit wholly inside a patch of width
- *  `span`, as [first, last] inclusive.
+/** Half a cell: the phase offset between patch coordinates and tile coordinates.
  *
- *  The epsilon is not decoration. 72 mm of 6 mm cells evaluates to
- *  11.999999999999998, so a bare floor drops an entire row AND column -- 144
- *  magnets drawn and billed as 121, a 16% undercount that once showed up as the
- *  renderer and the design table disagreeing with each other.
+ *  A block has to sit centred on one cell of the magnetisation pattern, or it
+ *  straddles two and is not a magnet anybody can buy. The tile's own cells are
+ *  centred at HALF-integer multiples of `cell`, so a set of block centres
+ *  symmetric about the patch centre would have to be {..., -1.5c, -0.5c, +0.5c,
+ *  +1.5c, ...} -- necessarily an EVEN count. An even count of a pattern whose
+ *  cell types repeat every 2 puts opposite parities on opposite edges: voids
+ *  down one side of the array and none down the other, with the magnet centroid
+ *  ~1/6 of a cell off the platen's geometric centre while the mass model has the
+ *  centre of mass at the middle. That was measured on every preset.
  *
- *  The lattice is NOT free to start at the patch edge. Magnetisation is
- *  piecewise-constant on cell boundaries at multiples of `cell` measured from
- *  the patch centre -- that is where the harmonic model puts them, and the field
- *  evaluator reads it there. A block laid out from the patch edge instead lands
- *  half a cell out of phase whenever the patch is an odd number of cells wide,
- *  so it straddles two magnetisation cells: not one magnet, and not buildable.
- *  Anchoring here instead costs up to one cell of unused border, which is real
- *  -- a platen is only as big as a whole number of magnets. */
-function latticeRange(span, cell) {
-  if (!(cell > 0) || !(span > 0)) return [0, -1];
-  const half = span / 2;
-  const eps = 1e-6;
-  return [Math.ceil(-half / cell - eps), Math.floor(half / cell + eps) - 1];
+ *  Symmetry therefore requires an ODD cell count, which requires block centres
+ *  at INTEGER multiples of `cell` from the patch centre -- i.e. sliding the
+ *  whole pattern half a cell relative to the platen. That is a rigid translation
+ *  of an infinite periodic pattern, so it costs nothing physically and the
+ *  absolute phase was never meaningful. But the field evaluator reads the
+ *  harmonics in tile coordinates, so it has to be told: tile = patch + halfCell.
+ *  Forget the shift and every block is drawn half a cell away from the field it
+ *  is supposed to be making. */
+function axisPhase(cell, n) {
+  return n === 1 ? 0 : cell / 2;
+}
+
+/** The physical size of one lattice cell on each axis.
+ *
+ *  On a quantised axis this is the tile's own cell, lx/nx. On a FREE axis -- one
+ *  the magnetisation does not vary along -- the tile is one cell tall and `ly` is
+ *  merely the period the builder happened to hand it, which is not a block
+ *  length anybody would buy. A 1-D array's blocks may be subdivided along that
+ *  axis however you like, so make the cells SQUARE: that is exactly what cube
+ *  stock is, it is the finest honest granularity, and it packs the patch instead
+ *  of leaving a strip of it bare.
+ *
+ *  Using `ly` there put 50 x 40 mm bars on a 58.8 mm arm and discarded 18.8 mm
+ *  of arm -- while the field model, which never sees the subdivision, went on
+ *  crediting the whole arm with magnets. So the mass model and the field model
+ *  disagreed about how much magnet was present, in the mass model's favour.
+ *  One place computes this now, because six places computed it before. */
+export function cellSize(tile) {
+  const qw = tile.lx / tile.nx, qh = tile.ly / tile.ny;
+  if (tile.nx > 1 && tile.ny > 1) return [qw, qh];
+  if (tile.nx > 1) return [qw, qw];
+  if (tile.ny > 1) return [qh, qh];
+  return [qw, qh];               // no pattern on either axis: nothing to infer
 }
 
 /** The cells of one axis: where each sits in patch coordinates, and which tile
@@ -324,18 +388,37 @@ function latticeRange(span, cell) {
  *  there is no phase to get wrong and no reason to give up a strip of platen to
  *  a lattice that carries no information. Quantising it anyway is how the
  *  four-array cross ended up reporting zero magnets: a 58.8 mm arm could not fit
- *  a 40 mm bar centred on a lattice it did not need to obey. */
+ *  a 40 mm bar centred on a lattice it did not need to obey.
+ *
+ *  The epsilon is not decoration. 72 mm of 6 mm cells evaluates to
+ *  11.999999999999998, so a bare floor drops an entire row AND column -- once a
+ *  16% undercount that showed up as the renderer and the design table
+ *  disagreeing with each other.
+ *
+ *  Block centres run -N*cell .. +N*cell, so the array is 2N+1 cells wide and
+ *  symmetric about the patch centre by construction. Which of the two symmetric
+ *  arrays you get depends on the parity of N and is a property of the platen
+ *  size, not a choice made here: N even puts the pattern's vertical blocks in
+ *  all four corners and leaves no voids anywhere on the rim, N odd puts voids in
+ *  all four corners. Both are symmetric, which was the point; see arraySymmetry()
+ *  for reporting which one a given design landed on. */
 function axisCells(span, cell, n) {
   const out = [];
   if (!(cell > 0) || !(span > 0)) return out;
   if (n === 1) {
-    // Free axis: pack whole cells and centre them on the patch.
+    // Free axis: pack whole cells and CENTRE them on the patch. Packing from the
+    // low edge instead -- which is what this did -- leaves the whole remainder as
+    // a bare strip on one side, which is the same lopsidedness the quantised axis
+    // was just fixed for, and it moves the magnet centroid off the patch centre.
+    // No parity to worry about here: with no pattern along this axis, any count
+    // centred on the patch is symmetric.
     const m = Math.floor(span / cell + 1e-6);
-    for (let j = 0; j < m; j++) out.push({ c: -span / 2 + (j + 0.5) * cell, i: 0 });
+    for (let j = 0; j < m; j++) out.push({ c: (j - (m - 1) / 2) * cell, i: 0 });
     return out;
   }
-  const [a, b] = latticeRange(span, cell);
-  for (let i = a; i <= b; i++) out.push({ c: (i + 0.5) * cell, i: ((i % n) + n) % n });
+  const N = Math.floor((span / cell - 1) / 2 + 1e-6);
+  if (N < 0) return out;
+  for (let i = -N; i <= N; i++) out.push({ c: i * cell, i: ((i % n) + n) % n });
   return out;
 }
 
@@ -345,6 +428,46 @@ export function latticeCount(span, cell, n = 2) {
   return axisCells(span, cell, n).length;
 }
 
+/** What one patch's array looks like at its rim, and what a bigger patch buys.
+ *
+ *  Takes a PATCH, not the platen size: the quad layout's four arms are each
+ *  0.42 of the platen, so asking this about the platen describes an array that
+ *  does not exist. It also reads the rim by looking at the cells rather than by
+ *  parity arithmetic, because a 1-D tile has no nulls at all and its free axis
+ *  has no parity to reason about -- the two topologies would otherwise need two
+ *  different formulas and one of them would rot.
+ *
+ *  The array is always symmetric now, but a patch only holds a whole number of
+ *  cells -- an ODD number on any axis the pattern varies along -- so its size
+ *  decides WHICH symmetric array you get and how much border is thrown away. A
+ *  patch that exactly fits an even count is the worst case: it gives up a cell
+ *  on each side to reach the next odd count down. Worth surfacing rather than
+ *  leaving as a silent fifth of the magnet count. */
+export function arraySymmetry(tile, patch) {
+  const [cw, ch] = cellSize(tile);
+  const us = axisCells(patch.w, cw, tile.nx);
+  const vs = axisCells(patch.h, ch, tile.ny);
+  if (!us.length || !vs.length) return null;
+  let rimVoid = false;
+  for (let a = 0; a < vs.length && !rimVoid; a++) {
+    for (let b = 0; b < us.length; b++) {
+      const onRim = a === 0 || b === 0 || a === vs.length - 1 || b === us.length - 1;
+      if (onRim && cellIsEmpty(tile, (vs[a].i * tile.nx + us[b].i) * 3)) { rimVoid = true; break; }
+    }
+  }
+  // A quantised axis must stay odd, so the next size up is two cells wider; a
+  // free axis has no such constraint and grows one cell at a time.
+  const step = (n) => (n === 1 ? 1 : 2);
+  return {
+    nx: us.length, ny: vs.length,
+    across: [us.length * cw, vs.length * ch],
+    waste: [patch.w - us.length * cw, patch.h - vs.length * ch],
+    rim: rimVoid ? 'voids' : 'magnets',
+    next: [(us.length + step(tile.nx)) * cw, (vs.length + step(tile.ny)) * ch],
+    nextCells: [us.length + step(tile.nx), vs.length + step(tile.ny)],
+  };
+}
+
 /** Visit every cell of every patch, in patch-local coordinates.
  *
  *  One walk, used by the mass model, the BOM and both renderers, because the
@@ -352,7 +475,7 @@ export function latticeCount(span, cell, n = 2) {
  *  the table billed 144. `fn(px, py, k, patch)` gets the cell centre in patch
  *  coordinates and the offset `k` of its magnetisation in tile.cells. */
 export function eachCell(tile, patches, fn) {
-  const cellW = tile.lx / tile.nx, cellH = tile.ly / tile.ny;
+  const [cellW, cellH] = cellSize(tile);
   for (const pt of patches) {
     // Cell i spans [i*cell, (i+1)*cell), so its magnetisation is tile cell
     // i mod n -- an exact integer operation, with no chance for a cell boundary
@@ -439,12 +562,14 @@ export function decompose(tile, { maxOrder = 3, gapRef = 0.002, tol = 1e-4 } = {
   let peak = 0;
   for (const h of magHarmonics(tile, maxOrder)) {
     // S = (kx*Mx_hat + ky*My_hat)/k  ;  bracket for the field BELOW is
-    // Mz_hat - i*S, which vanishes for the wrong-handed harmonic.
+    // Mz_hat + i*S, which vanishes for the wrong-handed harmonic. See the sign
+    // derivation in the header -- getting this backwards costs no magnitude and
+    // inverts lift.
     const Sr = (h.kx * h.mxr + h.ky * h.myr) / h.k;
     const Si = (h.kx * h.mxi + h.ky * h.myi) / h.k;
     const g = 0.5 * (1 - Math.exp(-h.k * thickness));
-    const cr = g * (h.mzr + Si);
-    const ci = g * (h.mzi - Sr);
+    const cr = g * (h.mzr - Si);
+    const ci = g * (h.mzi + Sr);
     const amp = Math.hypot(cr, ci) * Math.exp(-h.k * gapRef);
     peak = Math.max(peak, amp);
     terms.push({ kx: h.kx, ky: h.ky, k: h.k, cr, ci, amp });
@@ -548,6 +673,10 @@ export function makeTranslator(cfg) {
   return {
     cfg, tile, harm, patches, mass, inertia, magnetMass, fill,
     stockMagnetised: tileIsStockMagnetised(tile),
+    // Patch -> tile coordinate offset. axisCells() lays the symmetric lattice out
+    // half a cell off the tile's own grid, and this is what keeps the field the
+    // evaluator reads in phase with the blocks the BOM bills.
+    phase: [axisPhase(cellSize(tile)[0], tile.nx), axisPhase(cellSize(tile)[1], tile.ny)],
     faceZ: 0, // magnet face is the platen origin plane; +z is up, away from coils
     footprintRadius: Math.max(...patches.map((p) =>
       Math.hypot(Math.abs(p.u) + p.w / 2, Math.abs(p.v) + p.h / 2))),
@@ -588,7 +717,7 @@ export function fieldAt(tr, px, py, pz, r, R, out) {
     const win = wx * wy;
     if (win < 1e-4) continue;
 
-    fieldLocal(tr.harm, qx, qy, d, _tmpB);
+    fieldLocal(tr.harm, qx + tr.phase[0], qy + tr.phase[1], d, _tmpB);
     // Patch -> body: rotate back by +theta
     ax += win * (_tmpB[0] * ct - _tmpB[1] * st);
     ay += win * (_tmpB[0] * st + _tmpB[1] * ct);
