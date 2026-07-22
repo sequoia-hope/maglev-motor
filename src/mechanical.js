@@ -14,6 +14,8 @@
 // budget that constrains the simulator, which is the correct dependency: you
 // cannot fly closer to the stator than you can hold position.
 
+import { configFill } from './halbach.js';
+
 export const MATERIALS = {
   al6061: { label: 'Aluminium 6061', rho: 2700, E: 69e9, cte: 23.6e-6, k: 167 },
   cfrp: { label: 'CFRP laminate', rho: 1600, E: 70e9, cte: 2.0e-6, k: 5 },
@@ -100,7 +102,11 @@ export function stackUp(cfg, mech = DEFAULT_MECH) {
   // ---- platen mass, from actual parts -------------------------------------
   const area = P * P;
   const wf = wallFraction(cellPitch, m.pocketWall);
-  const magnetVol = area * magT * (1 - wf);
+  // Cells at a null in the magnetisation pattern hold no magnet -- the empty
+  // corners of a 2-D Halbach array. They are pocketed like any other cell, so
+  // the retainer is unchanged, but there is nothing in them to buy or to lift.
+  const fill = configFill(cfg.translator);
+  const magnetVol = area * magT * (1 - wf) * fill;
   const pocketVol = area * magT * wf;
   const backingVol = area * m.backingThickness;
 
@@ -177,7 +183,7 @@ export function stackUp(cfg, mech = DEFAULT_MECH) {
   return {
     mech: m, layers, terms,
     platenMass, magnetMass, pocketMass, backingMass, adhesiveMass,
-    wallFraction: wf, cellPitch,
+    wallFraction: wf, cellPitch, magnetFill: fill,
     gapFloor, gapTermSum: sum,
     thermalResistance: rTotal, rCond, rConv, coolingLabel: cool.label,
     neighbourForce, wallStress,

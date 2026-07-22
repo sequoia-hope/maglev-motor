@@ -14,7 +14,7 @@
 // drawing is worse than an absent one. They are called out as missing instead.
 
 import { MATERIALS, PROCESSES } from './mechanical.js';
-import { cellsAcross } from './halbach.js';
+import { eachCell } from './halbach.js';
 
 // Nearest standard NdFeB grade for a given remanence. Buying is done by grade,
 // not by Br, so the BOM has to speak the catalogue's language.
@@ -55,7 +55,11 @@ const AZ_NAMES = { 0: '+x', 45: '+x+y', 90: '+y', 135: '−x+y', 180: '−x', 22
  *  this function did, and it reported every preset as 100% axial when in fact
  *  not one magnet in the model is axial. */
 function directionOf(mx, my, mz, Br) {
-  const mag = Math.hypot(mx, my, mz) || 1;
+  const mag = Math.hypot(mx, my, mz);
+  // A null in the pattern is an empty pocket, not a magnet. Falling through to
+  // the azimuth branch would bill it as an in-plane block -- 25% of a 2-D
+  // Halbach array bought, weighed and drawn as parts that are not there.
+  if (mag < 1e-9 * (Br || 1)) return { key: 'empty', cls: 'empty', label: 'Empty pocket (pattern null)' };
   const elev = (Math.asin(Math.max(-1, Math.min(1, mz / mag))) * 180) / Math.PI;
   const azDeg = ((Math.round((Math.atan2(my, mx) * 180) / Math.PI / 45) * 45) % 360 + 360) % 360;
   const az = AZ_NAMES[azDeg] ?? `${azDeg}°`;
@@ -78,26 +82,14 @@ export function magnetCensus(tr) {
   const tile = tr.tile;
   const cellW = tile.lx / tile.nx, cellH = tile.ly / tile.ny;
   const bins = new Map();
-  let total = 0;
-  for (const pt of tr.patches) {
-    const nu = cellsAcross(pt.w, cellW), nv = cellsAcross(pt.h, cellH);
-    for (let jv = 0; jv < nv; jv++) {
-      for (let iu = 0; iu < nu; iu++) {
-        const px = -pt.w / 2 + (iu + 0.5) * cellW;
-        const py = -pt.h / 2 + (jv + 0.5) * cellH;
-        const tx = ((px % tile.lx) + tile.lx) % tile.lx;
-        const ty = ((py % tile.ly) + tile.ly) % tile.ly;
-        const ci = Math.min(tile.nx - 1, Math.floor((tx / tile.lx) * tile.nx));
-        const cj = Math.min(tile.ny - 1, Math.floor((ty / tile.ly) * tile.ny));
-        const k = (cj * tile.nx + ci) * 3;
-        const d = directionOf(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2], tile.Br);
-        const cur = bins.get(d.key) ?? { ...d, n: 0 };
-        cur.n++;
-        bins.set(d.key, cur);
-        total++;
-      }
-    }
-  }
+  let cells = 0;
+  eachCell(tile, tr.patches, (_px, _py, k) => {
+    const d = directionOf(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2], tile.Br);
+    const cur = bins.get(d.key) ?? { ...d, n: 0 };
+    cur.n++;
+    bins.set(d.key, cur);
+    cells++;
+  });
   const rows = [...bins.values()].sort((a, b) => b.n - a.n);
   // Orientation on the platen is an assembly step, not a different part -- so
   // what you actually order is one SKU per magnetisation CLASS, not one per
@@ -105,8 +97,11 @@ export function magnetCensus(tr) {
   // diagonal one is its own custom part.
   const count = (c) => rows.filter((r) => r.cls === c).reduce((a, r) => a + r.n, 0);
   const axial = count('axial'), inPlane = count('in-plane'), diagonal = count('diagonal');
+  const empty = count('empty');
   const skus = ['axial', 'in-plane', 'diagonal'].filter((c) => count(c) > 0);
-  return { rows, total, axial, inPlane, diagonal, skus, cellW, cellH };
+  // `total` is what you buy; `cells` is what you pocket. They differ by the
+  // empty positions, and conflating them is how a BOM orders magnets for holes.
+  return { rows, cells, total: cells - empty, axial, inPlane, diagonal, empty, skus, cellW, cellH };
 }
 
 /** The full parts list, bottom of the stator to top of the platen.
@@ -189,8 +184,9 @@ export function buildAssembly(cfg, stack, tr, stator) {
       material: `NdFeB ${grade.name}`, process: 'sintered, ground',
       qty: census.total, mass: stack.magnetMass,
       rgb: [120, 120, 130],
-      spec: `${census.total} cells of ${(census.cellW * 1000).toFixed(1)} × ${(census.cellH * 1000).toFixed(1)} × ${(magT * 1000).toFixed(1)} mm`,
-      note: `${census.axial} axial, ${census.inPlane} in-plane, ${census.diagonal} diagonal. `
+      spec: `${census.total} blocks of ${(census.cellW * 1000).toFixed(1)} × ${(census.cellH * 1000).toFixed(1)} × ${(magT * 1000).toFixed(1)} mm`,
+      note: `${census.axial} axial, ${census.inPlane} in-plane, ${census.diagonal} diagonal`
+        + (census.empty ? `, ${census.empty} of ${census.cells} cells left empty (pattern nulls). ` : '. ')
         + `Br ${cfg.translator.Br.toFixed(2)} T ${grade.exact ? '=' : '≈'} ${grade.name}.`,
       critical: census.diagonal > 0
         ? `${census.diagonal} of ${census.total} cells are diagonally magnetised — a custom order, not catalogue stock. See the magnet order card.`
@@ -203,7 +199,7 @@ export function buildAssembly(cfg, stack, tr, stator) {
       material: mat(m.pocketMaterial).label, process: PROCESSES[m.backingProcess]?.label ?? '—',
       qty: 1, mass: stack.pocketMass,
       rgb: [196, 194, 186],
-      spec: `${census.total} pockets, ${(m.pocketWall * 1000).toFixed(2)} mm walls`,
+      spec: `${census.cells} pockets, ${(m.pocketWall * 1000).toFixed(2)} mm walls`,
       note: `Occupies the same layer as the magnets and displaces ${(stack.wallFraction * 100).toFixed(0)}% of them — field you do not get.`,
       critical: `Walls see ~${(stack.wallStress / 1e6).toFixed(1)} MPa from magnet repulsion.`,
     },
@@ -230,20 +226,23 @@ export function buildAssembly(cfg, stack, tr, stator) {
   ];
 
   // --- sourcing -------------------------------------------------------------
-  // The tile samples its magnetisation at CELL CENTRES. For an N-segment array
-  // that puts every block half a cell off the axis, which for the common
-  // 4-segment case means every magnet is on a body diagonal -- custom parts,
-  // for a pattern that was never chosen deliberately. Shifting the sampling
-  // origin by half a cell is a rigid translation of the magnetisation, so the
-  // harmonics are unchanged in magnitude (verified to 0.0000% in
-  // test/assembly.test.mjs) and the same array becomes commodity stock.
+  // This used to fire on every preset: the tile was sampled at CELL CENTRES,
+  // which offsets each block half a cell from the pattern's own axis, and for
+  // the common 4-segment array that put every magnet on a body diagonal --
+  // custom parts, for a geometry nobody chose. halbach.js now samples the
+  // aligned arrays at the cell edge instead, a rigid half-cell translation that
+  // leaves every harmonic's magnitude untouched (checked in
+  // test/assembly.test.mjs) and lands every block on an axis.
+  //
+  // What is left is the case where no shift can help: the 45-degree array's
+  // pattern axes are diagonal to its cells by construction, so half its blocks
+  // are genuinely custom parts. That is a property of the topology, and the only
+  // remedy is a different topology.
   const sourcing = census.diagonal > 0 ? {
-    problem: `${census.diagonal} of ${census.total} cells are magnetised on a diagonal.`,
-    cause: 'The magnetisation tile is sampled at cell centres, which offsets every block by half a cell from the array axis.',
-    remedy: 'Shift the tile origin half a cell. That is a rigid translation of the platen — identical field, identical forces — and it lands every block on an axis.',
-    after: census.total % 2 === 0
-      ? `${census.total / 2} through-thickness + ${census.total / 2} through-length, both catalogue items.`
-      : 'Blocks land on axes: through-thickness and through-length, both catalogue items.',
+    problem: `${census.diagonal} of ${census.total} blocks are magnetised on a body diagonal.`,
+    cause: 'This array\'s pattern axes sit at 45° to its cells, so no shift of the tile origin can bring the blocks onto an axis — the diagonals are the topology, not a sampling artefact.',
+    remedy: 'Switch to the checkerboard array (halbach2d), whose blocks are all axial or in-plane, or accept a custom magnetisation at several times the price and weeks of lead time.',
+    after: 'On the checkerboard: through-thickness and through-length blocks only, both catalogue items, with one cell in four left empty.',
   } : null;
 
   const movingMass = parts.filter((p) => p.side === 'platen').reduce((a, p) => a + p.mass, 0)

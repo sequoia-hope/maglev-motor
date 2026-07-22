@@ -41,16 +41,25 @@ const sinc = (x) => (Math.abs(x) < 1e-9 ? 1 : Math.sin(x) / x);
 // A tile is one spatial period of magnetisation, sampled on an nx*ny grid of
 // cells. Each cell holds a magnetisation vector in tesla. Real arrays are built
 // from discrete cuboid magnets of fixed Br, so we sample the ideal continuous
-// pattern at cell centres and renormalise each cell to |m| = Br. That
+// pattern at one point per cell and renormalise each cell to |m| = Br. That
 // renormalisation is what generates the real harmonic distortion of a discrete
 // array (and the classic sin(pi/M)/(pi/M) amplitude penalty).
+//
+// WHERE inside the cell we sample is a real design decision, not an
+// implementation detail, because it decides what you can buy. Sampling at the
+// cell CENTRE (origin = 0.5) puts a 4-segment array's blocks half a cell off
+// the pattern's own axes, so every one of them comes out on a body diagonal --
+// a custom magnetisation at several times the price of stock. Sampling at the
+// cell EDGE (origin = 0) is the same array translated by half a cell: identical
+// physics, but every block lands on an axis and becomes a catalogue part.
+// Each array type therefore declares the origin that makes it buildable.
 
-function makeTile({ nx, ny, lx, ly, thickness, Br, fn, normalize = true }) {
+function makeTile({ nx, ny, lx, ly, thickness, Br, fn, normalize = true, origin = 0.5 }) {
   const cells = new Float64Array(nx * ny * 3);
   for (let q = 0; q < ny; q++) {
     for (let p = 0; p < nx; p++) {
-      const x = ((p + 0.5) / nx) * lx;
-      const y = ((q + 0.5) / ny) * ly;
+      const x = ((p + origin) / nx) * lx;
+      const y = ((q + origin) / ny) * ly;
       let m = fn(x, y, lx, ly);
       if (normalize) {
         const L = Math.hypot(m[0], m[1], m[2]);
@@ -141,6 +150,7 @@ export const ARRAY_TYPES = {
     build: ({ pitch, thickness, Br, segments }) =>
       makeTile({
         nx: segments, ny: 1, lx: pitch, ly: pitch, thickness, Br,
+        origin: 0,
         fn: (x, _y, lx) => {
           const k = TWO_PI / lx;
           // Handedness chosen so the strong side is -z.
@@ -153,10 +163,11 @@ export const ARRAY_TYPES = {
   // horizontal "flux-steering" magnets between them.
   halbach2d: {
     label: '2-D Halbach (checkerboard)',
-    note: 'Jansen / Beckhoff XPlanar style. Gives x and y thrust plus lift from a single array. Best force density, most magnets.',
+    note: 'Jansen / Beckhoff XPlanar style. Gives x and y thrust plus lift from a single array. One cell in four is a null in the ideal pattern and is left EMPTY — that is the real array, and the missing quarter of the magnet volume is why it lifts less than a fully-populated tile would suggest.',
     build: ({ pitch, thickness, Br, segments }) =>
       makeTile({
         nx: segments, ny: segments, lx: pitch, ly: pitch, thickness, Br,
+        origin: 0,
         fn: (x, y, lx, ly) => {
           const kx = TWO_PI / lx, ky = TWO_PI / ly;
           const r = 1 / Math.SQRT2;
@@ -177,6 +188,11 @@ export const ARRAY_TYPES = {
     note: 'Checkerboard rotated 45 deg. Effective pole pitch drops by sqrt(2), so the field is finer but decays faster with gap. Compare lift-vs-gap against the checkerboard.',
     build: ({ pitch, thickness, Br, segments }) =>
       makeTile({
+        // No sampling origin makes this one buildable from stock: the pattern's
+        // axes are at 45 deg to the cells, so half the blocks are diagonal
+        // whichever way the tile is shifted (checked both -- an edge origin
+        // trades the same 32 diagonals for 8 empty cells and 4% less field).
+        // Centre sampling is kept because it is the stronger of the two.
         nx: segments * 2, ny: segments * 2, lx: pitch, ly: pitch, thickness, Br,
         fn: (x, y, lx) => {
           const s = Math.SQRT1_2;
@@ -207,6 +223,100 @@ export const ARRAY_TYPES = {
       }),
   },
 };
+
+// --- where the magnets physically sit ---------------------------------------
+
+/** The magnet patches for a layout. Extracted so the mass model, the BOM and
+ *  the drawing all place magnets on the same grid rather than each deciding
+ *  for itself. */
+export function layoutPatches(layout, platenSize) {
+  const patches = [];
+  if (layout === 'single') {
+    patches.push({ u: 0, v: 0, w: platenSize, h: platenSize, theta: 0 });
+  } else if (layout === 'quad') {
+    // Kim / Teo four-array cross. Each array thrusts TANGENTIALLY -- the arrays
+    // on the x axis push along y, and vice versa. This is not cosmetic: an array
+    // at position r pushing along r contributes r x F = 0, so a radial layout
+    // has no yaw authority whatsoever. Tangential thrust makes differential
+    // force between opposite arms produce Tz, which is how this topology closes
+    // all six degrees of freedom.
+    const arm = platenSize * 0.42;
+    const r = platenSize * 0.27;
+    patches.push({ u: -r, v: 0, w: arm, h: arm, theta: Math.PI / 2 });
+    patches.push({ u: r, v: 0, w: arm, h: arm, theta: Math.PI / 2 });
+    patches.push({ u: 0, v: -r, w: arm, h: arm, theta: 0 });
+    patches.push({ u: 0, v: r, w: arm, h: arm, theta: 0 });
+  }
+  for (const p of patches) {
+    p.cos = Math.cos(p.theta);
+    p.sin = Math.sin(p.theta);
+  }
+  return patches;
+}
+
+/** Visit every cell of every patch, in patch-local coordinates.
+ *
+ *  One walk, used by the mass model, the BOM and both renderers, because the
+ *  last time these each had their own copy the drawing showed 121 magnets while
+ *  the table billed 144. `fn(px, py, k, patch)` gets the cell centre in patch
+ *  coordinates and the offset `k` of its magnetisation in tile.cells. */
+export function eachCell(tile, patches, fn) {
+  const cellW = tile.lx / tile.nx, cellH = tile.ly / tile.ny;
+  for (const pt of patches) {
+    const nu = cellsAcross(pt.w, cellW), nv = cellsAcross(pt.h, cellH);
+    for (let jv = 0; jv < nv; jv++) {
+      for (let iu = 0; iu < nu; iu++) {
+        const px = -pt.w / 2 + (iu + 0.5) * cellW;
+        const py = -pt.h / 2 + (jv + 0.5) * cellH;
+        const tx = ((px % tile.lx) + tile.lx) % tile.lx;
+        const ty = ((py % tile.ly) + tile.ly) % tile.ly;
+        const ci = Math.min(tile.nx - 1, Math.floor((tx / tile.lx) * tile.nx));
+        const cj = Math.min(tile.ny - 1, Math.floor((ty / tile.ly) * tile.ny));
+        fn(px, py, (cj * tile.nx + ci) * 3, pt);
+      }
+    }
+  }
+}
+
+/** True if a cell holds no magnet at all.
+ *
+ *  Where the ideal pattern has a null there is no defensible magnetisation
+ *  direction, so the cell is left empty -- those are the holes you see in every
+ *  published 2-D Halbach array. They are not bought, not weighed and not drawn,
+ *  so everything that bills, weighs or draws the magnet layer asks here rather
+ *  than assuming a solid slab. */
+export function cellIsEmpty(tile, k) {
+  return Math.hypot(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2]) <= 1e-9 * tile.Br;
+}
+
+/** Fraction of the platen's cells that actually hold a magnet. Counted over the
+ *  patches as they are really tiled, not over one period -- a platen is rarely a
+ *  whole number of tiles, and rounding it to one puts the mass model and the BOM
+ *  several percent apart. */
+export function patchFill(tile, patches) {
+  let n = 0, filled = 0;
+  eachCell(tile, patches, (_px, _py, k) => { n++; if (!cellIsEmpty(tile, k)) filled++; });
+  return n ? filled / n : 1;
+}
+
+// stackUp() needs the fill fraction before a translator exists, and the
+// optimiser calls it once per candidate, so the answer is cached on the config
+// fields the pattern and the tiling actually depend on.
+const _fillCache = new Map();
+
+/** Fill fraction for a translator config, without building a translator. */
+export function configFill({ arrayType, pitch, magnetThickness, Br, segments, layout, platenSize }) {
+  const key = `${arrayType}|${pitch}|${segments}|${layout}|${platenSize}`;
+  if (_fillCache.has(key)) return _fillCache.get(key);
+  const type = ARRAY_TYPES[arrayType];
+  let f = 1;
+  if (type) {
+    const tile = type.build({ pitch, thickness: magnetThickness, Br, segments });
+    f = patchFill(tile, layoutPatches(layout, platenSize));
+  }
+  _fillCache.set(key, f);
+  return f;
+}
 
 // --- harmonic decomposition -------------------------------------------------
 
@@ -309,32 +419,14 @@ export function makeTranslator(cfg) {
   });
   const harm = decompose(tile, { maxOrder, gapRef: gap });
 
-  const patches = [];
-  if (layout === 'single') {
-    patches.push({ u: 0, v: 0, w: platenSize, h: platenSize, theta: 0 });
-  } else if (layout === 'quad') {
-    // Kim / Teo four-array cross. Each array thrusts TANGENTIALLY -- the arrays
-    // on the x axis push along y, and vice versa. This is not cosmetic: an array
-    // at position r pushing along r contributes r x F = 0, so a radial layout
-    // has no yaw authority whatsoever. Tangential thrust makes differential
-    // force between opposite arms produce Tz, which is how this topology closes
-    // all six degrees of freedom.
-    const arm = platenSize * 0.42;
-    const r = platenSize * 0.27;
-    patches.push({ u: -r, v: 0, w: arm, h: arm, theta: Math.PI / 2 });
-    patches.push({ u: r, v: 0, w: arm, h: arm, theta: Math.PI / 2 });
-    patches.push({ u: 0, v: -r, w: arm, h: arm, theta: 0 });
-    patches.push({ u: 0, v: r, w: arm, h: arm, theta: 0 });
-  }
+  const patches = layoutPatches(layout, platenSize);
 
-  for (const p of patches) {
-    p.cos = Math.cos(p.theta);
-    p.sin = Math.sin(p.theta);
-  }
-
-  // Magnet mass: NdFeB ~7500 kg/m^3, plus the platen structure.
+  // Magnet mass: NdFeB ~7500 kg/m^3, plus the platen structure. Only the
+  // populated cells count -- an array with empty cells is lighter, and pretending
+  // otherwise flies a platen heavier than the one you would build.
   const magArea = patches.reduce((a, p) => a + p.w * p.h, 0);
-  const magnetMass = magArea * magnetThickness * 7500;
+  const fill = patchFill(tile, patches);
+  const magnetMass = magArea * magnetThickness * 7500 * fill;
   const mass = platenMass > 0 ? platenMass : magnetMass * 1.6;
 
   // Box inertia about the platen centre.
@@ -346,7 +438,7 @@ export function makeTranslator(cfg) {
   ];
 
   return {
-    cfg, tile, harm, patches, mass, inertia, magnetMass,
+    cfg, tile, harm, patches, mass, inertia, magnetMass, fill,
     faceZ: 0, // magnet face is the platen origin plane; +z is up, away from coils
     footprintRadius: Math.max(...patches.map((p) =>
       Math.hypot(Math.abs(p.u) + p.w / 2, Math.abs(p.v) + p.h / 2))),

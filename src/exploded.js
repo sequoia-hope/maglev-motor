@@ -10,7 +10,7 @@
 import {
   theme, cameraBasis, makePainter, prepCanvas, magnetRGB,
 } from './render3d.js';
-import { cellsAcross } from './halbach.js';
+import { eachCell, cellIsEmpty } from './halbach.js';
 
 const LABEL_W = 210;   // right-hand callout column
 const ROW_H = 30;
@@ -88,29 +88,20 @@ export function renderExploded(canvas, scene) {
     if (p.kind === 'magnets') {
       const tile = tr.tile;
       const cw = tile.lx / tile.nx, ch = tile.ly / tile.ny;
-      for (const pt of tr.patches) {
-        const nu = cellsAcross(pt.w, cw), nv = cellsAcross(pt.h, ch);
+      eachCell(tile, tr.patches, (px, py, k, pt) => {
+        // Nulls in the pattern are empty pockets — leave the hole visible, so
+        // the drawing shows the array you would actually assemble.
+        if (cellIsEmpty(tile, k)) return;
         const pc = pt.cos, ps = pt.sin;
-        for (let jv = 0; jv < nv; jv++) {
-          for (let iu = 0; iu < nu; iu++) {
-            const px = -pt.w / 2 + (iu + 0.5) * cw;
-            const py = -pt.h / 2 + (jv + 0.5) * ch;
-            const tx = ((px % tile.lx) + tile.lx) % tile.lx;
-            const ty = ((py % tile.ly) + tile.ly) % tile.ly;
-            const ci = Math.min(tile.nx - 1, Math.floor((tx / tile.lx) * tile.nx));
-            const cj = Math.min(tile.ny - 1, Math.floor((ty / tile.ly) * tile.ny));
-            const k = (cj * tile.nx + ci) * 3;
-            const rgb = magnetRGB(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2], tile.Br, pal);
-            const g = 0.06 * cw;
-            const cs = [[-cw / 2 + g, -ch / 2 + g], [cw / 2 - g, -ch / 2 + g],
-              [cw / 2 - g, ch / 2 - g], [-cw / 2 + g, ch / 2 - g]];
-            const wc = cs.map(([a, b]) => [pt.u + (px + a) * pc - (py + b) * ps,
-              pt.v + (px + a) * ps + (py + b) * pc]);
-            const z0 = zOf(i, p.z0), z1 = zOf(i, p.z0 + p.t);
-            pushBox([...wc.map(([u, v]) => [u, v, z0]), ...wc.map(([u, v]) => [u, v, z1])], rgb);
-          }
-        }
-      }
+        const rgb = magnetRGB(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2], tile.Br, pal);
+        const g = 0.06 * cw;
+        const cs = [[-cw / 2 + g, -ch / 2 + g], [cw / 2 - g, -ch / 2 + g],
+          [cw / 2 - g, ch / 2 - g], [-cw / 2 + g, ch / 2 - g]];
+        const wc = cs.map(([a, b]) => [pt.u + (px + a) * pc - (py + b) * ps,
+          pt.v + (px + a) * ps + (py + b) * pc]);
+        const z0 = zOf(i, p.z0), z1 = zOf(i, p.z0 + p.t);
+        pushBox([...wc.map(([u, v]) => [u, v, z0]), ...wc.map(([u, v]) => [u, v, z1])], rgb);
+      });
       return;
     }
 

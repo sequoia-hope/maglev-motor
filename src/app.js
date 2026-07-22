@@ -45,7 +45,7 @@ const PRESETS = {
   },
   desk40: {
     label: '40 mm desktop platen (searched)',
-    blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 49 magnets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire.',
+    blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 40 magnets in 49 pockets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire.',
     cfg: {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.0209, magnetThickness: 0.002, Br: 1.32, segments: 4, platenSize: 0.040, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'square', coilPitch: 0.00677, coilFill: 0.92, statorSize: 0.080, windingHeight: 0.0038, wireDiameter: 0.0002, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
@@ -641,10 +641,12 @@ function renderBuild() {
   const c = A.census, grade = A.grade;
   let m = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Magnet order</h4>`;
   m += `<p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">
-    <b>${c.total}</b> cells at ${(c.cellW * 1000).toFixed(2)} × ${(c.cellH * 1000).toFixed(2)} ×
+    <b>${c.total}</b> blocks at ${(c.cellW * 1000).toFixed(2)} × ${(c.cellH * 1000).toFixed(2)} ×
     ${(app.cfg.translator.magnetThickness * 1000).toFixed(2)} mm, ${grade.name}
-    (Br ${app.cfg.translator.Br.toFixed(2)} T${grade.exact ? '' : ` — nearest catalogue grade is ${grade.name} at ${grade.Br} T`}).</p>`;
-  const orderAs = { axial: 'through-thickness (stock)', 'in-plane': 'through-length (stock)', diagonal: 'diagonal — CUSTOM' };
+    (Br ${app.cfg.translator.Br.toFixed(2)} T${grade.exact ? '' : ` — nearest catalogue grade is ${grade.name} at ${grade.Br} T`})${
+      c.empty ? `, filling ${c.total} of the platen's ${c.cells} pockets — the other ${c.empty} are nulls in the pattern and stay empty` : ''}.</p>`;
+  const orderAs = { axial: 'through-thickness (stock)', 'in-plane': 'through-length (stock)',
+    diagonal: 'diagonal — CUSTOM', empty: 'nothing — leave the pocket empty' };
   m += '<div class="table-wrap"><table><thead><tr><th style="text-align:left">Magnetisation on the platen</th><th>Count</th><th style="text-align:left">Order as</th></tr></thead><tbody>';
   for (const r of c.rows) {
     const bad = r.cls === 'diagonal';
@@ -653,7 +655,7 @@ function renderBuild() {
   }
   m += `</tbody></table></div>
     <p style="font-size:12px;color:var(--muted);margin:10px 0 0">
-    ${c.rows.length} orientations, <b>${c.skus.length} part number${c.skus.length === 1 ? '' : 's'}</b>
+    ${c.rows.filter((r) => r.cls !== 'empty').length} orientations, <b>${c.skus.length} part number${c.skus.length === 1 ? '' : 's'}</b>
     (${c.skus.join(', ')}). Direction on the platen is an assembly step, not a different part —
     which is exactly why the cells are square.</p>`;
 
@@ -688,9 +690,11 @@ function renderDesignTable() {
   const nMag = app.assembly.census.total;
   const wireLen = st.coils.reduce((L, k) => L + k.turns * 2 * (k.outer[0] + k.outer[1]), 0);
   const rows = [
-    ['Magnet cells on the platen', `${nMag}`, `${(tr.tile.lx / tr.tile.nx * 1000).toFixed(1)} × ${(tr.tile.ly / tr.tile.ny * 1000).toFixed(1)} × ${(c.translator.magnetThickness * 1000).toFixed(1)} mm each`],
+    ['Magnets on the platen', `${nMag}`, `${(tr.tile.lx / tr.tile.nx * 1000).toFixed(1)} × ${(tr.tile.ly / tr.tile.ny * 1000).toFixed(1)} × ${(c.translator.magnetThickness * 1000).toFixed(1)} mm each`
+      + (app.assembly.census.empty ? `, in ${app.assembly.census.cells} pockets — ${app.assembly.census.empty} stay empty` : '')],
     ['Magnet mass', `${sig(app.stack.magnetMass * 1000, 3)} g`,
-      `NdFeB at 7500 kg/m³, less the ${(app.stack.wallFraction * 100).toFixed(0)}% displaced by retainer wall`],
+      `NdFeB at 7500 kg/m³, less the ${(app.stack.wallFraction * 100).toFixed(0)}% displaced by retainer wall`
+      + (app.stack.magnetFill < 0.999 ? ` and the ${(100 - app.stack.magnetFill * 100).toFixed(0)}% of cells the pattern leaves empty` : '')],
     ['Coils in stator', `${st.coils.length}`, `${st.effTurns} effective turns each, ${sig(st.coils[0]?.R ?? 0, 3)} Ω`],
     ['Total wire length', `${sig(wireLen, 3)} m`, `${sig(st.copperMass * 1000, 3)} g of copper`],
     ['Driver channels needed', `${a.amplifiers}`,

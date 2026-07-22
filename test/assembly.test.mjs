@@ -3,7 +3,7 @@
 // count, same air gap, and a stack that actually closes with no gaps or
 // interpenetrating parts.
 
-import { makeTranslator } from '../src/halbach.js';
+import { makeTranslator, ARRAY_TYPES, layoutPatches, patchFill, configFill, selfTest } from '../src/halbach.js';
 import { makeStator } from '../src/coils.js';
 import { stackUp, mechDefaultsFor, DEFAULT_MECH } from '../src/mechanical.js';
 import { buildAssembly, magnetCensus, nearestGrade, nearestAWG } from '../src/assembly.js';
@@ -21,12 +21,13 @@ let fails = 0;
 const check = (n, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`); if (!c) fails++; };
 const close = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(a), Math.abs(b));
 
-// The BOM claims a half-cell shift of the tile origin turns custom diagonal
-// magnets into commodity stock "at identical field". That claim is only worth
-// printing if it is true, so it gets checked rather than asserted: the shift is
-// a rigid translation of the magnetisation, so every harmonic keeps its
-// magnitude and only its phase moves.
-console.log('=== the sourcing remedy actually holds ===');
+// The half-cell shift of the tile origin is now IMPLEMENTED, not merely
+// recommended: halbach.js samples the axis-aligned arrays at the cell edge.
+// The claim that justified it -- same field, stock magnets instead of custom --
+// still has to hold, so it stays checked rather than asserted. The shift is a
+// rigid translation of the magnetisation, so every harmonic keeps its magnitude
+// and only its phase moves.
+console.log('=== the half-cell shift is real, and it costs nothing ===');
 {
   const seg = 4, lx = 0.04, Br = 1.32, k = (2 * Math.PI) / lx;
   const build = (off) => Array.from({ length: seg }, (_, p) => {
@@ -47,13 +48,42 @@ console.log('=== the sourcing remedy actually holds ===');
   const centre = build(0.5), edge = build(0);
   const a = fundamental(centre), b = fundamental(edge);
   const elev = (m) => Math.abs((Math.asin(m[2] / Math.hypot(m[0], m[1], m[2])) * 180) / Math.PI);
-  check('as sampled, every block is on a diagonal',
+  check('centre sampling puts every block on a diagonal',
     centre.every((m) => elev(m) > 20 && elev(m) < 70), `elevations ${centre.map((m) => elev(m).toFixed(0)).join(', ')}°`);
   check('shifted by half a cell, every block is on an axis',
     edge.every((m) => elev(m) < 1e-9 || elev(m) > 90 - 1e-9), `elevations ${edge.map((m) => elev(m).toFixed(0)).join(', ')}°`);
   check('the shift leaves the fundamental amplitude unchanged',
     Math.abs(a.Mz - b.Mz) / a.Mz < 1e-12 && Math.abs(a.Mx - b.Mx) / a.Mx < 1e-12,
     `|Mz1| ${a.Mz.toFixed(6)} vs ${b.Mz.toFixed(6)}`);
+
+  // ...and the shipped array builder is the shifted one, at the same field.
+  const args = { pitch: lx, thickness: 0.006, Br, segments: seg };
+  const built = ARRAY_TYPES.halbach1d.build(args);
+  const elevOf = (i) => {
+    const m = [built.cells[3 * i], built.cells[3 * i + 1], built.cells[3 * i + 2]];
+    return Math.abs((Math.asin(m[2] / Math.hypot(...m)) * 180) / Math.PI);
+  };
+  check('the 1-D builder ships blocks on axes, not diagonals',
+    [0, 1, 2, 3].every((i) => elevOf(i) < 1e-9 || elevOf(i) > 90 - 1e-9),
+    `elevations ${[0, 1, 2, 3].map((i) => elevOf(i).toFixed(0)).join(', ')}°`);
+  const self = selfTest({ ...args });
+  check('and still matches the closed-form Halbach fundamental',
+    self.pass, `${(self.relError * 100).toFixed(3)}% from analytic`);
+
+  // The checkerboard's nulls are real empty pockets, not zero-field magnets.
+  // 72 mm of 6 mm cells is exactly nine 4x4 tiles, so the platen fill is the
+  // tile fill and the expected 3/4 is checkable by hand.
+  const cbCfg = { arrayType: 'halbach2d', pitch: 0.024, magnetThickness: 0.003, Br: 1.43,
+    segments: 4, layout: 'single', platenSize: 0.072 };
+  const cb = ARRAY_TYPES.halbach2d.build({ pitch: 0.024, thickness: 0.003, Br: 1.43, segments: 4 });
+  const cbFill = patchFill(cb, layoutPatches('single', 0.072));
+  check('the 2-D checkerboard leaves one cell in four empty',
+    Math.abs(cbFill - 0.75) < 1e-12, `fill ${(cbFill * 100).toFixed(1)}%`);
+  check('configFill agrees without building a translator',
+    Math.abs(configFill(cbCfg) - cbFill) < 1e-12);
+  check('a fully-populated array reports full fill',
+    configFill({ ...cbCfg, arrayType: 'halbach1d' }) === 1
+      && configFill({ ...cbCfg, arrayType: 'alternating' }) === 1);
 }
 
 // 72 mm of 6 mm cells is 11.999999999999998 in floating point, and a bare
@@ -99,8 +129,19 @@ for (const [key, preset] of Object.entries(PRESETS)) {
   check('a diagonal magnet is never reported as stock',
     census.diagonal === 0 || (A.sourcing && A.sourcing.remedy),
     census.diagonal ? `${census.diagonal} diagonal, remedy stated` : 'none');
-  check('every magnet lands in a direction bin',
-    census.rows.reduce((a, r) => a + r.n, 0) === census.total);
+  check('every cell lands in a bin, empties included',
+    census.rows.reduce((a, r) => a + r.n, 0) === census.cells,
+    `${census.cells} cells, ${census.empty} empty`);
+  // Empty pockets are the whole point of the fix: bill them and you order
+  // magnets for holes, weigh them and you fly a platen you did not build.
+  check('empty pockets are not billed as magnets',
+    census.total === census.cells - census.empty);
+  // The mass model uses the TILE's fill; the census counts the cells that
+  // actually land on the platen, which need not be a whole number of tiles.
+  // They must still agree to within a cell or two, or one of them is wrong.
+  check('the mass model fills the same fraction of cells the census counts',
+    Math.abs(stack.magnetFill - census.total / census.cells) < 0.05,
+    `stack fill ${(stack.magnetFill * 100).toFixed(1)}% vs census ${(census.total / census.cells * 100).toFixed(1)}%`);
   check('magnet mass reconciles with the stack-up',
     close(A.parts.find((p) => p.id === 'magnets').mass, stack.magnetMass, 1e-12));
 

@@ -3,7 +3,7 @@
 // sorting by centroid depth is exact enough and costs nothing.
 
 import { quat } from './math.js';
-import { cellsAcross } from './halbach.js';
+import { eachCell, cellIsEmpty } from './halbach.js';
 
 export const PALETTE = {
   light: {
@@ -325,33 +325,24 @@ export function render(canvas, scene) {
   const cellW = tile.lx / tile.nx, cellH = tile.ly / tile.ny;
   const magT = tr.cfg.magnetThickness;
 
-  tr.patches.forEach((pt) => {
+  eachCell(tile, tr.patches, (px, py, k, pt) => {
+    // A pattern null is an empty pocket. Drawing a block there would show a
+    // platen you cannot build and a magnet count you do not buy.
+    if (cellIsEmpty(tile, k)) return;
     const pc = pt.cos, ps = pt.sin;
-    const nu = cellsAcross(pt.w, cellW), nv = cellsAcross(pt.h, cellH);
-    for (let jv = 0; jv < nv; jv++) {
-      for (let iu = 0; iu < nu; iu++) {
-        const px = -pt.w / 2 + (iu + 0.5) * cellW;
-        const py = -pt.h / 2 + (jv + 0.5) * cellH;
-        const tx = ((px % tile.lx) + tile.lx) % tile.lx;
-        const ty = ((py % tile.ly) + tile.ly) % tile.ly;
-        const ci = Math.min(tile.nx - 1, Math.floor((tx / tile.lx) * tile.nx));
-        const cj = Math.min(tile.ny - 1, Math.floor((ty / tile.ly) * tile.ny));
-        const k = (cj * tile.nx + ci) * 3;
-        const rgb = magnetRGB(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2], tile.Br, pal);
+    const rgb = magnetRGB(tile.cells[k], tile.cells[k + 1], tile.cells[k + 2], tile.Br, pal);
 
-        const local = (a, b) => [pt.u + (px + a) * pc - (py + b) * ps,
-          pt.v + (px + a) * ps + (py + b) * pc];
-        const g = 0.06 * cellW; // hairline gap so individual magnets read
-        const cs = [[-cellW / 2 + g, -cellH / 2 + g], [cellW / 2 - g, -cellH / 2 + g],
-          [cellW / 2 - g, cellH / 2 - g], [-cellW / 2 + g, cellH / 2 - g]];
-        const wc = cs.map(([a, b]) => local(a, b));
-        if (sectioned(...toWorld(wc[0][0], wc[0][1], 0))) continue;
-        pushBox([
-          ...wc.map(([u, v]) => toWorld(u, v, 0)),
-          ...wc.map(([u, v]) => toWorld(u, v, magT)),
-        ], rgb);
-      }
-    }
+    const local = (a, b) => [pt.u + (px + a) * pc - (py + b) * ps,
+      pt.v + (px + a) * ps + (py + b) * pc];
+    const g = 0.06 * cellW; // hairline gap so individual magnets read
+    const cs = [[-cellW / 2 + g, -cellH / 2 + g], [cellW / 2 - g, -cellH / 2 + g],
+      [cellW / 2 - g, cellH / 2 - g], [-cellW / 2 + g, cellH / 2 - g]];
+    const wc = cs.map(([a, b]) => local(a, b));
+    if (sectioned(...toWorld(wc[0][0], wc[0][1], 0))) return;
+    pushBox([
+      ...wc.map(([u, v]) => toWorld(u, v, 0)),
+      ...wc.map(([u, v]) => toWorld(u, v, magT)),
+    ], rgb);
   });
 
   // Platen backing plate above the magnets: the structure they mount to.
