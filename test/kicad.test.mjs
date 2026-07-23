@@ -55,8 +55,17 @@ check('F.Cu and B.Cu both present', /"F.Cu"/.test(out.text) && /"B.Cu"/.test(out
 check('one net per coil (plus the empty net 0)',
   out.stats.nets === stator.coils.length && (out.text.match(/\(net \d+ "coil_/g) || []).length === stator.coils.length,
   `${out.stats.nets} nets`);
-check('a via between every adjacent layer pair, per coil',
-  out.stats.vias === stator.coils.length * (cfg.stator.pcbLayers - 1), `${out.stats.vias} vias`);
+check('through-hole via farms stitch the layer stack, per coil',
+  out.stats.vias === stator.coils.length * out.stats.viasPerCoil && out.stats.viasPerCoil > 0,
+  `${out.stats.vias} vias, ${out.stats.viasPerCoil}/coil (${out.stats.innerVias} inner + ${out.stats.outerVias} outer)`);
+// Bugeja's method is plated through-holes only: every via must span the full
+// stack (F.Cu..B.Cu). A blind/buried span would betray the cheap-stackup claim.
+{
+  const viaLines = out.text.match(/\(via .*/g) || [];
+  const allThrough = viaLines.length > 0 && viaLines.every((v) => /\(layers "F.Cu" "B.Cu"\)/.test(v));
+  check('every via is a plated through-hole (F.Cu..B.Cu), none buried', allThrough,
+    `${viaLines.length} vias, ${viaLines.filter((v) => !/"F.Cu" "B.Cu"/.test(v)).length} not through-hole`);
+}
 check('board outline is the stator size',
   new RegExp(`Edge.Cuts`).test(out.text) && out.stats.boardMm === cfg.stator.statorSize * 1000,
   `${out.stats.boardMm} mm`);

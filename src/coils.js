@@ -15,6 +15,27 @@ const PACKING = 0.7;
 const PCB_DIELECTRIC = 0.1e-3;
 const PCB_MASK = 25e-6;
 
+// Heavy copper cannot be etched into thin tracks: the thicker the plating, the
+// wider a trace the fab needs to hold the etch. Carl Bugeja's 12-layer coil ran
+// straight into this -- his 4 mil design could only be poured in 1 oz copper,
+// and 2 oz forced him out to 8 mil. So the minimum trace width scales with copper
+// weight at ~4 mil per ounce (his stated fab rule), and the width the coil is
+// ACTUALLY built with is the wider of what you asked for and what the copper
+// allows. This is why you cannot buy turns by piling on copper weight at a fixed
+// trace width: past the balance point the mandatory wider track eats the turns
+// faster than the extra layers add them.
+const OZ_COPPER = 34.79e-6; // m, thickness of 1 oz/ft^2 finished copper
+const MIL = 25.4e-6;        // m
+export function minTrackWidth(copperThickness) {
+  return 4 * MIL * (copperThickness / OZ_COPPER); // Bugeja's 4 mil/oz fab rule
+}
+/** The trace a PCB coil is really manufactured with: never narrower than the
+ *  copper weight permits. coils.js and kicad.js both route through this so the
+ *  exported copper and the simulated coil can never disagree on turn count. */
+export function effectiveTrace(traceWidth, copperThickness) {
+  return Math.max(traceWidth, minTrackWidth(copperThickness));
+}
+
 /** Discretise one rectangular winding into filament segments.
  *  Returns {mid:Float64Array(3*n), dl:Float64Array(3*n)} in coil-local coords
  *  (origin at coil centre, z at the coil mid-plane). dl already carries the
@@ -87,16 +108,21 @@ export function makeStator(cfg) {
   const span = (nSide - 1) * coilPitch;
 
   let outer, inner, effTurns, wireArea, thickness;
+  let pcbEffTrace = null;
 
   if (coilType === 'pcb') {
     // A spiral on an N-layer board. Turns per layer is set by how many
-    // concentric traces fit in half the coil width.
+    // concentric traces fit in half the coil width -- but at the effective trace
+    // width, which the copper weight can force wider than requested (Bugeja's
+    // fab rule). Piling on copper thus does NOT monotonically buy turns.
     const w = coilPitch * coilFill;
-    const perLayer = Math.max(1, Math.floor((w * 0.25) / (pcbTraceWidth * 2)));
+    const eff = effectiveTrace(pcbTraceWidth, pcbCopperThickness);
+    pcbEffTrace = eff;
+    const perLayer = Math.max(1, Math.floor((w * 0.25) / (eff * 2)));
     effTurns = perLayer * pcbLayers;
     outer = [w, w];
     inner = [w * 0.4, w * 0.4];
-    wireArea = pcbTraceWidth * pcbCopperThickness;
+    wireArea = eff * pcbCopperThickness;
     // Board thickness is DERIVED from the stackup, not assumed to be 1.6 mm.
     // Layers are the only knob that buys turns on a PCB stator, so if the board
     // never gets thicker, adding layers is free force -- the optimiser walks
@@ -206,6 +232,10 @@ export function makeStator(cfg) {
     cfg, coils, thickness, truncated,
     effTurns, wireArea,
     turnsAreDerived: coilType !== 'pcb',
+    // The trace the board is really built with, and whether the copper weight
+    // forced it wider than the user asked for (so the UI can say so honestly).
+    pcbEffTrace,
+    pcbTraceLimited: pcbEffTrace !== null && pcbEffTrace > cfg.pcbTraceWidth + 1e-12,
     copperMass: totalCopper * 8960,
     label: COIL_TYPES[coilType].label,
   };
