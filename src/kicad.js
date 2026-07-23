@@ -87,19 +87,19 @@ export function spiralVertices(g, layerIndex) {
  *  at (halfOut,-halfOut) / (halfIn,-halfIn). */
 export function spiralPath(g, layerIndex) {
   const V = spiralVertices(g, layerIndex);
-  const cr = g.corner ?? 0;
-  // Only the outermost turn touches the cell-corner pockets, so round just the
-  // outer ~1.5 turns. The inner turns stay sharp -- rounding them all would
-  // multiply the feature count (and the file size) for no pocket benefit.
-  const roundR = g.halfOut - g.pitch * 1.5;
+  // Every corner is rounded, with a radius PROPORTIONAL to that turn's own
+  // radius (scale set by the outer corner), so the concentric rounded squares
+  // nest self-similarly -- outer turns gently round, inner turns tightly round,
+  // constant gap between them. The ends (corner 0) stay sharp for the hop tabs.
+  const scale = (g.corner ?? 0) / g.halfOut;
   const prims = [];
   let from = V[0];
   for (let i = 1; i < V.length - 1; i++) {
     const A = V[i - 1], P = V[i], B = V[i + 1];
     const dinx = P[0] - A[0], diny = P[1] - A[1], lin = Math.hypot(dinx, diny);
     const dox = B[0] - P[0], doy = B[1] - P[1], lout = Math.hypot(dox, doy);
-    const inOuter = Math.max(Math.abs(P[0]), Math.abs(P[1])) > roundR;
-    const s = inOuter ? Math.min(cr, lin * 0.5, lout * 0.5) : 0;
+    const cr = scale * Math.max(Math.abs(P[0]), Math.abs(P[1]));
+    const s = Math.min(cr, lin * 0.5, lout * 0.5);
     if (s < 1e-6 || lin < 1e-9 || lout < 1e-9) { prims.push({ t: 'seg', a: from, b: P }); from = P; continue; }
     const T1 = [P[0] - (dinx / lin) * s, P[1] - (diny / lin) * s];
     const T2 = [P[0] + (dox / lout) * s, P[1] + (doy / lout) * s];
@@ -160,55 +160,70 @@ function viaPlan(g, N, cellHalf, viaSize) {
   const step = viaSize * 1.5;                   // via spread inside a corner pocket
 
   const segments = [];                          // [x0,y0,x1,y1, layer]
-  const vias = [];                              // [x,y]  crossover through-holes
+  const vias = [];                              // {p:[x,y], layers:[..]} crossovers
   const terminals = [];                         // [x0,y0,x1,y1, layer]
-  const termVias = [];                          // [x,y]  backplane mating vias
+  const termVias = [];                          // {p:[x,y], layers:[l]} mating vias
 
   const innerJ = [], outerJ = [];
   for (let j = 0; j < N - 1; j++) (j % 2 === 0 ? innerJ : outerJ).push(j);
 
-  // Inner hops: one via each, fanned across the (now small) centre hole.
-  const iSpread = 2.2;
+  // Inner hops: one via each at a UNIQUE angle around the centre hole, reached by
+  // the same trick the outer hops use -- a ring from the inner end that stays
+  // OUTSIDE all the vias (but still inside the winding) and only dives in to its
+  // own. So no hop tab crosses another hop's via.
+  const aIn = Math.atan2(P_in[1], P_in[0]);      // the inner end's angle (corner 0)
+  const rInVia = Math.min(holeR, g.halfIn - viaSize * 2.2);   // via ring, in the hole
+  const rInTab = rInVia + viaSize * 1.0;                       // tab ring, just outside
+  const polC = (r, a) => [r * Math.cos(a), r * Math.sin(a)];
   innerJ.forEach((j, k) => {
-    const t = innerJ.length === 1 ? 0.5 : (k + 0.5) / innerJ.length;
-    const ang = -Math.PI / 4 - iSpread / 2 + iSpread * t;
-    const site = [holeR * Math.cos(ang), holeR * Math.sin(ang)];
-    segments.push([P_in[0], P_in[1], site[0], site[1], j]);
-    segments.push([P_in[0], P_in[1], site[0], site[1], j + 1]);
-    vias.push(site);
+    const ang = aIn + (2 * Math.PI * (k + 1)) / (innerJ.length + 1);
+    const site = polC(rInVia, ang);
+    const path = [P_in];
+    let d = ((ang - aIn) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+    const dir = d <= Math.PI ? 1 : -1; if (dir < 0) d = 2 * Math.PI - d;
+    const steps = Math.max(1, Math.ceil(d / 0.25));
+    for (let q = 0; q <= steps; q++) { const aa = aIn + dir * d * (q / steps); path.push(polC(rInTab, aa)); }
+    path.push(site);
+    for (const layer of [j, j + 1])
+      for (let q = 0; q < path.length - 1; q++)
+        segments.push([path[q][0], path[q][1], path[q + 1][0], path[q + 1][1], layer]);
+    vias.push({ p: site, layers: [j, j + 1] });
   });
 
-  // A gutter waypoint just outside cell corner ci, and the tab path from the
-  // coil's outer end around the shorter way to a target via.
-  const gp = (ci) => corner(ci, gutR);
-  const tabPath = (ci, target) => {
-    const pts = [P_out, gp(0)];
-    const ccw = ci, cw = (4 - ci) % 4;
-    if (ci !== 0) {
-      if (ccw <= cw) for (let c = 1; c <= ci; c++) pts.push(gp(c % 4));
-      else for (let c = 1; c <= cw; c++) pts.push(gp((4 - c) % 4));
-    }
-    pts.push(target);
-    return pts;
-  };
-
-  // Assign outer crossovers round-robin to the 4 corners, terminals to opposite
-  // corners; then spread the vias that share a pocket along that corner's diagonal.
-  const items = outerJ.map((j, k) => ({ layers: [j, j + 1], ci: k % 4, kind: 'hop' }));
-  [0, N - 1].filter((l) => freeEndIsOuter(l, N))
-    .forEach((l, idx) => items.push({ layers: [l], ci: idx === 0 ? 0 : 2, kind: 'term' }));
-  const cnt = [0, 0, 0, 0];
-  items.forEach((it) => { it.slot = cnt[it.ci]++; });
-  items.forEach((it) => {
-    const n = cnt[it.ci];
-    const r = g.halfOut + (it.slot - (n - 1) / 2) * step;   // spread in the pocket
-    const via = corner(it.ci, r);
-    const path = tabPath(it.ci, via);
+  // Outer hops + terminals each get a UNIQUE ANGLE around the perimeter (not
+  // stacked in the corners). The tab runs a ring just outside the winding at
+  // radius rTab from the coil's outer end round to its angle, then dives OUT to
+  // its via at rVia > rTab. Because every via is at a distinct angle and the ring
+  // stays inside all of them, no tab ever grazes another via -- the exact
+  // wrong-layer short the corner-stacking otherwise caused. validatePcb proves it.
+  const a0 = Math.atan2(P_out[1], P_out[0]);     // the outer end's angle (corner 0)
+  // The winding is a square, so its boundary radius grows toward the corners.
+  // The ring and the vias FOLLOW that boundary (offset out), so a via is always
+  // just outside the copper at its own angle instead of buried in a corner.
+  const bound = (a) => g.halfOut / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6);
+  const cellBound = (a) => cellHalf / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6);
+  const rTabAt = (a) => bound(a) + viaSize * 0.7;
+  const rViaAt = (a) => Math.min(bound(a) + viaSize * 1.9, cellBound(a) - viaSize * 0.55);
+  const pol = (r, a) => [r * Math.cos(a), r * Math.sin(a)];
+  const items = outerJ.map((j) => ({ layers: [j, j + 1], kind: 'hop' }));
+  [0, N - 1].filter((l) => freeEndIsOuter(l, N)).forEach((l) => items.push({ layers: [l], kind: 'term' }));
+  // Spread over the full circle, skipping a slot at the outer end so the ring
+  // always starts clear.
+  const M = items.length;
+  items.forEach((it, i) => {
+    const ang = a0 + (2 * Math.PI * (i + 1)) / (M + 1);
+    const via = pol(rViaAt(ang), ang);
+    const path = [P_out];
+    let d = ((ang - a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+    const dir = d <= Math.PI ? 1 : -1; if (dir < 0) d = 2 * Math.PI - d;
+    const steps = Math.max(1, Math.ceil(d / 0.25));
+    for (let q = 0; q <= steps; q++) { const aa = a0 + dir * d * (q / steps); path.push(pol(rTabAt(aa), aa)); }
+    path.push(via);
     const bucket = it.kind === 'hop' ? segments : terminals;
     for (const layer of it.layers)
       for (let q = 0; q < path.length - 1; q++)
         bucket.push([path[q][0], path[q][1], path[q + 1][0], path[q + 1][1], layer]);
-    (it.kind === 'hop' ? vias : termVias).push(via);
+    (it.kind === 'hop' ? vias : termVias).push({ p: via, layers: it.layers });
   });
   // Odd-N corner case: an inner free end just stubs into the hole.
   for (const layer of [0, N - 1]) if (!freeEndIsOuter(layer, N)) terminals.push([P_in[0], P_in[1], 0, 0, layer]);
@@ -217,6 +232,92 @@ function viaPlan(g, N, cellHalf, viaSize) {
     segments, vias, terminals, termVias,
     counts: { inner: innerJ.length, outer: outerJ.length, perCoil: vias.length + termVias.length },
   };
+}
+
+/** A self-contained SVG of ONE coil, for an in-app preview -- so the layout (and
+ *  any wrong-layer via contacts) can be seen without opening KiCad. Draws two
+ *  representative layers' spirals, every crossover/terminal via, and rings any
+ *  via that validatePcb flags in red. Returns { svg, stats }. */
+export function coilPreviewSVG(cfg) {
+  const g = pcbCoilGeometry(cfg);
+  const N = cfg.stator.pcbLayers;
+  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
+  const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const plan = viaPlan(g, N, cellHalf, via);
+  const contacts = validatePcb(g, N, cellHalf, via);
+  const badKey = new Set(contacts.map((c) => c.via.map((n) => n.toFixed(3)).join(',')));
+
+  const P = (p) => `${(p[0]).toFixed(3)},${(-p[1]).toFixed(3)}`; // flip y for SVG
+  const poly = (pts, stroke) =>
+    `<polyline points="${pts.map(P).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${(g.trace).toFixed(3)}" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const parts = [];
+  // Cell boundary.
+  parts.push(`<rect x="${-cellHalf}" y="${-cellHalf}" width="${2 * cellHalf}" height="${2 * cellHalf}" fill="none" stroke="#8884" stroke-width="0.05" stroke-dasharray="0.3 0.2"/>`);
+  // Two representative layers (an inward and an outward one) as the winding.
+  parts.push(poly(spiralPoints(g, 0), '#4aa3ff'));
+  parts.push(poly(spiralPoints(g, 1), '#ff9d4a'));
+  // Tab copper on those two layers, so a crossover in the preview reads as wired.
+  for (const [x0, y0, x1, y1, layer] of plan.segments)
+    if (layer <= 1) parts.push(poly([[x0, y0], [x1, y1]], layer === 0 ? '#4aa3ff' : '#ff9d4a'));
+  // Vias: green crossovers, purple terminal mating vias, red if flagged.
+  const dot = (p, fill, r) => {
+    const bad = badKey.has(p.map((n) => n.toFixed(3)).join(','));
+    return `<circle cx="${p[0].toFixed(3)}" cy="${(-p[1]).toFixed(3)}" r="${r}" fill="${bad ? '#ff3b3b' : fill}"/>`
+      + (bad ? `<circle cx="${p[0].toFixed(3)}" cy="${(-p[1]).toFixed(3)}" r="${(r * 2.2).toFixed(3)}" fill="none" stroke="#ff3b3b" stroke-width="0.08"/>` : '');
+  };
+  for (const v of plan.vias) parts.push(dot(v.p, '#37d67a', via / 2));
+  for (const v of plan.termVias) parts.push(dot(v.p, '#b06cf0', via / 2));
+
+  const m = cellHalf * 1.08;
+  const svg = `<svg viewBox="${-m} ${-m} ${2 * m} ${2 * m}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;background:#0b0e14;border-radius:6px">${parts.join('')}</svg>`;
+  return {
+    svg,
+    stats: {
+      turns: g.turns, layers: N, viasPerCoil: plan.counts.perCoil,
+      innerVias: plan.counts.inner, outerVias: plan.counts.outer,
+      contacts: contacts.length,
+    },
+  };
+}
+
+// Distance from point p to segment ab, in the plane.
+function segDist(a, b, p) {
+  const abx = b[0] - a[0], aby = b[1] - a[1];
+  const L2 = abx * abx + aby * aby;
+  const t = L2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / L2));
+  return Math.hypot(a[0] + t * abx - p[0], a[1] + t * aby - p[1]);
+}
+
+/** Validate that no plated through-hole touches copper of a layer it must NOT
+ *  connect. A through-hole shorts every layer it passes, so each via is only
+ *  legal if, on every layer OTHER than the two (or one) it stitches, that layer's
+ *  copper stays clear of the via pad. Returns the contacts (empty == clean); each
+ *  is {via, layer, clearance} in coil-local mm. This is the check that catches a
+ *  crossover accidentally shorting a turn it was routed past. */
+export function validatePcb(g, N, cellHalf, viaSize) {
+  const plan = viaPlan(g, N, cellHalf, viaSize);
+  const contact = viaSize / 2 + g.trace / 2;   // via pad edge meets trace edge
+  const feat = Array.from({ length: N }, () => []);
+  for (let j = 0; j < N; j++) {
+    for (const pr of spiralPath(g, j)) {
+      if (pr.t === 'arc') { feat[j].push([pr.a, pr.m]); feat[j].push([pr.m, pr.b]); }
+      else feat[j].push([pr.a, pr.b]);
+    }
+  }
+  for (const [x0, y0, x1, y1, layer] of plan.segments) feat[layer].push([[x0, y0], [x1, y1]]);
+  for (const [x0, y0, x1, y1, layer] of plan.terminals)
+    if (isFinite(x1) && (x0 !== x1 || y0 !== y1)) feat[layer].push([[x0, y0], [x1, y1]]);
+
+  const contacts = [];
+  for (const v of [...plan.vias, ...plan.termVias]) {
+    for (let m = 0; m < N; m++) {
+      if (v.layers.includes(m)) continue;
+      let dmin = Infinity;
+      for (const [a, b] of feat[m]) { const d = segDist(a, b, v.p); if (d < dmin) dmin = d; }
+      if (dmin < contact - 1e-6) contacts.push({ via: v.p, layer: m, clearance: dmin });
+    }
+  }
+  return contacts;
 }
 
 // One SMD pad of a footprint on side S ('F' or 'B'), on a given net.
@@ -321,7 +422,7 @@ export function buildDriverBackplane(stator, cfg) {
     // Mating vias at the coil's two terminal pockets, on the bridge outputs, so
     // the connector picks up each coil end. Route the output pad to its via.
     const outNets = [oA(ci), oB(ci)];
-    plan.termVias.forEach((tv, k) => {
+    plan.termVias.forEach(({ p: tv }, k) => {
       const net = outNets[k % 2];
       L.push(`  (via (at ${tx(tv[0])} ${ty(tv[1])}) (size ${f(via)}) (drill ${f(drill)}) (layers "F.Cu" "B.Cu") (net ${net}))`);
       const pad = k % 2 === 0 ? [-0.9, 0.65] : [0.9, -0.65]; // OUTA / OUTB pad
@@ -412,7 +513,7 @@ export function buildKiCad(stator, cfg) {
       L.push(`  (segment (start ${tx(x0)} ${ty(y0)}) (end ${tx(x1)} ${ty(y1)}) (width ${f(g.trace)}) (layer "${cuName(layer, N)}") (net ${net}))`);
       segments++;
     }
-    for (const [x, y] of plan.vias) {
+    for (const { p: [x, y] } of plan.vias) {
       L.push(`  (via (at ${tx(x)} ${ty(y)}) (size ${f(via)}) (drill ${f(drill)}) (layers "${thVia[0]}" "${thVia[1]}") (net ${net}))`);
       vias++;
     }
@@ -422,7 +523,7 @@ export function buildKiCad(stator, cfg) {
       L.push(`  (segment (start ${tx(x0)} ${ty(y0)}) (end ${tx(x1)} ${ty(y1)}) (width ${f(g.trace)}) (layer "${cuName(layer, N)}") (net ${net}))`);
       segments++;
     }
-    for (const [x, y] of plan.termVias) {
+    for (const { p: [x, y] } of plan.termVias) {
       L.push(`  (via (at ${tx(x)} ${ty(y)}) (size ${f(via)}) (drill ${f(drill)}) (layers "${thVia[0]}" "${thVia[1]}") (net ${net}))`);
       vias++;
     }

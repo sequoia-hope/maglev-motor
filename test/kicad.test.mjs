@@ -5,16 +5,16 @@
 // instead of cancelling.
 
 import { makeStator } from '../src/coils.js';
-import { buildKiCad, pcbCoilGeometry, spiralPoints, spiralVertices } from '../src/kicad.js';
+import { buildKiCad, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb } from '../src/kicad.js';
 
 let fails = 0;
 const check = (n, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`); if (!c) fails++; };
 
 const cfg = {
   stator: {
-    coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096,
-    windingHeight: 0.0016, wireDiameter: 0.0005, pcbTraceWidth: 0.0001,
-    pcbCopperThickness: 175e-6, pcbLayers: 12, lockCoilPitch: false,
+    coilType: 'pcb', coilPitch: 0.008, coilFill: 0.88, statorSize: 0.096,
+    windingHeight: 0.0016, wireDiameter: 0.0005, pcbTraceWidth: 0.000103,
+    pcbCopperThickness: 35e-6, pcbLayers: 12, lockCoilPitch: false,
   },
 };
 const stator = makeStator({ ...cfg.stator, ringsPerCoil: 2, segmentsPerSide: 4 });
@@ -91,6 +91,22 @@ console.log('\n=== outer crossovers sit in the rounded-corner pockets ===');
   check('outer crossovers are spread across multiple corners', corners.size >= 3,
     `${outer} outer vias across ${corners.size} corners`);
 }
+
+console.log('\n=== no plated through-hole contacts a layer it must not ===');
+// The one that actually shorts a coil: a crossover through-hole grazing another
+// layer's copper. validatePcb checks every via against every non-participating
+// layer. This design (and the shipped fill) must come back clean.
+{
+  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
+  const bad = validatePcb(g, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2, via);
+  check('every through-hole clears the layers it does not stitch', bad.length === 0,
+    `${bad.length} wrong-layer contacts`);
+  // And it must actually FIRE when a coil is too dense to route -- a validator
+  // that never fails is worthless. Cranking the fill up crowds the gutter.
+  const dense = pcbCoilGeometry({ stator: { ...cfg.stator, coilFill: 0.97 } });
+  check('the check catches an unroutable (too-dense) coil',
+    validatePcb(dense, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2, via).length > 0);
+}
 check('through-hole via farms stitch the layer stack, per coil',
   out.stats.vias === stator.coils.length * out.stats.viasPerCoil && out.stats.viasPerCoil > 0,
   `${out.stats.vias} vias, ${out.stats.viasPerCoil}/coil (${out.stats.innerVias} inner + ${out.stats.outerVias} outer)`);
@@ -111,10 +127,12 @@ const opens = (out.text.match(/\(/g) || []).length, closes = (out.text.match(/\)
 check('parentheses balance', opens === closes, `${opens} open, ${closes} close`);
 check('starts with a kicad_pcb node', /^\(kicad_pcb /.test(out.text));
 
-// Every track must sit inside its own coil's outer square, or coils would short
-// across the board. Check the extreme coil corners against each coil centre.
+// Every track must sit inside its own coil CELL (half the coil pitch), or it
+// would collide with the neighbour. The crossover tabs and vias now spread out
+// into the gutter to reach the corner pockets, so the bound is the cell, not the
+// winding edge -- validatePcb already guards the electrical side.
 console.log('\n=== tracks stay inside their coils ===');
-const half = g.halfOut + g.pitch + 1e-6; // + terminal stub + fp slack
+const half = cfg.stator.coilPitch * 1000 / 2 + 1e-6;
 let overflow = 0;
 const segRe = /\(segment \(start ([\d.]+) ([\d.]+)\) \(end ([\d.]+) ([\d.]+)\).*?net (\d+)\)/g;
 const centres = stator.coils.map((c) => [c.x * 1000 + (cfg.stator.statorSize * 1000 / 2 + 10), -c.y * 1000 + (cfg.stator.statorSize * 1000 / 2 + 10)]);
