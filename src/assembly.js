@@ -64,6 +64,29 @@ const MAGNET_CATALOGUE = [
     ],
     note: 'One part number for the entire platen: a true cube turned in the jig is the in-plane block.',
   },
+  {
+    // desk40: a 5 mm cube is the smallest true-cube that keeps the platen a
+    // catalogue build. Like every cube, one SKU is the whole array -- axial as
+    // supplied, in-plane turned 90° in the jig. Verified 2026-07 on jc-magnetics.
+    w: 5, h: 5, t: 5, grade: 'N52', tol: 0.15, vendor: 'JC Magnetics', verified: '2026-07',
+    lines: [
+      { for: 'both', order: '5 mm N52 cube, JCN52-BLK555, magnetised through thickness (turned 90° in the jig for the in-plane block)',
+        url: 'https://www.jc-magnetics.com/Magnet-N52-5mmx5mmx5mm-Cube', unit: 0.62 },
+    ],
+    note: 'One part number for the whole platen: a true 5 mm cube, axial as supplied and in-plane turned 90°.',
+  },
+  {
+    // wire100: the 10 mm platen wants a bigger block, and a 10 mm cube is a stock
+    // single-SKU part -- no through-length partner to hunt down (which, for a
+    // Halbach checkerboard, does not exist off the shelf above ~6 mm). Verified
+    // 2026-07 on suprememagnets.com.
+    w: 10, h: 10, t: 10, grade: 'N52', tol: 0.20, vendor: 'Supreme Magnets', verified: '2026-07',
+    lines: [
+      { for: 'both', order: '10 mm N52 cube, magnetised through thickness (turned 90° for the in-plane block)',
+        url: 'https://suprememagnets.com/products/neodymium-magnet-10mm-cube', unit: 2.48 },
+    ],
+    note: 'One part number for the whole platen: a true 10 mm cube reused in two orientations.',
+  },
 ];
 
 /** Concrete order plan for a census, or null when no verified catalogue part

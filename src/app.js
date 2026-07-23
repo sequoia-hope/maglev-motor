@@ -45,20 +45,29 @@ const PRESETS = {
     },
   },
   desk40: {
-    label: '40 mm desktop platen (searched)',
-    blurb: 'Found by the optimiser: a 40 mm 2-D Halbach platen over hand-wound square coils, maximising air gap subject to 3x lift, 35 K rise and 12 A/mm². 33 magnets in 49 pockets, 144 coils, 36 amplifiers, 2.49 mm gap. The winding is the work: 520 m of 0.2 mm wire. The symmetric lattice suits this one: 7×7 cells, 36.6 mm across on a 40 mm platen, where the old boundary-anchored grid managed only 6×6 and 27 magnets.',
+    label: '40 mm desktop platen (5 mm cubes)',
+    blurb: 'A 40 mm hand-wound desktop platen designed around one stock part: 33 plain 5 mm N52 cubes (jc-magnetics JCN52-BLK555), no custom magnetisation — axial as supplied, in-plane turned 90° in the jig. λ = 20 mm makes 5 mm cells, so the platen is a symmetric 7×7 lattice, 35.0 mm across on a 40 mm platen, with the pattern nulls left empty: 33 magnets in 49 pockets. Over 144 hand-wound square coils (520 m of 0.2 mm / AWG 32 wire, 36 amplifiers) it clears every default constraint with room to spare — 21× lift at a 2.49 mm gap over a 0.54 mm floor, 1.8 W hover, 11 K rise, current-density limited at 11 A/mm². The winding is the work; the magnet order is a single line item, ~$20.',
     cfg: {
-      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.0209, magnetThickness: 0.002, Br: 1.32, segments: 4, platenSize: 0.040, platenMass: 0, maxOrder: 3 },
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.020, magnetThickness: 0.005, Br: 1.44, segments: 4, platenSize: 0.040, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'square', coilPitch: 0.00677, coilFill: 0.92, statorSize: 0.080, windingHeight: 0.0038, wireDiameter: 0.0002, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
       sim: { gap: 0.00249, iMax: 7.5, bwPos: 20, bwAtt: 38, zeta: 1.0, kiPos: 0.5, kiAtt: 0.5, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
     },
   },
+  wire100: {
+    label: '100 mm platen (wire)',
+    blurb: 'The big hand-wound build: a 100 mm 2-D Halbach platen on 10 mm N52 cubes (Supreme), one stock part for the whole array — axial as supplied, in-plane turned 90°. Above ~6 mm no through-length Halbach block exists off the shelf, so a true cube is the only single-SKU way onto a platen this size. λ = 40 mm makes 10 mm cells: a symmetric 9×9 lattice, 90.0 mm across on a 100 mm platen, 65 magnets in 81 pockets with the nulls left empty. It flies off 144 hand-wound square coils (1170 m of 0.3 mm / AWG 28 wire, 36 amplifiers): 8.1× lift centred, 4.4× at the workspace corners, at a generous 4.0 mm gap over a 0.64 mm floor, 12.1 W hover, 20 K rise, 13 A/mm². At 660 g it is the heaviest platen here — the price of 10 mm-thick magnets — but the air gap and payload are the largest too. The magnet order is ~$160, one line item.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.040, magnetThickness: 0.010, Br: 1.44, segments: 4, platenSize: 0.100, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'square', coilPitch: 0.0133, coilFill: 0.92, statorSize: 0.160, windingHeight: 0.005, wireDiameter: 0.0003, pcbLayers: 16, pcbTraceWidth: 0.00025, pcbCopperThickness: 70e-6, lockCoilPitch: false },
+      sim: { gap: 0.004, iMax: 7.5, bwPos: 20, bwAtt: 38, zeta: 1.0, kiPos: 0.5, kiAtt: 0.5, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
+    },
+  },
   pcb: {
     label: 'PCB stage (buildable)',
-    blurb: 'A 72 mm 2-D Halbach platen over a PCB stator, no coil winding, built Carl Bugeja\'s way: 12 copper layers stitched with plated through-holes only, so it is a standard stackup a fab will actually press — past 12 layers the cost runs away, so 12 is a hard ceiling, not a slider you push. Copper weight is the whole design problem. Bugeja\'s fab rule says heavy copper needs wide traces (4 mil per ounce), so you cannot have both many turns and low current density. This build takes the turns: 1 oz (35 µm) copper at its 0.103 mm minimum trace, 13 turns per layer, 156 per spiral, a 1.57 mm board of 144 spirals grouped into 36 amplifiers. At 72 mm and λ = 36 mm it flies with force to spare — 22.9× lift centred, 6.8× at the workspace corners, at a 2.0 mm gap over a 1.79 mm floor, 10.8 W hover, 22 K board rise. But thin copper concentrates the hover current to 61 A/mm², four times what a thick-copper board would run. Heat is the wall here, exactly as Bugeja found — you buy it back only with thicker copper (fewer turns) or active cooling. For a lighter build see the small PCB stage.',
+    blurb: 'The larger of the two PCB stages, same recipe as the small one: Carl Bugeja\'s 12-layer coil stitched with plated through-holes only (no blind/buried vias, so a fab will actually press it), 1 oz (35 µm) copper at its 0.103 mm minimum trace, 9 turns per layer on a 1.57 mm board. Copper weight is the wall — Bugeja\'s fab rule (4 mil per ounce) means you cannot have both many turns and low current density — so this board runs hot. Over a 72 mm 2-D Halbach platen at λ = 24 mm it flies everywhere, no dead spots: 13.2× lift centred and 13.1× at the workspace corners, at a 2.0 mm gap over a 1.79 mm floor, off 324 spirals grouped into 36 amplifiers, 15.7 W hover, 32 K board rise. Heat is the limit: the thin 1 oz copper carries the hover current at 100 A/mm². The magnets are catalogue stock — 6×6×3 mm N52 blocks (Supreme), 25 axial + 60 in-plane (the in-plane block is the same part magnetised through a 6 mm edge), 85 magnets in 121 pockets, 66.0 mm across on a 72 mm platen. For a lighter, cooler board see the small PCB stage.',
     cfg: {
-      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.036, magnetThickness: 0.004, Br: 1.43, segments: 4, platenSize: 0.072, platenMass: 0, maxOrder: 3 },
-      stator: { coilType: 'pcb', coilPitch: 0.012, coilFill: 0.94, statorSize: 0.144, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.072, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.144, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
       sim: { gap: 0.002, iMax: 5, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
     },
   },
