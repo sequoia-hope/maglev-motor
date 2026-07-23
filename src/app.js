@@ -6,7 +6,7 @@ import {
   applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES, arraySymmetry, imperialName,
 } from './halbach.js';
 import { COIL_TYPES, makeStator } from './coils.js';
-import { buildKiCad } from './kicad.js';
+import { buildKiCad, buildDriverBackplane } from './kicad.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
 import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
@@ -64,7 +64,7 @@ const PRESETS = {
   },
   pcb: {
     label: 'PCB stage (buildable)',
-    blurb: 'The larger of the two PCB stages, same recipe as the small one: Carl Bugeja\'s 12-layer coil stitched with plated through-holes only (no blind/buried vias, so a fab will actually press it), 1 oz (35 µm) copper at its 0.103 mm minimum trace, 9 turns per layer on a 1.57 mm board. Copper weight is the wall — Bugeja\'s fab rule (4 mil per ounce) means you cannot have both many turns and low current density — so this board runs hot. Over a 72 mm 2-D Halbach platen at λ = 24 mm it flies everywhere, no dead spots: 13.2× lift centred and 13.1× at the workspace corners, at a 2.0 mm gap over a 1.79 mm floor, off 324 spirals grouped into 36 amplifiers, 15.7 W hover, 32 K board rise. Heat is the limit: the thin 1 oz copper carries the hover current at 100 A/mm². The magnets are catalogue stock — 6×6×3 mm N52 blocks (Supreme), 25 axial + 60 in-plane (the in-plane block is the same part magnetised through a 6 mm edge), 85 magnets in 121 pockets, 66.0 mm across on a 72 mm platen. For a lighter, cooler board see the small PCB stage.',
+    blurb: 'The larger of the two PCB stages, same recipe as the small one: Carl Bugeja\'s 12-layer coil stitched with plated through-holes only (no blind/buried vias, so a fab will actually press it), 1 oz (35 µm) copper at its 0.103 mm minimum trace, 13 turns per layer on a 1.57 mm board — wound deep to the centre (crossovers move to the rounded corners) so the middle is turns, not dead space. Copper weight is the wall — Bugeja\'s fab rule (4 mil per ounce) means you cannot have both many turns and low current density. Over a 72 mm 2-D Halbach platen at λ = 24 mm it flies everywhere, no dead spots: 17.6× lift centred and 17.4× at the workspace corners, at a 2.0 mm gap over a 1.79 mm floor, off 324 spirals grouped into 36 amplifiers, 11.8 W hover, 24 K board rise. Still heat-first: the thin 1 oz copper carries the hover current at 79 A/mm² (winding deeper cut it from ~100). The magnets are catalogue stock — 6×6×3 mm N52 blocks (Supreme), 25 axial + 60 in-plane (the in-plane block is the same part magnetised through a 6 mm edge), 85 magnets in 121 pockets, 66.0 mm across on a 72 mm platen. For a lighter, cooler board see the small PCB stage.',
     cfg: {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.072, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.144, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
@@ -73,7 +73,7 @@ const PRESETS = {
   },
   pcbmini: {
     label: 'PCB stage (small)',
-    blurb: 'The smallest PCB build that still flies, on the same recipe as the larger PCB stage: a 12-layer board stitched with plated through-holes (Bugeja\'s method, the fabrication-cost ceiling), 1 oz copper at its 0.103 mm minimum trace, 144 spirals, 36 amplifiers. A 48 mm 2-D Halbach platen on a 24 mm pole pitch, 6 mm cells; a lighter platen needs less force, so it closes at a tighter 1.5 mm gap over a 1.30 mm floor with 108 turns per spiral (9 per layer). It flies with margin to spare: 21.0× lift centred, 6.4× at the workspace corners, 3.8 W hover, 17.1 K board rise. Like the larger board it is heat-limited, not force-limited — the thin 1 oz copper runs the hover current at 53 A/mm². λ = 24 mm makes 6 mm cells, so the 48 mm platen is 8 cells across and carries 33 magnets in a 7×7 lattice with the pattern nulls left empty. This is the cheapest way onto the topology; the larger stage buys stroke and payload for a bigger, hotter board.',
+    blurb: 'The smallest PCB build that still flies, on the same recipe as the larger PCB stage: a 12-layer board stitched with plated through-holes (Bugeja\'s method, the fabrication-cost ceiling), 1 oz copper at its 0.103 mm minimum trace, 144 spirals, 36 amplifiers. A 48 mm 2-D Halbach platen on a 24 mm pole pitch, 6 mm cells; a lighter platen needs less force, so it closes at a tighter 1.5 mm gap over a 1.30 mm floor with 156 turns per spiral (13 per layer, wound deep). It flies with margin to spare: 27.7× lift centred, 8.5× at the workspace corners, 2.9 W hover, 13 K board rise. Like the larger board it is heat-limited, not force-limited — the thin 1 oz copper runs the hover current at 40 A/mm². λ = 24 mm makes 6 mm cells, so the 48 mm platen is 8 cells across and carries 33 magnets in a 7×7 lattice with the pattern nulls left empty. This is the cheapest way onto the topology; the larger stage buys stroke and payload for a bigger, hotter board.',
     cfg: {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.048, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
@@ -779,26 +779,29 @@ function renderBuild() {
   if (app.cfg.stator.coilType === 'pcb') {
     const kc = buildKiCad(app.stator, app.cfg);
     const s = kc.stats;
-    const big = kc.text.length > 4e6;
+    const bp = buildDriverBackplane(app.stator, app.cfg).stats;
     pcbCard.style.display = '';
     pcbCard.innerHTML = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">PCB stator export</h4>
-      <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">The coil board as a <b>.kicad_pcb</b> you can open in KiCad and send to a fab —
+      <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">Two mating boards as <b>.kicad_pcb</b> files. The <b>coil board</b> is passive and dense —
       ${s.coils} coils on ${s.layers} copper layers, ${s.turnsPerLayer} turns each per layer, series-stacked so every layer's field adds.
-      ${s.segments.toLocaleString()} track segments, ${s.vias.toLocaleString()} plated through-hole vias (${s.viasPerCoil}/coil), one net per coil, ${s.traceMm.toFixed(3)} mm trace on a ${s.boardMm.toFixed(0)} mm board.
-      ${s.drivers ? `Plus a built-in amplifier array: <b>${s.drivers.toLocaleString()} H-bridge power stages</b> and ${s.decaps.toLocaleString()} decoupling caps on the back, one per coil, on shared VBUS/GND rails with a per-coil PWM pair — a distributed inverter, not a passive coil pad.` : ''}</p>
-      <button id="btnKicad" class="ghost">Download KiCad PCB</button>
-      ${big ? '<p style="font-size:12px;color:var(--warn);margin:8px 0 0">This is a large board — with the per-coil driver array the file runs to tens of MB and KiCad will take a while to open it.</p>' : ''}
-      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Carl Bugeja's method: the layer stack is stitched with plated through-holes only (no blind/buried vias), so it is a standard 12-layer stackup a fab can press. The per-coil H-bridge (both outputs drive the winding, which is the load) lands in the coil's centre hole on the back; the full VBUS/GND/PWM distribution across all ${s.drivers ? s.drivers.toLocaleString() : ''} stages is left to place-and-route, since on an all-copper board it needs a mating power/backplane. The export writes the board the physics ran, not a simplified one.</p>`;
-    document.getElementById('btnKicad').onclick = () => {
-      const fresh = buildKiCad(app.stator, app.cfg);
-      const blob = new Blob([fresh.text], { type: 'application/octet-stream' });
+      ${s.segments.toLocaleString()} track segments, ${s.vias.toLocaleString()} plated through-hole vias (${s.viasPerCoil}/coil): inner crossovers in the centre hole, outer crossovers spread across the four rounded corners, ${s.traceMm.toFixed(3)} mm trace on a ${s.boardMm.toFixed(0)} mm board.</p>
+      <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">The <b>driver backplane</b> mates to it: a 2-layer board carrying <b>${bp.drivers.toLocaleString()} H-bridge power stages</b> + ${bp.decaps.toLocaleString()} decoupling caps (one per coil), VBUS/GND copper pours, and a per-coil PWM pair — a distributed inverter, ${bp.mating.toLocaleString()} mating vias picking up the coil terminals.</p>
+      <button id="btnKicad" class="ghost">Download coil board</button>
+      <button id="btnBackplane" class="ghost">Download driver backplane</button>
+      ${s.segments > 120000 ? `<p style="font-size:12px;color:var(--warn);margin:8px 0 0">The coil board is dense (${(s.segments / 1000).toFixed(0)}k features, ~${Math.round(s.segments * 0.11 / 1000)} MB) — KiCad will take a while to open it.</p>` : ''}
+      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Carl Bugeja's method: plated through-holes only (a standard 12-layer stackup a fab can press), corners rounded so the crossover vias sit in copper-free pockets clear of the winding, and the centre wound deep for turns instead of dead space. The drivers moved off the all-copper coil board onto the backplane, which has the free layers for VBUS/GND planes and PWM fanout (the PWM routing to a controller is left to place-and-route). The export writes the board the physics ran.</p>`;
+    const dl = (text, name) => {
+      const blob = new Blob([text], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `maglev-stator-${app.presetKey ?? 'design'}-${s.layers}L.kicad_pcb`;
+      a.href = url; a.download = name;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
+    document.getElementById('btnKicad').onclick = () =>
+      dl(buildKiCad(app.stator, app.cfg).text, `maglev-coils-${app.presetKey ?? 'design'}-${s.layers}L.kicad_pcb`);
+    document.getElementById('btnBackplane').onclick = () =>
+      dl(buildDriverBackplane(app.stator, app.cfg).text, `maglev-backplane-${app.presetKey ?? 'design'}.kicad_pcb`);
   } else {
     pcbCard.style.display = 'none';
     pcbCard.innerHTML = '';

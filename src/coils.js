@@ -36,6 +36,18 @@ export function effectiveTrace(traceWidth, copperThickness) {
   return Math.max(traceWidth, minTrackWidth(copperThickness));
 }
 
+// How much of the coil half-width the winding leaves clear at the centre. The
+// first cut left a full quarter (a big dead hole); winding closer to the middle
+// packs several more turns per layer straight into force. We keep a small centre
+// clear for the inner via cluster -- the layer-to-layer crossovers that must
+// stay near the centre because they cannot be routed out past the winding.
+const PCB_INNER_FRAC = 0.13;
+/** Turns per layer for a PCB spiral of half-width w/2 at effective trace `eff`.
+ *  Shared by coils.js (physics) and kicad.js (copper) so they cannot diverge. */
+export function pcbTurnsPerLayer(w, eff) {
+  return Math.max(1, Math.floor((w * (0.5 - PCB_INNER_FRAC)) / (eff * 2)));
+}
+
 /** Discretise one rectangular winding into filament segments.
  *  Returns {mid:Float64Array(3*n), dl:Float64Array(3*n)} in coil-local coords
  *  (origin at coil centre, z at the coil mid-plane). dl already carries the
@@ -118,10 +130,14 @@ export function makeStator(cfg) {
     const w = coilPitch * coilFill;
     const eff = effectiveTrace(pcbTraceWidth, pcbCopperThickness);
     pcbEffTrace = eff;
-    const perLayer = Math.max(1, Math.floor((w * 0.25) / (eff * 2)));
+    const perLayer = pcbTurnsPerLayer(w, eff);
     effTurns = perLayer * pcbLayers;
     outer = [w, w];
-    inner = [w * 0.4, w * 0.4];
+    // Inner half-width is where the winding actually stops after an integer
+    // number of turns -- matched to the copper so the force integral sees the
+    // real hole, not a nominal one.
+    const halfInM = Math.max(w * 0.5 - perLayer * 2 * eff, w * 0.05);
+    inner = [2 * halfInM, 2 * halfInM];
     wireArea = eff * pcbCopperThickness;
     // Board thickness is DERIVED from the stackup, not assumed to be 1.6 mm.
     // Layers are the only knob that buys turns on a PCB stator, so if the board

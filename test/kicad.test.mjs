@@ -5,7 +5,7 @@
 // instead of cancelling.
 
 import { makeStator } from '../src/coils.js';
-import { buildKiCad, pcbCoilGeometry, spiralPoints } from '../src/kicad.js';
+import { buildKiCad, pcbCoilGeometry, spiralPoints, spiralVertices } from '../src/kicad.js';
 
 let fails = 0;
 const check = (n, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`); if (!c) fails++; };
@@ -43,9 +43,14 @@ check('all layers circulate the same direction (CCW)',
 check('the inward and outward layers enclose about the same area',
   Math.max(...areas) / Math.min(...areas) < 1.05,
   `min ${Math.min(...areas).toFixed(1)} max ${Math.max(...areas).toFixed(1)} mm^2`);
-// A layer's run is turns full loops: 4 points per turn plus the closing point.
+// A layer's run is turns full loops: 4 corner vertices per turn plus the close.
 check('each layer draws exactly the turn count from the model',
-  spiralPoints(g, 0).length === g.turns * 4 + 1, `${spiralPoints(g, 0).length} points`);
+  spiralVertices(g, 0).length === g.turns * 4 + 1, `${spiralVertices(g, 0).length} vertices`);
+// Rounding the corners adds points between the vertices without moving the ends.
+check('the corners are rounded (more drawn points than raw vertices)',
+  spiralPoints(g, 0).length > spiralVertices(g, 0).length
+  && spiralPoints(g, 0)[0].join() === spiralVertices(g, 0)[0].join(),
+  `${spiralPoints(g, 0).length} drawn vs ${spiralVertices(g, 0).length} vertices`);
 
 console.log('\n=== the board is what the stator is ===');
 check('one copper layer per declared PCB layer',
@@ -56,33 +61,35 @@ check('one net per coil (plus the empty net 0)',
   out.stats.nets === stator.coils.length && (out.text.match(/^  \(net \d+ "coil_/gm) || []).length === stator.coils.length,
   `${out.stats.nets} nets`);
 
-console.log('\n=== the board carries its own amplifier array ===');
-// One H-bridge power stage + one decoupling cap per coil, on the back, driven
-// from shared VBUS/GND and a per-coil PWM pair -- the distributed inverter that
-// makes independent grouping buildable.
-check('one H-bridge power stage per coil',
-  (out.text.match(/\(footprint "maglev:HB6"/g) || []).length === stator.coils.length && out.stats.drivers === stator.coils.length,
-  `${out.stats.drivers} drivers`);
-check('one decoupling cap per coil',
-  (out.text.match(/\(footprint "maglev:C0402"/g) || []).length === stator.coils.length && out.stats.decaps === stator.coils.length,
-  `${out.stats.decaps} caps`);
-check('drivers mount on the back (B.Cu)',
-  (out.text.match(/\(footprint "maglev:HB6" \(layer "B.Cu"\)/g) || []).length === stator.coils.length);
-check('shared power rails and a per-coil PWM pair are declared',
-  /^  \(net \d+ "VBUS"\)/m.test(out.text) && /^  \(net \d+ "GND"\)/m.test(out.text)
-  && (out.text.match(/^  \(net \d+ "PWMA_/gm) || []).length === stator.coils.length,
-  `${out.stats.powerNets} power/PWM nets`);
-// The bridge is an H-bridge across the winding, so both outputs land on the
-// coil net -- the coil must NOT get shorted to a power rail.
-check('driver outputs land on the coil net, not on VBUS/GND',
-  !/\(pad "[34]"[^\n]*"(VBUS|GND)"/.test(out.text),
-  'OUTA/OUTB carry coil_i');
+console.log('\n=== the coil board is passive; drivers live on a backplane ===');
+// The dense coil board carries no components -- the amplifier array moved to a
+// mating backplane, freeing every layer (and the centre) for copper.
+check('coil board is passive (no footprints)',
+  !/\(footprint /.test(out.text) && out.stats.drivers === 0);
+check('every net is a coil net (no power rails on the coil board)',
+  !/^  \(net \d+ "(VBUS|GND|PWMA_)/m.test(out.text));
 
-// The driver array must be suppressible for a bare coil board.
+console.log('\n=== outer crossovers sit in the rounded-corner pockets ===');
+// Every crossover via must land outside the innermost turn (not buried in the
+// winding) and inside the coil cell. Inner hops sit in the centre hole; outer
+// hops sit near the four corners. Check they distribute across more than one
+// corner (not all stacked on one side like the old gutter line).
 {
-  const bare = buildKiCad(stator, { stator: { ...cfg.stator, pcbDrivers: false } });
-  check('pcbDrivers:false yields a passive coil board (no footprints)',
-    bare.stats.drivers === 0 && !/\(footprint /.test(bare.text));
+  const S = cfg.stator.statorSize * 1000;
+  const cen = [S / 2 + 10 + stator.coils[0].x * 1000, S / 2 + 10 - stator.coils[0].y * 1000];
+  const viaRe = /\(via \(at ([\d.]+) ([\d.]+)\)[^\n]*net (\d+)\)/g;
+  const corners = new Set();
+  let mm, outer = 0;
+  while ((mm = viaRe.exec(out.text))) {
+    if (+mm[3] !== 1) continue;
+    const x = +mm[1] - cen[0], y = +mm[2] - cen[1], r = Math.hypot(x, y);
+    if (r > g.halfIn + g.pitch) { // an outer/corner via, not a centre-hole one
+      outer++;
+      corners.add((Math.round(Math.atan2(y, x) / (Math.PI / 2)) + 4) % 4);
+    }
+  }
+  check('outer crossovers are spread across multiple corners', corners.size >= 3,
+    `${outer} outer vias across ${corners.size} corners`);
 }
 check('through-hole via farms stitch the layer stack, per coil',
   out.stats.vias === stator.coils.length * out.stats.viasPerCoil && out.stats.viasPerCoil > 0,
