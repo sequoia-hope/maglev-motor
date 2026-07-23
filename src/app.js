@@ -1025,6 +1025,7 @@ function renderSensorCheck() {
     return;
   }
   const pct = (x) => `${(x * 100).toFixed(0)}%`;
+  const cp = (x) => x < 0.1 ? `${(x * 100).toFixed(1)}%` : `${(x * 100).toFixed(0)}%`;
   const mT = (x) => (x * 1000).toFixed(1);
   const lossCls = r.boardLoss < 0.5 ? 'ok' : r.boardLoss < 0.75 ? '' : 'bad';
   const cleanCls = r.cleanFactor > 5 ? 'ok' : r.cleanFactor > 2 ? '' : 'bad';
@@ -1039,6 +1040,10 @@ function renderSensorCheck() {
     + `A planar coil's self-field is <b>${pct(1 - r.selfInPlaneShare)}</b> on Bz: only ${pct(r.selfInPlaneShare)} leaks into Bx/By. `
     + `So at ${r.iRef} A coil current the mover signal is <span class="${cleanCls}">${r.cleanFactor.toFixed(1)}×</span> cleaner in-plane than vertical `
     + `(mover/coil-field ${r.ratioIn.toFixed(2)} in-plane vs ${r.ratioVert.toFixed(2)} on Bz).<br>`
+    + `Sensor full-scale must clear <b>±${(r.fullScale * 1000).toFixed(0)} mT</b> (self+neighbours+mover, worst case). `
+    + `To recover the mover to SNR ${r.snrTarget}, the coil-field model C must be calibrated to <b>${cp(r.calVert)}</b> on Bz`
+    + `${r.calVert < 0.01 ? ' (very tight — get gap from the in-plane axes/geometry instead)' : ''}`
+    + `${r.calIn >= 0.999 ? '; in-plane needs none' : `, <b>${cp(r.calIn)}</b> in-plane`}.<br>`
     + `<span style="color:var(--muted)">${verdict}</span>`;
 }
 

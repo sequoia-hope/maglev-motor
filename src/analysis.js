@@ -147,7 +147,7 @@ export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSe
   const stride = Math.max(1, Math.ceil(coils.length / maxSensors));
   const self = [0, 0, 0], nb = [0, 0, 0], mvBot = [0, 0, 0], mvTop = [0, 0, 0];
 
-  const purities = [], inRatios = [], vertRatios = [], moverBot = [], moverTop = [];
+  const purities = [], inRatios = [], vertRatios = [], moverBot = [], moverTop = [], fullScale = [];
   let n = 0;
   for (let si = 0; si < coils.length; si += stride) {
     const sc = coils[si];
@@ -160,15 +160,17 @@ export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSe
     // every nearby coil at 1 A -- the L2 sensitivity of each axis to a unit-RMS
     // current vector, which is the contamination a real allocation injects.
     coilFieldPerA(sc, px, py, zBot, self);
-    let cxy2 = 0, cz2 = 0;
+    let cxy2 = 0, cz2 = 0, ax = 0, ay = 0, az = 0;
     for (let j = 0; j < coils.length; j++) {
       const c = coils[j];
       if (Math.abs(c.x - px) > cull || Math.abs(c.y - py) > cull) continue;
       coilFieldPerA(c, px, py, zBot, nb);
-      cxy2 += nb[0] * nb[0] + nb[1] * nb[1];
+      cxy2 += nb[0] * nb[0] + nb[1] * nb[1];   // RSS: typical field from independent currents
       cz2 += nb[2] * nb[2];
+      ax += Math.abs(nb[0]); ay += Math.abs(nb[1]); az += Math.abs(nb[2]); // worst case: all aligned
     }
     const coilInPlane = Math.sqrt(cxy2), coilVert = Math.sqrt(cz2);
+    fullScale.push(Math.hypot(ax, ay, az) * iRef);   // saturation ceiling the sensor must clear
 
     fieldAt(tr, px, py, zBot, r, R, mvBot);
     fieldAt(tr, px, py, zTop, r, R, mvTop);
@@ -189,6 +191,12 @@ export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSe
 
   const med = (a) => { if (!a.length) return 0; const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
   const ratioIn = med(inRatios), ratioVert = med(vertRatios);
+  // How accurately must the coil-field model C be calibrated? Raw SNR per axis is
+  // (mover signal / coil field) = ratio. Subtracting the modelled C*i with fractional
+  // error eps leaves residual eps*coilField, so post-subtraction SNR = ratio/eps. To
+  // reach SNR_target the calibration must satisfy eps <= ratio/SNR_target. The
+  // in-plane axes start clean (large ratio -> loose tolerance); Bz is the binding one.
+  const SNR_TARGET = 10;
   return {
     available: true,
     nSensors: n,
@@ -199,6 +207,10 @@ export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSe
     selfInPlaneShare: med(purities),   // ~0 confirms the self-field is on Bz only
     ratioIn, ratioVert,
     cleanFactor: ratioVert > 0 ? ratioIn / ratioVert : 0,
+    fullScale: Math.max(...fullScale),          // T, worst-case field any sensor sees
+    snrTarget: SNR_TARGET,
+    calIn: Math.min(1, ratioIn / SNR_TARGET),   // required coil-field-model accuracy, in-plane
+    calVert: Math.min(1, ratioVert / SNR_TARGET), // ... and on Bz (the binding one)
     iRef,
   };
 }
