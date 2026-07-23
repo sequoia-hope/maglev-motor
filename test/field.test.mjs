@@ -9,7 +9,7 @@ import {
   ARRAY_TYPES, decompose, fieldLocal, cellIsEmpty,
   makeTranslator, fieldAt, eachCell, arraySymmetry, latticeCount,
 } from '../src/halbach.js';
-import { arrayField, boxField, layTile } from './reference-field.mjs';
+import { arrayField, boxField, layTile } from '../src/reference-field.js';
 
 let fails = 0;
 const check = (name, cond, detail = '') => {

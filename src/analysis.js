@@ -7,11 +7,88 @@
 //   * how hot does the stator get?   -> hover power, everywhere
 
 import { quat } from './math.js';
-import { makeTranslator, fieldAt, peakField } from './halbach.js';
+import { makeTranslator, fieldAt, peakField, fieldLocal, cellSize } from './halbach.js';
 import { makeStator } from './coils.js';
 import { buildWrench, analysePose, allocate, copperLoss, capability, singularValues } from './physics.js';
+import { arrayField, layTile } from './reference-field.js';
 
 const _B = new Float64Array(3);
+
+/** Cross-check the harmonic air-gap field against an EXACT finite-array model.
+ *
+ *  src/halbach.js assumes the magnet array is infinite and periodic; that is the
+ *  right model for the interior and the source of the "edge error" caveat. This
+ *  lays the ACTUAL finite platen out block-by-block and evaluates the exact
+ *  Furlani charge-sheet field (reference-field.js -- no shared code, no
+ *  periodicity, real edges), then measures where the fast model and the exact one
+ *  agree. Interior error is mostly harmonic truncation (small); edge error is the
+ *  infinite-array assumption itself, and it grows as the platen shrinks toward a
+ *  couple of wavelengths. Returns null-ish {available:false} for layouts the
+ *  reference cannot lay out (the four-array cross) or a platen too large to sum in
+ *  real time. Not called in the hot loop -- this is a one-shot design check. */
+export function fieldCrossCheck(tr, { grid = 11, maxCells = 3000 } = {}) {
+  // The reference lays a single continuous array; the quad cross would need four
+  // placed, rotated arrays, so scope the check to the single-array layout.
+  if (tr.patches.length !== 1) return { available: false, reason: 'layout' };
+  const tile = tr.tile;
+  const cell = cellSize(tile)[0];
+  const th = tr.cfg.magnetThickness;
+  const gap = tr.cfg.gap;
+  const half = tr.patches[0].w / 2;
+  const N = Math.max(1, Math.round(half / cell));
+  const cells = layTile(tile, tile.nx, cell, -N, N);
+  if (!cells.length) return { available: false, reason: 'empty' };
+  if (cells.length > maxCells) return { available: false, reason: 'toobig', nCells: cells.length };
+
+  const zc = -th / 2 - gap;                 // the air-gap plane below the array
+  const B = [0, 0, 0];
+
+  // Peak |B| from a FINE scan over the central two cells (where the field crests,
+  // away from the edges so both models are in their comfort zone). Both models are
+  // scanned the same way so the comparison is apples-to-apples -- note this is the
+  // true peak |B|, roughly twice the "Peak gap field" tile, which reports only the
+  // fundamental harmonic's amplitude. A coarse platen-wide grid would miss the
+  // crest and make the peak a sampling artifact.
+  let peakExact = 0, peakHarm = 0;
+  for (let i = 0; i <= 12; i++) {
+    for (let j = 0; j <= 12; j++) {
+      const x = (i / 12 - 0.5) * 2 * cell, y = (j / 12 - 0.5) * 2 * cell;
+      const e = arrayField(cells, cell, th, x, y, zc);
+      peakExact = Math.max(peakExact, Math.hypot(e[0], e[1], e[2]));
+      fieldLocal(tr.harm, x, y, gap, B);
+      peakHarm = Math.max(peakHarm, Math.hypot(B[0], B[1], B[2]));
+    }
+  }
+  const norm = peakExact || 1;
+
+  // Agreement across the platen, split into a central CORE (inner half) and the
+  // RIM (outer quarter), normalised by the true peak. Fractional bands stay
+  // meaningful even on a two-wavelength platen, where "within a pole pitch of an
+  // edge" would be the whole thing.
+  let cS = 0, cN = 0, rS = 0, rN = 0, mx = 0;
+  for (let i = 0; i < grid; i++) {
+    for (let j = 0; j < grid; j++) {
+      const x = (i / (grid - 1) - 0.5) * 2 * half;
+      const y = (j / (grid - 1) - 0.5) * 2 * half;
+      const exact = arrayField(cells, cell, th, x, y, zc);
+      fieldLocal(tr.harm, x, y, gap, B);
+      const e = Math.hypot(B[0] - exact[0], B[1] - exact[1], B[2] - exact[2]) / norm;
+      if (e > mx) mx = e;
+      const rr = Math.max(Math.abs(x), Math.abs(y)) / half;
+      if (rr <= 0.5) { cS += e * e; cN++; } else if (rr >= 0.75) { rS += e * e; rN++; }
+    }
+  }
+  return {
+    available: true,
+    peakExact, peakHarm,
+    peakErr: Math.abs(peakHarm - peakExact) / norm,
+    coreRms: cN ? Math.sqrt(cS / cN) : 0,
+    rimRms: rN ? Math.sqrt(rS / rN) : 0,
+    maxErr: mx,
+    nCells: cells.length,
+    wavelengths: (2 * half) / tr.cfg.pitch,
+  };
+}
 
 /** Air-gap field on a horizontal plane, in the translator's own frame.
  *  component: 'bz' | 'mag'. */

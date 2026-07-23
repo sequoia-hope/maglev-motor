@@ -12,7 +12,7 @@ import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
 import { render, makeCamera, fitCamera, attachOrbit, theme } from './render3d.js';
 import { lineChart, heatmap, barStrip, trackHover } from './plots.js';
-import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan } from './analysis.js';
+import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, fieldCrossCheck } from './analysis.js';
 import { MATERIALS, PROCESSES, COOLING, DEFAULT_MECH, stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
 import { buildAssembly } from './assembly.js';
 import { renderExploded } from './exploded.js';
@@ -339,6 +339,18 @@ function rebuild(resetSim = false) {
     gap: app.cfg.sim.gap,
     maxOrder: q.maxOrder,
   });
+  // Finite-array field cross-check: depends only on the magnet array + gap, so
+  // cache it and recompute only when those change (it is ~25-200 ms, too slow to
+  // run on every coil/control slider drag).
+  {
+    const t = app.cfg.translator;
+    const key = [t.arrayType, t.layout, t.pitch, t.magnetThickness, t.platenSize,
+      t.segments, t.Br, app.cfg.sim.gap, q.maxOrder].join('|');
+    if (key !== app._fieldCheckKey) {
+      app.fieldCheck = fieldCrossCheck(app.tr);
+      app._fieldCheckKey = key;
+    }
+  }
   app.stator = makeStator({
     ...app.cfg.stator,
     ringsPerCoil: q.ringsPerCoil,
@@ -981,6 +993,41 @@ function renderSelfTest() {
     `<strong>Model check.</strong> Fundamental of a 4-segment 1-D Halbach:<br>
      model ${t.model.toFixed(4)} T vs closed form ${t.analytic.toFixed(4)} T
      (${(t.relError * 100).toFixed(2)}% <span class="${t.pass ? 'ok' : 'bad'}">${t.pass ? 'PASS' : 'FAIL'}</span>)`;
+  renderFieldCheck();
+}
+
+/** The finite-array field cross-check card: how far the fast harmonic model
+ *  (which assumes an infinite array) drifts from an EXACT block-by-block field
+ *  on THIS finite platen -- small in the interior, larger at the rim, and larger
+ *  still the fewer wavelengths the platen spans. Makes the edge-error caveat a
+ *  number the user can see rather than a footnote. */
+function renderFieldCheck() {
+  const el = document.getElementById('fieldCheck');
+  if (!el) return;
+  const r = app.fieldCheck;
+  const pct = (x) => `${(x * 100).toFixed(x < 0.1 ? 1 : 0)}%`;
+  if (!r || !r.available) {
+    const why = r && r.reason === 'layout'
+      ? 'the four-array cross would need four placed arrays; this check covers single-array platens.'
+      : r && r.reason === 'toobig'
+        ? `the platen is ${r.nCells} blocks — too many to sum live.`
+        : 'not available for this array.';
+    el.innerHTML = `<strong>Finite-array field check.</strong> <span style="color:var(--muted)">${why}</span>`;
+    return;
+  }
+  const coreCls = r.coreRms < 0.05 ? 'ok' : r.coreRms < 0.1 ? '' : 'bad';
+  const rimCls = r.rimRms < 0.1 ? 'ok' : r.rimRms < 0.2 ? '' : 'bad';
+  const verdict = r.wavelengths < 3
+    ? `Only ${r.wavelengths.toFixed(1)}λ across, so most of the platen is edge — treat absolute lift as approximate and lean on a full FEA before committing.`
+    : r.rimRms > 0.12
+      ? 'Interior fields are trustworthy; the rim carries real finite-array error the infinite model cannot see.'
+      : 'The fast model tracks the exact finite array to within a few percent everywhere.';
+  el.innerHTML =
+    `<strong>Finite-array field check.</strong> Exact block-by-block field (independent charge-sheet model) vs the fast harmonic model, at the ${(app.cfg.sim.gap * 1000).toFixed(1)} mm gap:<br>`
+    + `peak |B| <b>${r.peakHarm.toFixed(3)} T</b> model vs <b>${r.peakExact.toFixed(3)} T</b> exact (${pct(r.peakErr)}) · `
+    + `interior <span class="${coreCls}">${pct(r.coreRms)}</span> · `
+    + `rim <span class="${rimCls}">${pct(r.rimRms)}</span> · worst ${pct(r.maxErr)} · ${r.wavelengths.toFixed(1)}λ<br>`
+    + `<span style="color:var(--muted)">${verdict}</span>`;
 }
 
 // ------------------------------------------------------------ simulation ---
@@ -1304,7 +1351,7 @@ function renderAbout() {
     <ul>
       <li><strong>Finite array edges</strong> are handled with a half-pitch smooth taper on
       the periodic field, which is the right answer for the wrong reason. Measured against an
-      exact finite-array calculation (<code>test/reference-field.mjs</code>), the real field is
+      exact finite-array calculation (<code>src/reference-field.js</code>), the real field is
       still ~91% of its interior value at the centre of the outermost block and dies over about
       one <em>air gap</em> — not one half-pitch — so as a field model the taper is far too
       aggressive. What it accidentally reproduces is the <em>usable</em> array: the documented
