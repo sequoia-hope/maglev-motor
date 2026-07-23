@@ -12,7 +12,7 @@ const check = (n, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d
 
 const cfg = {
   stator: {
-    coilType: 'pcb', coilPitch: 0.008, coilFill: 0.88, statorSize: 0.096,
+    coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096,
     windingHeight: 0.0016, wireDiameter: 0.0005, pcbTraceWidth: 0.000103,
     pcbCopperThickness: 35e-6, pcbLayers: 12, lockCoilPitch: false,
   },
@@ -43,9 +43,11 @@ check('all layers circulate the same direction (CCW)',
 check('the inward and outward layers enclose about the same area',
   Math.max(...areas) / Math.min(...areas) < 1.05,
   `min ${Math.min(...areas).toFixed(1)} max ${Math.max(...areas).toFixed(1)} mm^2`);
-// A layer's run is turns full loops: 4 corner vertices per turn plus the close.
-check('each layer draws exactly the turn count from the model',
-  spiralVertices(g, 0).length === g.turns * 4 + 1, `${spiralVertices(g, 0).length} vertices`);
+// A layer's run is turns full loops (4 corner vertices each) plus the small
+// fraction-of-a-turn that fans the ends apart, plus the two endpoints.
+check('each layer draws the turn count from the model (plus the distribution sliver)',
+  spiralVertices(g, 0).length >= g.turns * 4 + 1 && spiralVertices(g, 0).length <= g.turns * 4 + 4,
+  `${spiralVertices(g, 0).length} vertices for ${g.turns} turns`);
 // Rounding the corners adds points between the vertices without moving the ends.
 check('the corners are rounded (more drawn points than raw vertices)',
   spiralPoints(g, 0).length > spiralVertices(g, 0).length
@@ -101,11 +103,11 @@ console.log('\n=== no plated through-hole contacts a layer it must not ===');
   const bad = validatePcb(g, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2, via);
   check('every through-hole clears the layers it does not stitch', bad.length === 0,
     `${bad.length} wrong-layer contacts`);
-  // And it must actually FIRE when a coil is too dense to route -- a validator
-  // that never fails is worthless. Cranking the fill up crowds the gutter.
-  const dense = pcbCoilGeometry({ stator: { ...cfg.stator, coilFill: 0.97 } });
-  check('the check catches an unroutable (too-dense) coil',
-    validatePcb(dense, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2, via).length > 0);
+  // And it must actually FIRE when a via cannot clear -- a validator that never
+  // fails is worthless. (The distributed-ends routing is clean at any fill, so
+  // density no longer breaks it; an oversized via does.)
+  check('the check catches vias that cannot clear (oversized)',
+    validatePcb(g, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2, g.pitch * 3).length > 0);
 }
 
 console.log('\n=== the crossovers wire every layer into one series chain ===');

@@ -66,15 +66,34 @@ function corner(k, r) {
   }
 }
 
-/** Raw square-spiral corner vertices for one layer (before rounding). */
+// Quarter-turns per layer. A whole number of turns would land every layer's
+// ends on the SAME corner (corner 0), forcing every crossover into one spot and
+// long ring tabs. Adding 1/(N-1) of a turn walks each layer's ends 360/(N-1)°
+// further round than the last, so the N-1 crossovers spread evenly around the
+// coil and each one sits right at its layers' shared endpoint -- a short radial
+// stub, never a tab that rings around. The extra ~1/(N-1) turn is a fraction of
+// a percent of the winding and is spent as a sliver of arc at the boundary.
+function quarterTurns(g) {
+  return 4 * g.turns + 4 / Math.max(g.layers - 1, 1);
+}
+
+/** Raw square-spiral corner vertices for one layer (before rounding). Each layer
+ *  starts a little further round than the last, so the layers' shared ends fan
+ *  out around the coil instead of stacking on one corner. */
 export function spiralVertices(g, layerIndex) {
+  const q = quarterTurns(g);
+  const u0 = layerIndex * q, u1 = u0 + q;
   const inward = layerIndex % 2 === 0;
-  const n = g.turns * 4;
-  const pts = [];
-  for (let i = 0; i <= n; i++) {
-    const r = inward ? g.halfOut - (g.pitch / 4) * i : g.halfIn + (g.pitch / 4) * i;
-    pts.push(corner(i, r));
-  }
+  const rAt = (u) => Math.max(g.halfIn, Math.min(g.halfOut,
+    inward ? g.halfOut - (g.pitch / 4) * (u - u0) : g.halfIn + (g.pitch / 4) * (u - u0)));
+  const pt = (u) => {
+    const k = Math.floor(u + 1e-9), t = u - k, r = rAt(u);
+    const a = corner(k, r), b = corner(k + 1, r);
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  };
+  const pts = [pt(u0)];
+  for (let k = Math.floor(u0) + 1; k < u1 - 1e-9; k++) pts.push(pt(k));
+  pts.push(pt(u1));
   return pts;
 }
 
@@ -136,101 +155,55 @@ function cuOrdinal(j, N) {
 
 const f = (x) => (Math.round(x * 1e6) / 1e6).toString();
 
-// Which end of an edge layer is the free one (the terminal). Layer 0's inner end
-// always goes to junction 0 (an inner hop), so its outer end is free. Layer N-1's
-// free end is whichever end its last junction (N-2) did not consume.
-function freeEndIsOuter(layer, N) {
-  if (layer === 0) return true;
-  return (N - 2) % 2 === 0; // last junction inner -> uses inner end -> outer free
-}
-
-/** Plan every through-hole for one coil, in coil-local millimetres. The layer
- *  stack is stitched so that INNER crossovers sit in the small centre hole (they
- *  cannot be routed out past the winding) and OUTER crossovers sit in the four
- *  rounded-corner pockets -- the copper-free triangles the fillets open at each
- *  cell corner -- distributed round-robin, with the tab routed from the coil's
- *  outer end around the perimeter gutter. Returns tab segments (tagged by layer),
- *  crossover vias, terminal stubs, terminal mating vias, and counts. */
+/** Plan every through-hole for one coil, in coil-local millimetres. Because the
+ *  spiral ends now fan out around the coil (see spiralVertices), each crossover
+ *  sits right at the shared endpoint of its two layers: the via is that endpoint
+ *  nudged just off the winding (inward for an inner end, outward for an outer
+ *  one) and the tab is a SHORT RADIAL STUB -- no ring, no backtrack. Returns tab
+ *  segments (tagged by layer), crossover vias, terminal stubs, terminal mating
+ *  vias, and counts. */
 export function viaPlan(g, N, cellHalf, viaSize) {
-  const P_in = corner(0, g.halfIn);            // every inner end lands here
-  const P_out = corner(0, g.halfOut);          // every outer end lands here
-  const holeR = Math.max(g.halfIn * 0.58, viaSize * 0.7);   // inner-via radius
-  const gutR = g.halfOut + Math.min(g.corner * 0.5,
-    Math.max(cellHalf - g.halfOut, viaSize) * 0.55);        // perimeter tab radius
-  const step = viaSize * 1.5;                   // via spread inside a corner pocket
+  const off = viaSize * 1.05;                    // radial stub length off the winding
+  const segments = [];                           // [x0,y0,x1,y1, layer]
+  const vias = [];                               // {p, layers} crossovers
+  const terminals = [];                          // [x0,y0,x1,y1, layer]
+  const termVias = [];                           // {p, layers} mating vias
 
-  const segments = [];                          // [x0,y0,x1,y1, layer]
-  const vias = [];                              // {p:[x,y], layers:[..]} crossovers
-  const terminals = [];                         // [x0,y0,x1,y1, layer]
-  const termVias = [];                          // {p:[x,y], layers:[l]} mating vias
+  // Nudge a boundary point p radially: outward into the gutter, or inward into
+  // the centre hole. Inner vias are pulled all the way inside the innermost turn
+  // (radius <= halfIn - off) so an endpoint that lands near a corner still ends up
+  // in the clear hole, not crowded against the corner copper.
+  const nudge = (p, outward) => {
+    const r = Math.hypot(p[0], p[1]) || 1;
+    const rNew = outward ? r + off : Math.min(r - off, g.halfIn - off);
+    return [p[0] * (rNew / r), p[1] * (rNew / r)];
+  };
 
-  const innerJ = [], outerJ = [];
-  for (let j = 0; j < N - 1; j++) (j % 2 === 0 ? innerJ : outerJ).push(j);
+  // Crossover c joins layer c and c+1 at their shared endpoint. c even = inner
+  // end (nudge into the centre hole), c odd = outer end (nudge into the gutter).
+  for (let c = 0; c < N - 1; c++) {
+    const end = spiralVertices(g, c);
+    const p = end[end.length - 1];
+    const via = nudge(p, c % 2 === 1);           // outer crossover pushes out
+    for (const layer of [c, c + 1]) segments.push([p[0], p[1], via[0], via[1], layer]);
+    vias.push({ p: via, layers: [c, c + 1] });
+  }
 
-  // Inner hops: one via each at a UNIQUE angle around the centre hole, reached by
-  // the same trick the outer hops use -- a ring from the inner end that stays
-  // OUTSIDE all the vias (but still inside the winding) and only dives in to its
-  // own. So no hop tab crosses another hop's via.
-  const aIn = Math.atan2(P_in[1], P_in[0]);      // the inner end's angle (corner 0)
-  const rInVia = Math.min(holeR, g.halfIn - viaSize * 2.2);   // via ring, in the hole
-  const rInTab = rInVia + viaSize * 1.0;                       // tab ring, just outside
-  const polC = (r, a) => [r * Math.cos(a), r * Math.sin(a)];
-  innerJ.forEach((j, k) => {
-    const ang = aIn + (2 * Math.PI * (k + 1)) / (innerJ.length + 1);
-    const site = polC(rInVia, ang);
-    const path = [P_in];
-    let d = ((ang - aIn) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
-    const dir = d <= Math.PI ? 1 : -1; if (dir < 0) d = 2 * Math.PI - d;
-    const steps = Math.max(1, Math.ceil(d / 0.25));
-    for (let q = 0; q <= steps; q++) { const aa = aIn + dir * d * (q / steps); path.push(polC(rInTab, aa)); }
-    path.push(site);
-    for (const layer of [j, j + 1])
-      for (let q = 0; q < path.length - 1; q++)
-        segments.push([path[q][0], path[q][1], path[q + 1][0], path[q + 1][1], layer]);
-    vias.push({ p: site, layers: [j, j + 1] });
-  });
+  // Terminals: the two free ends -- layer 0's start and layer N-1's end -- each
+  // nudged off the winding to a mating via for the backplane.
+  const s0 = spiralVertices(g, 0)[0];
+  const eN = spiralVertices(g, N - 1); const pN = eN[eN.length - 1];
+  for (const [p, layer] of [[s0, 0], [pN, N - 1]]) {
+    const via = nudge(p, true);                  // both free ends are outer
+    terminals.push([p[0], p[1], via[0], via[1], layer]);
+    termVias.push({ p: via, layers: [layer] });
+  }
 
-  // Outer hops + terminals each get a UNIQUE ANGLE around the perimeter (not
-  // stacked in the corners). The tab runs a ring just outside the winding at
-  // radius rTab from the coil's outer end round to its angle, then dives OUT to
-  // its via at rVia > rTab. Because every via is at a distinct angle and the ring
-  // stays inside all of them, no tab ever grazes another via -- the exact
-  // wrong-layer short the corner-stacking otherwise caused. validatePcb proves it.
-  const a0 = Math.atan2(P_out[1], P_out[0]);     // the outer end's angle (corner 0)
-  // The winding is a square, so its boundary radius grows toward the corners.
-  // The ring and the vias FOLLOW that boundary (offset out), so a via is always
-  // just outside the copper at its own angle instead of buried in a corner.
-  const bound = (a) => g.halfOut / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6);
-  const cellBound = (a) => cellHalf / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6);
-  const rTabAt = (a) => bound(a) + viaSize * 0.7;
-  const rViaAt = (a) => Math.min(bound(a) + viaSize * 1.9, cellBound(a) - viaSize * 0.55);
-  const pol = (r, a) => [r * Math.cos(a), r * Math.sin(a)];
-  const items = outerJ.map((j) => ({ layers: [j, j + 1], kind: 'hop' }));
-  [0, N - 1].filter((l) => freeEndIsOuter(l, N)).forEach((l) => items.push({ layers: [l], kind: 'term' }));
-  // Spread over the full circle, skipping a slot at the outer end so the ring
-  // always starts clear.
-  const M = items.length;
-  items.forEach((it, i) => {
-    const ang = a0 + (2 * Math.PI * (i + 1)) / (M + 1);
-    const via = pol(rViaAt(ang), ang);
-    const path = [P_out];
-    let d = ((ang - a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
-    const dir = d <= Math.PI ? 1 : -1; if (dir < 0) d = 2 * Math.PI - d;
-    const steps = Math.max(1, Math.ceil(d / 0.25));
-    for (let q = 0; q <= steps; q++) { const aa = a0 + dir * d * (q / steps); path.push(pol(rTabAt(aa), aa)); }
-    path.push(via);
-    const bucket = it.kind === 'hop' ? segments : terminals;
-    for (const layer of it.layers)
-      for (let q = 0; q < path.length - 1; q++)
-        bucket.push([path[q][0], path[q][1], path[q + 1][0], path[q + 1][1], layer]);
-    (it.kind === 'hop' ? vias : termVias).push({ p: via, layers: it.layers });
-  });
-  // Odd-N corner case: an inner free end just stubs into the hole.
-  for (const layer of [0, N - 1]) if (!freeEndIsOuter(layer, N)) terminals.push([P_in[0], P_in[1], 0, 0, layer]);
-
+  let inner = 0, outer = 0;
+  for (let c = 0; c < N - 1; c++) (c % 2 === 0 ? inner++ : outer++);
   return {
     segments, vias, terminals, termVias,
-    counts: { inner: innerJ.length, outer: outerJ.length, perCoil: vias.length + termVias.length },
+    counts: { inner, outer, perCoil: vias.length + termVias.length },
   };
 }
 
