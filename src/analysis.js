@@ -90,6 +90,119 @@ export function fieldCrossCheck(tr, { grid = 11, maxCells = 3000 } = {}) {
   };
 }
 
+/** Field a single coil radiates at an external point p, per ampere of TERMINAL
+ *  current (the turns factor is already folded into c.wdl). Straight Biot-Savart
+ *  over the coil's own filament segments: B = (mu0/4pi) * sum dl x r / |r|^3.
+ *  This is the REVERSE of buildWrench, which evaluates the magnet field at the
+ *  coil; here we evaluate the coil's field at the sensor. */
+function coilFieldPerA(c, px, py, pz, out) {
+  const wm = c.wmid, wd = c.wdl, n = c.nSeg;
+  let bx = 0, by = 0, bz = 0;
+  for (let s = 0; s < n; s++) {
+    const i3 = s * 3;
+    const rx = px - wm[i3], ry = py - wm[i3 + 1], rz = pz - wm[i3 + 2];
+    const r2 = rx * rx + ry * ry + rz * rz;
+    if (r2 < 1e-12) continue;
+    const inv = 1 / (r2 * Math.sqrt(r2));       // 1 / |r|^3
+    const lx = wd[i3], ly = wd[i3 + 1], lz = wd[i3 + 2]; // lz == 0 for planar coils
+    bx += (ly * rz - lz * ry) * inv;
+    by += (lz * rx - lx * rz) * inv;
+    bz += (lx * ry - ly * rx) * inv;
+  }
+  const k = 1e-7;                                // mu0 / 4pi
+  out[0] = k * bx; out[1] = k * by; out[2] = k * bz;
+}
+
+/** Can a bottom-side flux sensor under each coil see the MOVER through the board?
+ *
+ *  Constraint driving this: no components on the top (magnet) face -- the sensor
+ *  must live on the bottom copper and read the Halbach field through the whole
+ *  board -- and the air gap is small. Two things then fight the measurement:
+ *    1. The board thickness pushes the sensor further from the magnets, so the
+ *       mover field is attenuated ~exp(-2pi*thickness/lambda) versus the top face.
+ *    2. The coil's OWN current makes a field at its centre that swamps the mover.
+ *       BUT by symmetry a planar coil's self-field on its axis is purely Bz: the
+ *       in-plane Bx/By at the sensor are ~zero for the coil itself, so they carry
+ *       the mover's position signal almost self-field-free. This measures how much
+ *       cleaner the in-plane axes are than the vertical one -- i.e. whether a
+ *       1-axis (Bz) sensor is fighting the worst axis and a 3-axis part is worth it.
+ *
+ *  Coil currents are all KNOWN (current-controlled drivers), so the self+neighbour
+ *  term is subtractable; the ratios here are the RAW signal-to-coil-field before
+ *  that subtraction, per axis, at a representative coil current. Not a hot path. */
+export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSensors = 400 } = {}) {
+  const coils = stator.coils;
+  if (!coils.length) return { available: false };
+  const th = stator.thickness;
+  const zBot = -th;            // sensor on the bottom copper
+  const zTop = 0;              // ideal reference: top face, right under the magnets
+  const R = quat.toMat3(quat.identity());
+  const r = [0, 0, gap];       // mover centred at hover, magnet face at world z = gap
+
+  // Source culling: coil field dies as 1/r^3, so only near neighbours matter.
+  const span = coils.reduce((a, c) => Math.max(a, c.outer[0], c.outer[1]), 0);
+  const cull = 3.2 * span;
+
+  // Evaluate a representative set of sensors (stride if the platen is huge).
+  const stride = Math.max(1, Math.ceil(coils.length / maxSensors));
+  const self = [0, 0, 0], nb = [0, 0, 0], mvBot = [0, 0, 0], mvTop = [0, 0, 0];
+
+  const purities = [], inRatios = [], vertRatios = [], moverBot = [], moverTop = [];
+  let n = 0;
+  for (let si = 0; si < coils.length; si += stride) {
+    const sc = coils[si];
+    const px = sc.x, py = sc.y;
+    // Only sensors actually under the mover see a signal worth talking about; the
+    // rest of a large stator is dark. Score observability where the platen hovers.
+    if (Math.hypot(px, py) > tr.footprintRadius) continue;
+
+    // Own-coil (self) field and the summed-square in-plane / vertical field from
+    // every nearby coil at 1 A -- the L2 sensitivity of each axis to a unit-RMS
+    // current vector, which is the contamination a real allocation injects.
+    coilFieldPerA(sc, px, py, zBot, self);
+    let cxy2 = 0, cz2 = 0;
+    for (let j = 0; j < coils.length; j++) {
+      const c = coils[j];
+      if (Math.abs(c.x - px) > cull || Math.abs(c.y - py) > cull) continue;
+      coilFieldPerA(c, px, py, zBot, nb);
+      cxy2 += nb[0] * nb[0] + nb[1] * nb[1];
+      cz2 += nb[2] * nb[2];
+    }
+    const coilInPlane = Math.sqrt(cxy2), coilVert = Math.sqrt(cz2);
+
+    fieldAt(tr, px, py, zBot, r, R, mvBot);
+    fieldAt(tr, px, py, zTop, r, R, mvTop);
+    const mInPlane = Math.hypot(mvBot[0], mvBot[1]);
+    const mVert = Math.abs(mvBot[2]);
+    const mMagBot = Math.hypot(mvBot[0], mvBot[1], mvBot[2]);
+    const mMagTop = Math.hypot(mvTop[0], mvTop[1], mvTop[2]);
+
+    const selfMag = Math.hypot(self[0], self[1], self[2]) || 1;
+    purities.push(Math.hypot(self[0], self[1]) / selfMag);   // in-plane share of self-field
+    if (coilInPlane > 0) inRatios.push(mInPlane / (coilInPlane * iRef));
+    if (coilVert > 0) vertRatios.push(mVert / (coilVert * iRef));
+    moverBot.push(mMagBot);
+    moverTop.push(mMagTop);
+    n++;
+  }
+  if (!n) return { available: false };
+
+  const med = (a) => { if (!a.length) return 0; const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
+  const ratioIn = med(inRatios), ratioVert = med(vertRatios);
+  return {
+    available: true,
+    nSensors: n,
+    boardMM: th * 1000,
+    moverBot: med(moverBot),
+    moverTop: med(moverTop),
+    boardLoss: med(moverTop) > 0 ? 1 - med(moverBot) / med(moverTop) : 0,
+    selfInPlaneShare: med(purities),   // ~0 confirms the self-field is on Bz only
+    ratioIn, ratioVert,
+    cleanFactor: ratioVert > 0 ? ratioIn / ratioVert : 0,
+    iRef,
+  };
+}
+
 /** Air-gap field on a horizontal plane, in the translator's own frame.
  *  component: 'bz' | 'mag'. */
 export function fieldMap(tr, gap, half, n, component = 'bz') {

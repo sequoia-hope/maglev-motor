@@ -12,7 +12,7 @@ import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
 import { render, makeCamera, fitCamera, attachOrbit, theme } from './render3d.js';
 import { lineChart, heatmap, barStrip, trackHover } from './plots.js';
-import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, fieldCrossCheck } from './analysis.js';
+import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, fieldCrossCheck, sensorObservability } from './analysis.js';
 import { MATERIALS, PROCESSES, COOLING, DEFAULT_MECH, stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
 import { buildAssembly } from './assembly.js';
 import { renderExploded } from './exploded.js';
@@ -356,6 +356,20 @@ function rebuild(resetSim = false) {
     ringsPerCoil: q.ringsPerCoil,
     segmentsPerSide: q.segmentsPerSide,
   });
+  // Bottom-side flux-sensor observability: can a sensor under each coil see the
+  // mover through the board, and how much cleaner are the in-plane axes than Bz?
+  // Depends on coil geometry + magnet field + gap + coil current, so cache on all
+  // of those (it Biot-Savarts every coil onto every sensor -- not a per-drag cost).
+  {
+    const key = [JSON.stringify(app.cfg.stator), app.cfg.translator.pitch,
+      app.cfg.translator.magnetThickness, app.cfg.translator.arrayType,
+      app.cfg.sim.gap, app.cfg.sim.iMax, q.ringsPerCoil, q.segmentsPerSide].join('|');
+    if (key !== app._sensorKey) {
+      app.sensorCheck = sensorObservability(app.stator, app.tr,
+        { iRef: app.cfg.sim.iMax, gap: app.cfg.sim.gap });
+      app._sensorKey = key;
+    }
+  }
   app.analysis = analysePose(
     app.stator, app.tr, [0, 0, app.cfg.sim.gap], quat.identity(),
     app.cfg.sim.iMax, app.cfg.sim.grouping);
@@ -994,6 +1008,38 @@ function renderSelfTest() {
      model ${t.model.toFixed(4)} T vs closed form ${t.analytic.toFixed(4)} T
      (${(t.relError * 100).toFixed(2)}% <span class="${t.pass ? 'ok' : 'bad'}">${t.pass ? 'PASS' : 'FAIL'}</span>)`;
   renderFieldCheck();
+  renderSensorCheck();
+}
+
+/** Bottom-side flux-sensor observability card: with no components allowed on the
+ *  top (magnet) face, the sensor reads the mover through the whole board. Reports
+ *  how much mover field survives to the bottom, and how much cleaner the in-plane
+ *  axes (Bx/By, self-field-free by coil symmetry) are than Bz -- i.e. whether a
+ *  1-axis part is fighting the worst axis and a 3-axis sensor earns its cost. */
+function renderSensorCheck() {
+  const el = document.getElementById('sensorCheck');
+  if (!el) return;
+  const r = app.sensorCheck;
+  if (!r || !r.available) {
+    el.innerHTML = `<strong>Flux-sensor check.</strong> <span style="color:var(--muted)">not available for this stator.</span>`;
+    return;
+  }
+  const pct = (x) => `${(x * 100).toFixed(0)}%`;
+  const mT = (x) => (x * 1000).toFixed(1);
+  const lossCls = r.boardLoss < 0.5 ? 'ok' : r.boardLoss < 0.75 ? '' : 'bad';
+  const cleanCls = r.cleanFactor > 5 ? 'ok' : r.cleanFactor > 2 ? '' : 'bad';
+  const verdict = r.cleanFactor > 5
+    ? `Read position off Bx/By and a 1-axis Bz part would be fighting the worst axis — a 3-axis sensor is worth it.`
+    : r.cleanFactor > 2
+      ? `In-plane axes are cleaner but not dramatically; 3-axis helps, subtraction of the known coil currents does the rest.`
+      : `Little in-plane advantage here — the neighbour coils contaminate Bx/By too; lean on current subtraction, not axis choice.`;
+  el.innerHTML =
+    `<strong>Flux-sensor check (bottom-side, ${r.boardMM.toFixed(1)} mm board, ${r.nSensors} sensors).</strong> `
+    + `Mover reaches the bottom copper at <b>${mT(r.moverBot)} mT</b> (vs ${mT(r.moverTop)} mT at the top face — the board eats <span class="${lossCls}">${pct(r.boardLoss)}</span>).<br>`
+    + `A planar coil's self-field is <b>${pct(1 - r.selfInPlaneShare)}</b> on Bz: only ${pct(r.selfInPlaneShare)} leaks into Bx/By. `
+    + `So at ${r.iRef} A coil current the mover signal is <span class="${cleanCls}">${r.cleanFactor.toFixed(1)}×</span> cleaner in-plane than vertical `
+    + `(mover/coil-field ${r.ratioIn.toFixed(2)} in-plane vs ${r.ratioVert.toFixed(2)} on Bz).<br>`
+    + `<span style="color:var(--muted)">${verdict}</span>`;
 }
 
 /** The finite-array field cross-check card: how far the fast harmonic model
