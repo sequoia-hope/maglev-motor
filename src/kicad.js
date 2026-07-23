@@ -196,21 +196,26 @@ export function viaPlan(g, N, cellHalf, viaSize) {
   // checks it touches nothing but its own via and stub.
   // Terminals -> SMT pads. Like the crossovers, each lead drops STRAIGHT out from
   // its own end (a short radial stub, never routed across other vias) to a pad on
-  // the cell boundary, centred in the shared inter-coil gutter so it clears both
-  // this coil's winding and the neighbour's. Square, sized to that gutter.
-  const termPads = [];                           // {p, layer, w, h}
+  // the cell boundary. The gutter is thin ACROSS (radial) but long ALONG the
+  // boundary (tangential), so the pad is a rectangle rotated to the boundary --
+  // thin radially (fits the shared inter-coil gutter, clear of both windings) and
+  // long tangentially. Both leads get the SAME size, the pad swallowing its own
+  // short stub. Rotation `a` is the outward radial direction.
+  const termPads = [];                           // {p, layer, w, h, a}
   const s0 = spiralVertices(g, 0)[0];
   const eN = spiralVertices(g, N - 1); const pN = eN[eN.length - 1];
-  for (const [p, layer] of [[s0, 0], [pN, N - 1]]) {
-    const r = Math.hypot(p[0], p[1]) || 1;
-    const a = Math.atan2(p[1], p[0]);
-    const cb = cellHalf / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6); // cell edge
-    const padC = [p[0] * cb / r, p[1] * cb / r];  // radially out to the cell boundary
-    const gutLocal = cb - r;                       // this coil's half of the inter-coil gutter
-    const w = Math.max(0.15, Math.min(0.6, 2 * gutLocal - viaSize - g.trace));
-    terminals.push([p[0], p[1], padC[0], padC[1], layer]);
-    termVias.push({ p: padC, layers: [layer] });
-    termPads.push({ p: padC, layer, w, h: w });
+  const terms = [[s0, 0], [pN, N - 1]].map(([p, layer]) => {
+    const r = Math.hypot(p[0], p[1]) || 1, a = Math.atan2(p[1], p[0]);
+    const cb = cellHalf / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6);
+    return { p, layer, r, a, cb, gut: cb - r };
+  });
+  const wRad = Math.max(0.2, Math.min(0.5, 2 * Math.min(...terms.map((t) => t.gut)) - viaSize - g.trace));
+  const hTan = Math.min(0.7, 1.9 * g.corner);    // along the boundary; corner room is the limit
+  for (const t of terms) {
+    const padC = [t.p[0] * t.cb / t.r, t.p[1] * t.cb / t.r];
+    terminals.push([t.p[0], t.p[1], padC[0], padC[1], t.layer]);
+    termVias.push({ p: padC, layers: [t.layer] });
+    termPads.push({ p: padC, layer: t.layer, w: wRad, h: hTan, a: t.a });
   }
 
   let inner = 0, outer = 0;
@@ -259,9 +264,10 @@ export function coilPreviewSVG(cfg) {
       + (bad ? `<circle cx="${p[0].toFixed(3)}" cy="${(-p[1]).toFixed(3)}" r="${(r * 2.2).toFixed(3)}" fill="none" stroke="#ff3b3b" stroke-width="0.08"/>` : '');
   };
   for (const v of plan.vias) parts.push(dot(v.p, via / 2));
-  // I/O SMT pads (on the back) as gold rectangles, labelled.
+  // I/O SMT pads (on the back) as gold rectangles, rotated to the boundary.
   for (const pad of plan.termPads || []) {
-    parts.push(`<rect x="${(pad.p[0] - pad.w / 2).toFixed(3)}" y="${(-pad.p[1] - pad.h / 2).toFixed(3)}" width="${pad.w.toFixed(3)}" height="${pad.h.toFixed(3)}" rx="0.05" fill="#e0a83c" stroke="#0b0e14" stroke-width="0.04"/>`);
+    const deg = (-(pad.a || 0) * 180 / Math.PI).toFixed(1);
+    parts.push(`<g transform="translate(${pad.p[0].toFixed(3)},${(-pad.p[1]).toFixed(3)}) rotate(${deg})"><rect x="${(-pad.w / 2).toFixed(3)}" y="${(-pad.h / 2).toFixed(3)}" width="${pad.w.toFixed(3)}" height="${pad.h.toFixed(3)}" rx="0.05" fill="#e0a83c" stroke="#0b0e14" stroke-width="0.04"/></g>`);
   }
 
   const m = cellHalf * 1.08;
@@ -323,13 +329,15 @@ export function validatePcb(g, N, cellHalf, viaSize) {
     else bSpiral.push([pr.a, pr.b]);
   }
   for (const pad of plan.termPads || []) {
+    const ca = Math.cos(pad.a || 0), sa = Math.sin(pad.a || 0); // pad's radial axis
     let dmin = Infinity;
     for (const [a, b] of bSpiral) {
       for (let t = 0; t <= 1; t += 0.2) {
         const x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
-        const dx = Math.max(Math.abs(x - pad.p[0]) - pad.w / 2, 0);
-        const dy = Math.max(Math.abs(y - pad.p[1]) - pad.h / 2, 0);
-        const d = Math.hypot(dx, dy); if (d < dmin) dmin = d;
+        const dx = x - pad.p[0], dy = y - pad.p[1];
+        const lr = dx * ca + dy * sa, lt = -dx * sa + dy * ca;   // into pad frame
+        const ex = Math.max(Math.abs(lr) - pad.w / 2, 0), ey = Math.max(Math.abs(lt) - pad.h / 2, 0);
+        const d = Math.hypot(ex, ey); if (d < dmin) dmin = d;
       }
     }
     if (dmin < g.trace / 2 - 1e-6) contacts.push({ via: pad.p, layer: N - 1, clearance: dmin, pad: true });
@@ -558,7 +566,7 @@ export function buildKiCad(stator, cfg) {
     }
     // The coil's input/output SMT pads on the back, at the terminal vias.
     (plan.termPads || []).forEach((pad, k) => {
-      L.push(`  (footprint "maglev:Term" (layer "B.Cu") (at ${tx(pad.p[0])} ${ty(pad.p[1])})`);
+      L.push(`  (footprint "maglev:Term" (layer "B.Cu") (at ${tx(pad.p[0])} ${ty(pad.p[1])} ${f((pad.a || 0) * 180 / Math.PI)})`);
       L.push('    (attr smd)');
       L.push(`    (fp_text reference "J${ci}.${k === 0 ? 'IN' : 'OUT'}" (at 0 -${f(pad.h / 2 + 0.3)}) (layer "B.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
       L.push(`    (fp_text value "term" (at 0 0) (layer "B.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
