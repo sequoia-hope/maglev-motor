@@ -151,7 +151,7 @@ function freeEndIsOuter(layer, N) {
  *  cell corner -- distributed round-robin, with the tab routed from the coil's
  *  outer end around the perimeter gutter. Returns tab segments (tagged by layer),
  *  crossover vias, terminal stubs, terminal mating vias, and counts. */
-function viaPlan(g, N, cellHalf, viaSize) {
+export function viaPlan(g, N, cellHalf, viaSize) {
   const P_in = corner(0, g.halfIn);            // every inner end lands here
   const P_out = corner(0, g.halfOut);          // every outer end lands here
   const holeR = Math.max(g.halfIn * 0.58, viaSize * 0.7);   // inner-via radius
@@ -248,25 +248,30 @@ export function coilPreviewSVG(cfg) {
   const badKey = new Set(contacts.map((c) => c.via.map((n) => n.toFixed(3)).join(',')));
 
   const P = (p) => `${(p[0]).toFixed(3)},${(-p[1]).toFixed(3)}`; // flip y for SVG
-  const poly = (pts, stroke) =>
-    `<polyline points="${pts.map(P).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${(g.trace).toFixed(3)}" stroke-linejoin="round" stroke-linecap="round"/>`;
+  // A distinct colour per layer (ordered hue ramp), so adjacent layers -- the
+  // ones a crossover joins -- read as neighbours.
+  const col = (j) => `hsl(${Math.round((j / Math.max(N - 1, 1)) * 300)}, 80%, 62%)`;
+  const poly = (pts, stroke, w, op) =>
+    `<polyline points="${pts.map(P).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${w.toFixed(3)}" opacity="${op}" stroke-linejoin="round" stroke-linecap="round"/>`;
   const parts = [];
   // Cell boundary.
   parts.push(`<rect x="${-cellHalf}" y="${-cellHalf}" width="${2 * cellHalf}" height="${2 * cellHalf}" fill="none" stroke="#8884" stroke-width="0.05" stroke-dasharray="0.3 0.2"/>`);
-  // Two representative layers (an inward and an outward one) as the winding.
-  parts.push(poly(spiralPoints(g, 0), '#4aa3ff'));
-  parts.push(poly(spiralPoints(g, 1), '#ff9d4a'));
-  // Tab copper on those two layers, so a crossover in the preview reads as wired.
-  for (const [x0, y0, x1, y1, layer] of plan.segments)
-    if (layer <= 1) parts.push(poly([[x0, y0], [x1, y1]], layer === 0 ? '#4aa3ff' : '#ff9d4a'));
-  // Vias: green crossovers, purple terminal mating vias, red if flagged.
-  const dot = (p, fill, r) => {
+  // EVERY layer's spiral, faint and colour-coded (they stack in Z, so the spirals
+  // overlap in this top view -- what differs per layer is where it breaks out to
+  // its crossover vias).
+  for (let j = 0; j < N; j++) parts.push(poly(spiralPoints(g, j), col(j), g.trace * 0.8, 0.5));
+  // Every layer's crossover tabs, full strength -- so each via shows the TWO
+  // coloured tabs (its two layers) meeting at it. This is the connectivity.
+  for (const [x0, y0, x1, y1, layer] of plan.segments) parts.push(poly([[x0, y0], [x1, y1]], col(layer), g.trace, 1));
+  for (const [x0, y0, x1, y1, layer] of plan.terminals)
+    if (isFinite(x1) && (x0 !== x1 || y0 !== y1)) parts.push(poly([[x0, y0], [x1, y1]], col(layer), g.trace, 1));
+  // Vias: neutral outline so the coloured tabs read through, red if flagged.
+  const dot = (p, r) => {
     const bad = badKey.has(p.map((n) => n.toFixed(3)).join(','));
-    return `<circle cx="${p[0].toFixed(3)}" cy="${(-p[1]).toFixed(3)}" r="${r}" fill="${bad ? '#ff3b3b' : fill}"/>`
+    return `<circle cx="${p[0].toFixed(3)}" cy="${(-p[1]).toFixed(3)}" r="${r}" fill="#0b0e14" stroke="${bad ? '#ff3b3b' : '#e8ecf4'}" stroke-width="0.06"/>`
       + (bad ? `<circle cx="${p[0].toFixed(3)}" cy="${(-p[1]).toFixed(3)}" r="${(r * 2.2).toFixed(3)}" fill="none" stroke="#ff3b3b" stroke-width="0.08"/>` : '');
   };
-  for (const v of plan.vias) parts.push(dot(v.p, '#37d67a', via / 2));
-  for (const v of plan.termVias) parts.push(dot(v.p, '#b06cf0', via / 2));
+  for (const v of [...plan.vias, ...plan.termVias]) parts.push(dot(v.p, via / 2));
 
   const m = cellHalf * 1.08;
   const svg = `<svg viewBox="${-m} ${-m} ${2 * m} ${2 * m}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;background:#0b0e14;border-radius:6px">${parts.join('')}</svg>`;

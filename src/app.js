@@ -790,7 +790,7 @@ function renderBuild() {
       <div style="display:flex;gap:12px;align-items:flex-start;margin:0 0 10px">
         <div style="flex:0 0 200px;max-width:200px">${pv.svg}</div>
         <div style="font-size:12px;color:var(--ink-2)">
-          <b>One coil, one preview.</b> Two layers of the spiral (blue inward, orange outward), the ${pv.stats.innerVias} inner crossover vias fanned in the centre hole, the ${pv.stats.outerVias} outer crossovers + terminals spread around the perimeter (green / purple).
+          <b>One coil, all ${pv.stats.layers} layers.</b> Each layer is a different colour (the spirals stack in Z, so they overlap here). Every via shows the <b>two</b> coloured tabs meeting at it — the two layers it stitches — proving the series chain L0→L${pv.stats.layers - 1}: ${pv.stats.innerVias} inner crossovers in the centre hole, ${pv.stats.outerVias} outer crossovers + 2 terminals round the perimeter.
           ${pv.stats.contacts === 0
             ? '<span style="color:var(--good)">No plated through-hole contacts a layer it must not — the stack is clean.</span>'
             : `<span style="color:var(--warn)">${pv.stats.contacts} through-hole(s) graze a wrong layer (ringed red) — the coil is too dense to route; lower the fill.</span>`}

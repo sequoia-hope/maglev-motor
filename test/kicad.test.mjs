@@ -5,7 +5,7 @@
 // instead of cancelling.
 
 import { makeStator } from '../src/coils.js';
-import { buildKiCad, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb } from '../src/kicad.js';
+import { buildKiCad, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb, viaPlan } from '../src/kicad.js';
 
 let fails = 0;
 const check = (n, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`); if (!c) fails++; };
@@ -106,6 +106,28 @@ console.log('\n=== no plated through-hole contacts a layer it must not ===');
   const dense = pcbCoilGeometry({ stator: { ...cfg.stator, coilFill: 0.97 } });
   check('the check catches an unroutable (too-dense) coil',
     validatePcb(dense, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2, via).length > 0);
+}
+
+console.log('\n=== the crossovers wire every layer into one series chain ===');
+// The whole point of the stitching: L0..L(N-1) in series, so the fields add and
+// the two terminals are the coil's leads. Each crossover must join exactly two
+// ADJACENT layers (and both those layers share that one via -- not a via each).
+{
+  const N = cfg.stator.pcbLayers;
+  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
+  const plan = viaPlan(g, N, cfg.stator.coilPitch * 1000 / 2, via);
+  check('each crossover via joins exactly two adjacent layers',
+    plan.vias.every((v) => v.layers.length === 2 && Math.abs(v.layers[0] - v.layers[1]) === 1),
+    `${plan.vias.length} crossovers`);
+  const adj = Array.from({ length: N }, () => []);
+  for (const v of plan.vias) { adj[v.layers[0]].push(v.layers[1]); adj[v.layers[1]].push(v.layers[0]); }
+  const ends = adj.map((a, i) => (a.length === 1 ? i : -1)).filter((i) => i >= 0);
+  let cur = ends[0], prev = -1, len = 0; const seen = new Set();
+  while (cur !== undefined && !seen.has(cur)) { seen.add(cur); len++; const nx = adj[cur].find((x) => x !== prev && !seen.has(x)); prev = cur; cur = nx; }
+  check('they form ONE series chain L0..L(N-1) with two free ends', ends.length === 2 && len === N,
+    `chain covers ${len}/${N}, ${ends.length} free ends`);
+  check('the two free ends carry the coil terminals', plan.termVias.length === 2,
+    `${plan.termVias.length} terminal vias`);
 }
 check('through-hole via farms stitch the layer stack, per coil',
   out.stats.vias === stator.coils.length * out.stats.viasPerCoil && out.stats.viasPerCoil > 0,
