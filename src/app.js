@@ -779,15 +779,16 @@ function renderBuild() {
   if (app.cfg.stator.coilType === 'pcb') {
     const kc = buildKiCad(app.stator, app.cfg);
     const s = kc.stats;
-    const big = s.segments > 200000;
+    const big = kc.text.length > 4e6;
     pcbCard.style.display = '';
     pcbCard.innerHTML = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">PCB stator export</h4>
       <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">The coil board as a <b>.kicad_pcb</b> you can open in KiCad and send to a fab —
       ${s.coils} coils on ${s.layers} copper layers, ${s.turnsPerLayer} turns each per layer, series-stacked so every layer's field adds.
-      ${s.segments.toLocaleString()} track segments, ${s.vias.toLocaleString()} plated through-hole vias (${s.viasPerCoil}/coil), one net per coil, ${s.traceMm.toFixed(3)} mm trace on a ${s.boardMm.toFixed(0)} mm board.</p>
+      ${s.segments.toLocaleString()} track segments, ${s.vias.toLocaleString()} plated through-hole vias (${s.viasPerCoil}/coil), one net per coil, ${s.traceMm.toFixed(3)} mm trace on a ${s.boardMm.toFixed(0)} mm board.
+      ${s.drivers ? `Plus a built-in amplifier array: <b>${s.drivers.toLocaleString()} H-bridge power stages</b> and ${s.decaps.toLocaleString()} decoupling caps on the back, one per coil, on shared VBUS/GND rails with a per-coil PWM pair — a distributed inverter, not a passive coil pad.` : ''}</p>
       <button id="btnKicad" class="ghost">Download KiCad PCB</button>
-      ${big ? '<p style="font-size:12px;color:var(--warn);margin:8px 0 0">This is a large board — the file runs to a few MB and KiCad will take a moment to open it.</p>' : ''}
-      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Carl Bugeja's method: the layer stack is stitched with plated through-holes only (no blind/buried vias), so it is a standard 12-layer stackup a fab can press — the export writes the board the physics ran, not a simplified one.</p>`;
+      ${big ? '<p style="font-size:12px;color:var(--warn);margin:8px 0 0">This is a large board — with the per-coil driver array the file runs to tens of MB and KiCad will take a while to open it.</p>' : ''}
+      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Carl Bugeja's method: the layer stack is stitched with plated through-holes only (no blind/buried vias), so it is a standard 12-layer stackup a fab can press. The per-coil H-bridge (both outputs drive the winding, which is the load) lands in the coil's centre hole on the back; the full VBUS/GND/PWM distribution across all ${s.drivers ? s.drivers.toLocaleString() : ''} stages is left to place-and-route, since on an all-copper board it needs a mating power/backplane. The export writes the board the physics ran, not a simplified one.</p>`;
     document.getElementById('btnKicad').onclick = () => {
       const fresh = buildKiCad(app.stator, app.cfg);
       const blob = new Blob([fresh.text], { type: 'application/octet-stream' });

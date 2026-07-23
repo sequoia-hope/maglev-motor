@@ -171,6 +171,42 @@ function viaPlan(g, N, cellHalf, viaSize) {
   };
 }
 
+// One SMD pad of a back-side footprint, on a given net. Coordinates are
+// footprint-relative (mm); KiCad places them against the footprint origin.
+function fpPad(n, px, py, w, h, netNum, netName) {
+  return `    (pad "${n}" smd rect (at ${px} ${py}) (size ${w} ${h}) (layers "B.Cu" "B.Paste" "B.Mask") (net ${netNum} "${netName}"))`;
+}
+
+/** An integrated H-bridge power stage (VBUS, GND, two outputs to the coil, two
+ *  PWM inputs) as a ~2 mm back-side footprint at (ox, oy). Both outputs sit on
+ *  the coil net -- the winding is the bridge's load. */
+function emitPowerStage(L, ci, ox, oy, f, coilNet, vbus, gnd, pa, pb) {
+  L.push(`  (footprint "maglev:HB6" (layer "B.Cu") (at ${f(ox)} ${f(oy)})`);
+  L.push('    (attr smd)');
+  L.push(`    (fp_text reference "U${ci}" (at 0 -1.35) (layer "B.SilkS") (effects (font (size 0.35 0.35) (thickness 0.06)) (justify mirror)))`);
+  L.push(`    (fp_text value "HB6" (at 0 1.35) (layer "B.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06)) (justify mirror)))`);
+  L.push('    (fp_rect (start -1 -1) (end 1 1) (layer "B.CrtYd") (width 0.05))');
+  L.push(fpPad(1, -0.9, -0.65, 0.5, 0.3, vbus, 'VBUS'));
+  L.push(fpPad(2, -0.9, 0, 0.5, 0.3, gnd, 'GND'));
+  L.push(fpPad('3', -0.9, 0.65, 0.5, 0.3, coilNet, `coil_${ci}`));   // OUTA
+  L.push(fpPad('4', 0.9, -0.65, 0.5, 0.3, coilNet, `coil_${ci}`));   // OUTB
+  L.push(fpPad('5', 0.9, 0, 0.5, 0.3, pa, `PWMA_${ci}`));
+  L.push(fpPad('6', 0.9, 0.65, 0.5, 0.3, pb, `PWMB_${ci}`));
+  L.push('  )');
+}
+
+/** A 0402 decoupling cap across VBUS/GND next to a power stage. */
+function emitDecap(L, ci, ox, oy, f, vbus, gnd) {
+  L.push(`  (footprint "maglev:C0402" (layer "B.Cu") (at ${f(ox)} ${f(oy)})`);
+  L.push('    (attr smd)');
+  L.push(`    (fp_text reference "C${ci}" (at 0 -0.6) (layer "B.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
+  L.push(`    (fp_text value "100n" (at 0 0.6) (layer "B.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
+  L.push('    (fp_rect (start -0.55 -0.35) (end 0.55 0.35) (layer "B.CrtYd") (width 0.05))');
+  L.push(fpPad(1, -0.5, 0, 0.4, 0.5, vbus, 'VBUS'));
+  L.push(fpPad(2, 0.5, 0, 0.4, 0.5, gnd, 'GND'));
+  L.push('  )');
+}
+
 /** Build a complete .kicad_pcb for the PCB stator. Returns { text, stats } or
  *  null when the coil type is not a PCB (nothing to fabricate as copper). */
 export function buildKiCad(stator, cfg) {
@@ -197,9 +233,28 @@ export function buildKiCad(stator, cfg) {
   L.push('  )');
   L.push('  (setup (pad_to_mask_clearance 0))');
 
-  // --- nets: one per coil ---
+  // --- nets ---
+  // One signal net per coil, then the shared power rails and a per-coil PWM pair
+  // for the on-board driver array (an H-bridge per coil -- see below). The coil
+  // spiral is the H-bridge's inductive load, so BOTH bridge outputs land on the
+  // coil's own net: at DC the winding is a short, which is exactly what an
+  // H-bridge across an inductor looks like, and it keeps every coil an isolated
+  // island (no shared star to merge them). Power is the only thing they share.
+  const C = stator.coils.length;
+  const drivers = cfg.stator.pcbDrivers !== false;
+  const netGND = C + 1, netVBUS = C + 2;
+  const pwmA = (i) => C + 3 + 2 * i;
+  const pwmB = (i) => C + 3 + 2 * i + 1;
   L.push('  (net 0 "")');
   stator.coils.forEach((_, i) => L.push(`  (net ${i + 1} "coil_${i}")`));
+  if (drivers) {
+    L.push(`  (net ${netGND} "GND")`);
+    L.push(`  (net ${netVBUS} "VBUS")`);
+    stator.coils.forEach((_, i) => {
+      L.push(`  (net ${pwmA(i)} "PWMA_${i}")`);
+      L.push(`  (net ${pwmB(i)} "PWMB_${i}")`);
+    });
+  }
 
   // --- board outline ---
   const edge = [[-S / 2, -S / 2], [S / 2, -S / 2], [S / 2, S / 2], [-S / 2, S / 2]];
@@ -244,6 +299,22 @@ export function buildKiCad(stator, cfg) {
       L.push(`  (segment (start ${tx(x0)} ${ty(y0)}) (end ${tx(x1)} ${ty(y1)}) (width ${f(g.trace)}) (layer "${cuName(layer, N)}") (net ${net}))`);
       segments++;
     }
+
+    // The on-board amplifier: one integrated H-bridge power stage per coil, on
+    // the back, in the coil's centre hole -- the only clear real estate on an
+    // all-copper board -- plus a local decoupling cap. Its outputs drive the
+    // coil (net coil_i); it draws from the shared VBUS/GND rails and takes a
+    // per-coil PWM pair. This is what makes the independent-grouping analysis
+    // buildable: 324 drivers etched under 324 spirals instead of a wiring loom.
+    if (drivers) {
+      emitPowerStage(L, ci, ox, oy, f, net, netVBUS, netGND, pwmA(ci), pwmB(ci));
+      emitDecap(L, ci, ox + 1.7, oy, f, netVBUS, netGND);
+      // Tie one bridge output to the coil: a short back-side track from the
+      // output pad to the nearest inner via, which is already on the coil net.
+      const ov = plan.vias[0];
+      L.push(`  (segment (start ${tx(ov[0])} ${ty(ov[1])}) (end ${tx(-0.9)} ${ty(0.65)}) (width ${f(g.trace)}) (layer "${cuName(N - 1, N)}") (net ${net}))`);
+      segments++;
+    }
   }
 
   L.push(')');
@@ -255,6 +326,11 @@ export function buildKiCad(stator, cfg) {
       innerVias: plan.counts.inner, outerVias: plan.counts.outer,
       viasPerHop: plan.counts.kOuter, viaTech: 'through-hole (plated)',
       nets: stator.coils.length, boardMm: S, traceMm: g.trace,
+      // On-board amplifier array: one H-bridge power stage + one decoupling cap
+      // per coil, so the board is a distributed inverter, not a passive coil pad.
+      drivers: drivers ? C : 0, decaps: drivers ? C : 0,
+      driverTopology: drivers ? 'H-bridge per coil (independent)' : 'none',
+      powerNets: drivers ? 2 + 2 * C : 0,
     },
   };
 }

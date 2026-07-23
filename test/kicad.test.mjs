@@ -53,8 +53,37 @@ check('one copper layer per declared PCB layer',
   `${(out.text.match(/signal\)/g) || []).length} layers`);
 check('F.Cu and B.Cu both present', /"F.Cu"/.test(out.text) && /"B.Cu"/.test(out.text));
 check('one net per coil (plus the empty net 0)',
-  out.stats.nets === stator.coils.length && (out.text.match(/\(net \d+ "coil_/g) || []).length === stator.coils.length,
+  out.stats.nets === stator.coils.length && (out.text.match(/^  \(net \d+ "coil_/gm) || []).length === stator.coils.length,
   `${out.stats.nets} nets`);
+
+console.log('\n=== the board carries its own amplifier array ===');
+// One H-bridge power stage + one decoupling cap per coil, on the back, driven
+// from shared VBUS/GND and a per-coil PWM pair -- the distributed inverter that
+// makes independent grouping buildable.
+check('one H-bridge power stage per coil',
+  (out.text.match(/\(footprint "maglev:HB6"/g) || []).length === stator.coils.length && out.stats.drivers === stator.coils.length,
+  `${out.stats.drivers} drivers`);
+check('one decoupling cap per coil',
+  (out.text.match(/\(footprint "maglev:C0402"/g) || []).length === stator.coils.length && out.stats.decaps === stator.coils.length,
+  `${out.stats.decaps} caps`);
+check('drivers mount on the back (B.Cu)',
+  (out.text.match(/\(footprint "maglev:HB6" \(layer "B.Cu"\)/g) || []).length === stator.coils.length);
+check('shared power rails and a per-coil PWM pair are declared',
+  /^  \(net \d+ "VBUS"\)/m.test(out.text) && /^  \(net \d+ "GND"\)/m.test(out.text)
+  && (out.text.match(/^  \(net \d+ "PWMA_/gm) || []).length === stator.coils.length,
+  `${out.stats.powerNets} power/PWM nets`);
+// The bridge is an H-bridge across the winding, so both outputs land on the
+// coil net -- the coil must NOT get shorted to a power rail.
+check('driver outputs land on the coil net, not on VBUS/GND',
+  !/\(pad "[34]"[^\n]*"(VBUS|GND)"/.test(out.text),
+  'OUTA/OUTB carry coil_i');
+
+// The driver array must be suppressible for a bare coil board.
+{
+  const bare = buildKiCad(stator, { stator: { ...cfg.stator, pcbDrivers: false } });
+  check('pcbDrivers:false yields a passive coil board (no footprints)',
+    bare.stats.drivers === 0 && !/\(footprint /.test(bare.text));
+}
 check('through-hole via farms stitch the layer stack, per coil',
   out.stats.vias === stator.coils.length * out.stats.viasPerCoil && out.stats.viasPerCoil > 0,
   `${out.stats.vias} vias, ${out.stats.viasPerCoil}/coil (${out.stats.innerVias} inner + ${out.stats.outerVias} outer)`);
