@@ -28,7 +28,7 @@
 // test/kicad.test.mjs checks both: the sign of each layer's enclosed area, and
 // that every via spans the full stack (F.Cu..B.Cu).
 
-import { effectiveTrace, pcbTurnsPerLayer } from './coils.js';
+import { effectiveTrace, pcbTurnsPerLayer, makeStator } from './coils.js';
 
 /** PCB coil geometry in millimetres, recomputed from cfg so it matches
  *  coils.js exactly (same perLayer formula, same effective trace) without
@@ -189,20 +189,34 @@ export function viaPlan(g, N, cellHalf, viaSize) {
     vias.push({ p: via, layers: [c, c + 1] });
   }
 
-  // Terminals: the two free ends -- layer 0's start and layer N-1's end -- each
-  // nudged off the winding to a mating via for the backplane.
+  // Terminals -> SMT pads. Each coil lead (layer 0's start, layer N-1's end) is
+  // brought by a short gutter stub to a rectangular pad in its NEAREST corner
+  // pocket, where the fillet has pulled the winding in and left room clear of the
+  // copper and the neighbours. The pad is sized to that clear band. validatePcb
+  // checks it touches nothing but its own via and stub.
+  // Terminals -> SMT pads. Like the crossovers, each lead drops STRAIGHT out from
+  // its own end (a short radial stub, never routed across other vias) to a pad on
+  // the cell boundary, centred in the shared inter-coil gutter so it clears both
+  // this coil's winding and the neighbour's. Square, sized to that gutter.
+  const termPads = [];                           // {p, layer, w, h}
   const s0 = spiralVertices(g, 0)[0];
   const eN = spiralVertices(g, N - 1); const pN = eN[eN.length - 1];
   for (const [p, layer] of [[s0, 0], [pN, N - 1]]) {
-    const via = nudge(p, true);                  // both free ends are outer
-    terminals.push([p[0], p[1], via[0], via[1], layer]);
-    termVias.push({ p: via, layers: [layer] });
+    const r = Math.hypot(p[0], p[1]) || 1;
+    const a = Math.atan2(p[1], p[0]);
+    const cb = cellHalf / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6); // cell edge
+    const padC = [p[0] * cb / r, p[1] * cb / r];  // radially out to the cell boundary
+    const gutLocal = cb - r;                       // this coil's half of the inter-coil gutter
+    const w = Math.max(0.15, Math.min(0.6, 2 * gutLocal - viaSize - g.trace));
+    terminals.push([p[0], p[1], padC[0], padC[1], layer]);
+    termVias.push({ p: padC, layers: [layer] });
+    termPads.push({ p: padC, layer, w, h: w });
   }
 
   let inner = 0, outer = 0;
   for (let c = 0; c < N - 1; c++) (c % 2 === 0 ? inner++ : outer++);
   return {
-    segments, vias, terminals, termVias,
+    segments, vias, terminals, termVias, termPads,
     counts: { inner, outer, perCoil: vias.length + termVias.length },
   };
 }
@@ -244,7 +258,11 @@ export function coilPreviewSVG(cfg) {
     return `<circle cx="${p[0].toFixed(3)}" cy="${(-p[1]).toFixed(3)}" r="${r}" fill="#0b0e14" stroke="${bad ? '#ff3b3b' : '#e8ecf4'}" stroke-width="0.06"/>`
       + (bad ? `<circle cx="${p[0].toFixed(3)}" cy="${(-p[1]).toFixed(3)}" r="${(r * 2.2).toFixed(3)}" fill="none" stroke="#ff3b3b" stroke-width="0.08"/>` : '');
   };
-  for (const v of [...plan.vias, ...plan.termVias]) parts.push(dot(v.p, via / 2));
+  for (const v of plan.vias) parts.push(dot(v.p, via / 2));
+  // I/O SMT pads (on the back) as gold rectangles, labelled.
+  for (const pad of plan.termPads || []) {
+    parts.push(`<rect x="${(pad.p[0] - pad.w / 2).toFixed(3)}" y="${(-pad.p[1] - pad.h / 2).toFixed(3)}" width="${pad.w.toFixed(3)}" height="${pad.h.toFixed(3)}" rx="0.05" fill="#e0a83c" stroke="#0b0e14" stroke-width="0.04"/>`);
+  }
 
   const m = cellHalf * 1.08;
   const svg = `<svg viewBox="${-m} ${-m} ${2 * m} ${2 * m}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;background:#0b0e14;border-radius:6px">${parts.join('')}</svg>`;
@@ -295,6 +313,27 @@ export function validatePcb(g, N, cellHalf, viaSize) {
       if (dmin < contact - 1e-6) contacts.push({ via: v.p, layer: m, clearance: dmin });
     }
   }
+
+  // The input/output SMT pads sit on B.Cu (layer N-1). They may touch only their
+  // own via and stub -- never a winding turn (the "next coil loop"). Check each
+  // pad rectangle against the winding spiral on its layer.
+  const bSpiral = [];
+  for (const pr of spiralPath(g, N - 1)) {
+    if (pr.t === 'arc') { bSpiral.push([pr.a, pr.m]); bSpiral.push([pr.m, pr.b]); }
+    else bSpiral.push([pr.a, pr.b]);
+  }
+  for (const pad of plan.termPads || []) {
+    let dmin = Infinity;
+    for (const [a, b] of bSpiral) {
+      for (let t = 0; t <= 1; t += 0.2) {
+        const x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
+        const dx = Math.max(Math.abs(x - pad.p[0]) - pad.w / 2, 0);
+        const dy = Math.max(Math.abs(y - pad.p[1]) - pad.h / 2, 0);
+        const d = Math.hypot(dx, dy); if (d < dmin) dmin = d;
+      }
+    }
+    if (dmin < g.trace / 2 - 1e-6) contacts.push({ via: pad.p, layer: N - 1, clearance: dmin, pad: true });
+  }
   return contacts;
 }
 
@@ -334,6 +373,18 @@ function emitDecap(L, ref, ox, oy, f, S, vbus, gnd) {
   L.push(fpPad(1, -0.5, 0, 0.4, 0.5, vbus, 'VBUS', S));
   L.push(fpPad(2, 0.5, 0, 0.4, 0.5, gnd, 'GND', S));
   L.push('  )');
+}
+
+/** A small n×n coil TILE, sized to exactly n coil cells so copies abut into a
+ *  seamless larger stator. Same coils, vias, rounded corners and I/O pads as the
+ *  full board -- just n² of them, on a board that is n·coilPitch square. Returns
+ *  { text, stats } (the coil board) or null for non-PCB. Pair with a same-size
+ *  backplane tile. Cheaper to fab and panelise than one giant board. */
+export function buildTile(cfg, n = 3, backplane = false) {
+  if (cfg.stator.coilType !== 'pcb') return null;
+  const tileCfg = { ...cfg, stator: { ...cfg.stator, statorSize: n * cfg.stator.coilPitch } };
+  const stator = makeStator({ ...tileCfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  return backplane ? buildDriverBackplane(stator, tileCfg) : buildKiCad(stator, tileCfg);
 }
 
 /** Build the driver backplane: a 2-layer board that mates to the passive coil
@@ -462,7 +513,7 @@ export function buildKiCad(stator, cfg) {
   }
 
   // --- coils ---
-  let segments = 0, vias = 0;
+  let segments = 0, vias = 0, termPads = 0;
   const layerPath = Array.from({ length: N }, (_, j) => spiralPath(g, j));
   for (let ci = 0; ci < stator.coils.length; ci++) {
     const c = stator.coils[ci];
@@ -505,6 +556,16 @@ export function buildKiCad(stator, cfg) {
       L.push(`  (via (at ${tx(x)} ${ty(y)}) (size ${f(via)}) (drill ${f(drill)}) (layers "${thVia[0]}" "${thVia[1]}") (net ${net}))`);
       vias++;
     }
+    // The coil's input/output SMT pads on the back, at the terminal vias.
+    (plan.termPads || []).forEach((pad, k) => {
+      L.push(`  (footprint "maglev:Term" (layer "B.Cu") (at ${tx(pad.p[0])} ${ty(pad.p[1])})`);
+      L.push('    (attr smd)');
+      L.push(`    (fp_text reference "J${ci}.${k === 0 ? 'IN' : 'OUT'}" (at 0 -${f(pad.h / 2 + 0.3)}) (layer "B.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
+      L.push(`    (fp_text value "term" (at 0 0) (layer "B.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
+      L.push(`    (pad "1" smd rect (at 0 0) (size ${f(pad.w)} ${f(pad.h)}) (layers "B.Cu" "B.Paste" "B.Mask") (net ${net} "coil_${ci}"))`);
+      L.push('  )');
+      termPads++;
+    });
   }
 
   L.push(')');
@@ -515,6 +576,7 @@ export function buildKiCad(stator, cfg) {
       segments, vias, viasPerCoil: plan.counts.perCoil,
       innerVias: plan.counts.inner, outerVias: plan.counts.outer,
       viaTech: 'through-hole (plated)', cornerVias: true,
+      termPads, termPadsPerCoil: (plan.termPads || []).length,
       nets: stator.coils.length, boardMm: S, traceMm: g.trace,
       drivers: 0, driverTopology: 'backplane (separate board)',
     },

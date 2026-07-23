@@ -6,7 +6,7 @@ import {
   applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES, arraySymmetry, imperialName,
 } from './halbach.js';
 import { COIL_TYPES, makeStator } from './coils.js';
-import { buildKiCad, buildDriverBackplane, coilPreviewSVG } from './kicad.js';
+import { buildKiCad, buildDriverBackplane, coilPreviewSVG, buildTile } from './kicad.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
 import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
@@ -785,7 +785,7 @@ function renderBuild() {
     pcbCard.innerHTML = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">PCB stator export</h4>
       <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">Two mating boards as <b>.kicad_pcb</b> files. The <b>coil board</b> is passive and dense —
       ${s.coils} coils on ${s.layers} copper layers, ${s.turnsPerLayer} turns each per layer, series-stacked so every layer's field adds.
-      ${s.segments.toLocaleString()} track segments, ${s.vias.toLocaleString()} plated through-hole vias (${s.viasPerCoil}/coil): inner crossovers in the centre hole, outer crossovers spread across the four rounded corners, ${s.traceMm.toFixed(3)} mm trace on a ${s.boardMm.toFixed(0)} mm board.</p>
+      ${s.segments.toLocaleString()} track segments, ${s.vias.toLocaleString()} plated through-hole vias (${s.viasPerCoil}/coil): inner crossovers in the centre hole, outer crossovers spread around the perimeter, ${s.traceMm.toFixed(3)} mm trace on a ${s.boardMm.toFixed(0)} mm board. Each coil brings its input and output to two <b>SMT pads</b> on the back (${s.termPads.toLocaleString()} pads), clear of the winding and the neighbours.</p>
       <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">The <b>driver backplane</b> mates to it: a 2-layer board carrying <b>${bp.drivers.toLocaleString()} H-bridge power stages</b> + ${bp.decaps.toLocaleString()} decoupling caps (one per coil), VBUS/GND copper pours, and a per-coil PWM pair — a distributed inverter, ${bp.mating.toLocaleString()} mating vias picking up the coil terminals.</p>
       <div style="display:flex;gap:12px;align-items:flex-start;margin:0 0 10px">
         <div style="flex:0 0 200px;max-width:200px">${pv.svg}</div>
@@ -798,7 +798,10 @@ function renderBuild() {
       </div>
       <button id="btnKicad" class="ghost">Download coil board</button>
       <button id="btnBackplane" class="ghost">Download driver backplane</button>
-      ${s.segments > 120000 ? `<p style="font-size:12px;color:var(--warn);margin:8px 0 0">The coil board is dense (${(s.segments / 1000).toFixed(0)}k features, ~${Math.round(s.segments * 0.11 / 1000)} MB) — KiCad will take a while to open it.</p>` : ''}
+      <button id="btnTile" class="ghost">Download 3×3 tile</button>
+      <button id="btnTileBp" class="ghost">3×3 backplane</button>
+      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">The <b>3×3 tile</b> is a ${(3 * app.cfg.stator.coilPitch * 1000).toFixed(0)} mm, 9-coil unit sized to whole cells so copies abut into a seamless stator — small enough to fab cheaply and panelise, and it opens fast. Tile it to any size; wire the edge coils' I/O pads to their neighbours or a backplane.</p>
+      ${s.segments > 120000 ? `<p style="font-size:12px;color:var(--warn);margin:8px 0 0">The full coil board is dense (${(s.segments / 1000).toFixed(0)}k features, ~${Math.round(s.segments * 0.11 / 1000)} MB) — KiCad will take a while to open it; the 3×3 tile opens instantly.</p>` : ''}
       <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Carl Bugeja's method: plated through-holes only (a standard 12-layer stackup a fab can press), corners rounded so the crossover vias sit in copper-free pockets clear of the winding, and the centre wound deep for turns instead of dead space. The drivers moved off the all-copper coil board onto the backplane, which has the free layers for VBUS/GND planes and PWM fanout (the PWM routing to a controller is left to place-and-route). The export writes the board the physics ran.</p>`;
     const dl = (text, name) => {
       const blob = new Blob([text], { type: 'application/octet-stream' });
@@ -808,10 +811,15 @@ function renderBuild() {
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
+    const key = app.presetKey ?? 'design';
     document.getElementById('btnKicad').onclick = () =>
-      dl(buildKiCad(app.stator, app.cfg).text, `maglev-coils-${app.presetKey ?? 'design'}-${s.layers}L.kicad_pcb`);
+      dl(buildKiCad(app.stator, app.cfg).text, `maglev-coils-${key}-${s.layers}L.kicad_pcb`);
     document.getElementById('btnBackplane').onclick = () =>
-      dl(buildDriverBackplane(app.stator, app.cfg).text, `maglev-backplane-${app.presetKey ?? 'design'}.kicad_pcb`);
+      dl(buildDriverBackplane(app.stator, app.cfg).text, `maglev-backplane-${key}.kicad_pcb`);
+    document.getElementById('btnTile').onclick = () =>
+      dl(buildTile(app.cfg, 3).text, `maglev-tile3x3-${key}-${s.layers}L.kicad_pcb`);
+    document.getElementById('btnTileBp').onclick = () =>
+      dl(buildTile(app.cfg, 3, true).text, `maglev-tile3x3-backplane-${key}.kicad_pcb`);
   } else {
     pcbCard.style.display = 'none';
     pcbCard.innerHTML = '';

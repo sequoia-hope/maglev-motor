@@ -63,11 +63,18 @@ check('one net per coil (plus the empty net 0)',
   out.stats.nets === stator.coils.length && (out.text.match(/^  \(net \d+ "coil_/gm) || []).length === stator.coils.length,
   `${out.stats.nets} nets`);
 
-console.log('\n=== the coil board is passive; drivers live on a backplane ===');
-// The dense coil board carries no components -- the amplifier array moved to a
-// mating backplane, freeing every layer (and the centre) for copper.
-check('coil board is passive (no footprints)',
-  !/\(footprint /.test(out.text) && out.stats.drivers === 0);
+console.log('\n=== the coil board carries only its I/O pads; drivers are on a backplane ===');
+// No amplifier components (those moved to the mating backplane) -- the only
+// footprints are the two SMT input/output pads per coil.
+check('no driver components on the coil board',
+  !/"maglev:(HB6|C0402)"/.test(out.text) && out.stats.drivers === 0);
+check('two SMT terminal pads per coil, on B.Cu',
+  (out.text.match(/\(footprint "maglev:Term" \(layer "B.Cu"\)/g) || []).length === stator.coils.length * 2
+  && out.stats.termPads === stator.coils.length * 2,
+  `${out.stats.termPads} pads`);
+check('the I/O pads clear the winding and neighbours (validatePcb)',
+  validatePcb(g, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2,
+    Math.min(0.4, Math.max(0.2, g.pitch * 0.6))).filter((c) => c.pad).length === 0);
 check('every net is a coil net (no power rails on the coil board)',
   !/^  \(net \d+ "(VBUS|GND|PWMA_)/m.test(out.text));
 
