@@ -5,7 +5,7 @@
 // instead of cancelling.
 
 import { makeStator } from '../src/coils.js';
-import { buildKiCad, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb, viaPlan } from '../src/kicad.js';
+import { buildKiCad, buildTile, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb, viaPlan } from '../src/kicad.js';
 
 let fails = 0;
 const check = (n, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`); if (!c) fails++; };
@@ -181,6 +181,51 @@ console.log('\n=== non-PCB coils export nothing ===');
 check('a wound stator yields no board',
   buildKiCad(makeStator({ ...cfg.stator, coilType: 'square', ringsPerCoil: 2, segmentsPerSide: 4 }),
     { stator: { ...cfg.stator, coilType: 'square' } }) === null);
+
+// The honeycomb topology is the same PCB machinery with a hexagonal (6-sided)
+// spiral: it must export just as clean copper as the square grid -- additive
+// winding sense, one series chain, plated through-holes only, no wrong-layer
+// contacts -- and its board must be large enough to hold the hex-packed coils.
+console.log('\n=== hexagonal honeycomb coils export a clean board ===');
+{
+  // The honeycomb needs a little more inter-coil gutter than the square grid to
+  // route its I/O pads (the shipped preset uses 0.84 fill for exactly this).
+  const hcfg = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.84 } };
+  const hstat = makeStator({ ...hcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const hg = pcbCoilGeometry(hcfg);
+  const N = hcfg.stator.pcbLayers;
+  const cellHalf = hcfg.stator.coilPitch * 1000 / 2;
+  const hvia = Math.min(0.4, Math.max(0.2, hg.pitch * 0.6));
+  check('geometry is a hexagon (6 sides)', hg.sides === 6, `${hg.sides} sides`);
+  const hAreas = Array.from({ length: N }, (_, j) => signedArea(spiralPoints(hg, j)));
+  check('every hex layer winds the same way (fields add)', hAreas.every((a) => a > 0),
+    hAreas.map((a) => (a > 0 ? '+' : '-')).join(''));
+  check('the hex layers enclose about equal area (nested turns)',
+    Math.max(...hAreas) / Math.min(...hAreas) < 1.05,
+    `ratio ${(Math.max(...hAreas) / Math.min(...hAreas)).toFixed(3)}`);
+  const hplan = viaPlan(hg, N, cellHalf, hvia);
+  check('each hex crossover joins two adjacent layers',
+    hplan.vias.every((v) => v.layers.length === 2 && Math.abs(v.layers[0] - v.layers[1]) === 1),
+    `${hplan.vias.length} crossovers`);
+  check('no hex through-hole contacts a wrong layer (validatePcb)',
+    validatePcb(hg, N, cellHalf, hvia).length === 0);
+  const hout = buildKiCad(hstat, hcfg);
+  check('the hex coil board is non-null and well-formed',
+    hout && (hout.text.match(/\(/g) || []).length === (hout.text.match(/\)/g) || []).length);
+  check('hex board is more coils than the square grid (denser packing)',
+    hout.stats.coils > (out.stats.coils), `${hout.stats.coils} hex vs ${out.stats.coils} square`);
+  const hViaLines = hout.text.match(/\(via .*/g) || [];
+  check('every hex via is a plated through-hole (F.Cu..B.Cu)',
+    hViaLines.length > 0 && hViaLines.every((v) => /\(layers "F.Cu" "B.Cu"\)/.test(v)));
+  // The board outline must contain every coil: no coil centre may sit outside the
+  // half-edge the export reports.
+  const hHalf = hout.stats.boardMm / 2;
+  const inside = hstat.coils.every((c) => Math.abs(c.x * 1000) < hHalf && Math.abs(c.y * 1000) < hHalf);
+  check('the hex board outline contains every coil', inside, `board ${hout.stats.boardMm.toFixed(1)} mm`);
+  const htile = buildTile(hcfg, 3);
+  check('a 3×3 hex tile builds', htile !== null && htile.stats.coils > 0,
+    `${htile ? htile.stats.coils : 0} coils`);
+}
 
 console.log(fails ? `\n${fails} FAILURES` : '\nall kicad checks pass');
 process.exit(fails ? 1 : 0);

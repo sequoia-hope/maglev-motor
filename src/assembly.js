@@ -15,6 +15,7 @@
 
 import { MATERIALS, PROCESSES } from './mechanical.js';
 import { eachCell, cellSize } from './halbach.js';
+import { isPcbCoil } from './coils.js';
 
 // Nearest standard NdFeB grade for a given remanence. Buying is done by grade,
 // not by Br, so the BOM has to speak the catalogue's language.
@@ -210,7 +211,7 @@ export function buildAssembly(cfg, stack, tr, stator) {
 
   const wireLen = stator.coils.reduce((L, c) => L + c.turns * 2 * (c.outer[0] + c.outer[1]), 0);
   const awg = nearestAWG(cfg.stator.wireDiameter);
-  const isPcbCoil = cfg.stator.coilType === 'pcb';
+  const isPcb = isPcbCoil(cfg.stator.coilType);
 
   const grey = [176, 174, 166];
   const parts = [
@@ -235,17 +236,17 @@ export function buildAssembly(cfg, stack, tr, stator) {
       critical: 'Sensor count and layout are NOT modelled here — the sim assumes perfect state feedback.',
     },
     {
-      id: 'coils', name: isPcbCoil ? 'Coil board (PCB spirals)' : 'Coil array', side: 'stator',
+      id: 'coils', name: isPcb ? 'Coil board (PCB spirals)' : 'Coil array', side: 'stator',
       kind: 'coils', size: S, t: coilSpan, z0: coilBot,
-      material: isPcbCoil ? 'copper on FR-4' : 'magnet wire on former',
-      process: isPcbCoil ? 'PCB fab' : 'wound',
+      material: isPcb ? 'copper on FR-4' : 'magnet wire on former',
+      process: isPcb ? 'PCB fab' : 'wound',
       qty: stator.coils.length,
       mass: stator.copperMass,
       rgb: [186, 116, 62],
-      spec: isPcbCoil
+      spec: isPcb
         ? `${stator.coils.length} spirals, ${stator.effTurns} turns each (${cfg.stator.pcbLayers} layers)`
         : `${stator.coils.length} coils, ${stator.effTurns} turns of AWG ${awg.gauge}`,
-      note: isPcbCoil
+      note: isPcb
         ? `${(wireLen).toFixed(0)} m of trace, ${(stator.copperMass * 1000).toFixed(0)} g of copper, ${(stator.coils[0]?.R ?? 0).toFixed(2)} Ω per coil.`
         : `${wireLen.toFixed(0)} m of wire total, ${(wireLen / Math.max(stator.coils.length, 1)).toFixed(1)} m per coil, ${(stator.coils[0]?.R ?? 0).toFixed(2)} Ω each.`,
       critical: 'Build height variation between coils is ±' + (m.coilHeightTolerance * 1000).toFixed(2) + ' mm in the gap budget.',

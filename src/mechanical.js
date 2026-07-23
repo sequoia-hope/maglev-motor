@@ -15,6 +15,7 @@
 // cannot fly closer to the stator than you can hold position.
 
 import { configFill } from './halbach.js';
+import { isPcbCoil } from './coils.js';
 
 export const MATERIALS = {
   al6061: { label: 'Aluminium 6061', rho: 2700, E: 69e9, cte: 23.6e-6, k: 167 },
@@ -82,7 +83,7 @@ function wallFraction(cell, t) {
  *  inherits the plate's flatness instead. That single choice moves the air-gap
  *  floor by nearly a millimetre, so it is a parameter, not an assumption. */
 export function mechDefaultsFor(cfg, base = DEFAULT_MECH) {
-  const pcb = cfg.stator.coilType === 'pcb';
+  const pcb = isPcbCoil(cfg.stator.coilType);
   return {
     ...base,
     baseProcess: pcb ? 'pcb' : 'machined',

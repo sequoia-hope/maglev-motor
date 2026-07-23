@@ -213,6 +213,38 @@ export function makePainter(B, zs = 1) {
     faces.push({ d: (q[0].d + q[2].d) / 2 + (opts.bias ?? 0), pts: q, fill, stroke: opts.stroke, alpha: opts.alpha });
   };
 
+  /** Push the visible faces of a prism over an arbitrary local-frame polygon.
+   *  `poly` is local [x,y] vertices (CCW); the prism is extruded between world z
+   *  `bot` and `top` at centre (cx,cy). Used for hexagonal coils; a square coil
+   *  still goes through pushBox, so its output is unchanged. */
+  const pushPrism = (poly, cx, cy, top, bot, rgb, opts = {}) => {
+    const n = poly.length;
+    const topW = poly.map(([x, y]) => [cx + x, cy + y, top]);
+    const botW = poly.map(([x, y]) => [cx + x, cy + y, bot]);
+    const shade = (k) => `rgb(${Math.round(rgb[0] * k)},${Math.round(rgb[1] * k)},${Math.round(rgb[2] * k)})`;
+    // Top face (normal +z).
+    const qt = topW.map(P);
+    if (!qt.some((p) => !p)) {
+      const lam = Math.max(0, LIGHT[2]);
+      faces.push({ d: qt.reduce((s, p) => s + p.d, 0) / n, pts: qt, fill: shade(0.52 + 0.48 * lam), stroke: opts.stroke });
+    }
+    // Side walls, backface-culled.
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a = topW[i], b = topW[j], c = botW[j], d = botW[i];
+      const ux = b[0] - a[0], uy = b[1] - a[1], uz = 0;
+      const vx = d[0] - a[0], vy = d[1] - a[1], vz = (d[2] - a[2]) * zs;
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+      const ex = a[0] - B.eye[0], ey = a[1] - B.eye[1], ez = a[2] * zs - B.eye[2];
+      if (nx * ex + ny * ey + nz * ez > 0) continue;
+      const q = [a, b, c, d].map(P);
+      if (q.some((p) => !p)) continue;
+      const lam = Math.max(0, nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]);
+      faces.push({ d: (q[0].d + q[2].d) / 2, pts: q, fill: shade(0.52 + 0.48 * lam), stroke: opts.stroke });
+    }
+  };
+
   const paint = (ctx) => {
     faces.sort((a, b) => b.d - a.d);
     for (const f of faces) {
@@ -225,7 +257,7 @@ export function makePainter(B, zs = 1) {
     }
   };
 
-  return { faces, P, pushBox, pushQuad, paint };
+  return { faces, P, pushBox, pushQuad, pushPrism, paint };
 }
 
 /** Set up a canvas for a device-pixel-ratio-correct 2-D draw and clear it. */
@@ -252,7 +284,7 @@ export function render(canvas, scene) {
   const sec = scene.section ?? { axis: 'none', frac: 0.5 };
   const B = cameraBasis(cam, w, h);
   const painter = makePainter(B, zs);
-  const { faces, P, pushBox } = painter;
+  const { faces, P, pushBox, pushPrism } = painter;
 
   // Section test on an element's centre. Simple hiding rather than true
   // clipping: the exposed side faces of what survives read as the cut.
@@ -287,28 +319,38 @@ export function render(canvas, scene) {
     const rgb = active ? divergingRGB(cur / iPeak, pal) : inactiveRGB;
     const near = Math.abs(c.x - state.r[0]) < detailR && Math.abs(c.y - state.r[1]) < detailR;
 
+    const holeFill = pal === PALETTE.dark ? 'rgb(18,18,17)' : 'rgb(246,245,242)';
     if (!near) {
-      const q = [[c.x - hx, c.y - hy, top], [c.x + hx, c.y - hy, top],
-        [c.x + hx, c.y + hy, top], [c.x - hx, c.y + hy, top]].map(P);
-      if (q.some((p) => !p)) return;
-      faces.push({ d: (q[0].d + q[2].d) / 2, pts: q, fill: `rgb(${rgb})` });
+      // Far coils are a single flat top face -- its outline (hexagon or square).
+      const outline = c.poly
+        ? c.poly.map(([x, y]) => P([c.x + x, c.y + y, top]))
+        : [[c.x - hx, c.y - hy, top], [c.x + hx, c.y - hy, top],
+          [c.x + hx, c.y + hy, top], [c.x - hx, c.y + hy, top]].map(P);
+      if (outline.some((p) => !p)) return;
+      faces.push({ d: outline.reduce((s, p) => s + p.d, 0) / outline.length, pts: outline, fill: `rgb(${rgb})` });
       return;
     }
-    pushBox([
-      [c.x - hx, c.y - hy, bot], [c.x + hx, c.y - hy, bot],
-      [c.x + hx, c.y + hy, bot], [c.x - hx, c.y + hy, bot],
-      [c.x - hx, c.y - hy, top], [c.x + hx, c.y - hy, top],
-      [c.x + hx, c.y + hy, top], [c.x - hx, c.y + hy, top],
-    ], rgb, { skipBottom: true, stroke: active ? pal.axis : null });
+    if (c.poly) {
+      pushPrism(c.poly, c.x, c.y, top, bot, rgb, { stroke: active ? pal.axis : null });
+    } else {
+      pushBox([
+        [c.x - hx, c.y - hy, bot], [c.x + hx, c.y - hy, bot],
+        [c.x + hx, c.y + hy, bot], [c.x - hx, c.y + hy, bot],
+        [c.x - hx, c.y - hy, top], [c.x + hx, c.y - hy, top],
+        [c.x + hx, c.y + hy, top], [c.x - hx, c.y + hy, top],
+      ], rgb, { skipBottom: true, stroke: active ? pal.axis : null });
+    }
 
     // Winding window, drawn on the top face so the coil reads as a coil.
     const ix = c.inner[0] / 2, iy = c.inner[1] / 2;
-    const q = [[c.x - ix, c.y - iy, top], [c.x + ix, c.y - iy, top],
-      [c.x + ix, c.y + iy, top], [c.x - ix, c.y + iy, top]].map(P);
+    const q = c.polyInner
+      ? c.polyInner.map(([x, y]) => P([c.x + x, c.y + y, top]))
+      : [[c.x - ix, c.y - iy, top], [c.x + ix, c.y - iy, top],
+        [c.x + ix, c.y + iy, top], [c.x - ix, c.y + iy, top]].map(P);
     if (!q.some((p) => !p)) {
       faces.push({
-        d: (q[0].d + q[2].d) / 2 - 1e-7, pts: q,
-        fill: pal === PALETTE.dark ? 'rgb(18,18,17)' : 'rgb(246,245,242)',
+        d: q.reduce((s, p) => s + p.d, 0) / q.length - 1e-7, pts: q,
+        fill: holeFill,
       });
     }
   });

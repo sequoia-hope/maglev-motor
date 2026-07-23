@@ -17,7 +17,7 @@
 // cannot lift itself at some point in its workspace.
 
 import { makeTranslator, applyMagnetDrive, nearestStockMagnet } from './halbach.js';
-import { makeStator } from './coils.js';
+import { makeStator, isPcbCoil } from './coils.js';
 import { analysePose } from './physics.js';
 import { stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
 
@@ -46,8 +46,8 @@ export const DIMENSIONS = {
     skipIf: (c) => c.translator.driveByMagnet && c.translator.cubicMagnets },
   platenSize: { label: 'Platen size', path: 'translator.platenSize', min: 0.05, max: 0.18, unit: 'mm', scale: 1000 },
   coilPitchRatio: { label: 'Coil pitch ratio λ/n', path: null, min: 1.8, max: 4.5, unit: '', scale: 1 },
-  windingHeight: { label: 'Winding height', path: 'stator.windingHeight', min: 0.002, max: 0.015, unit: 'mm', scale: 1000, skipIf: (c) => c.stator.coilType === 'pcb' },
-  wireDiameter: { label: 'Wire diameter', path: 'stator.wireDiameter', min: 0.0002, max: 0.0012, unit: 'mm', scale: 1000, skipIf: (c) => c.stator.coilType === 'pcb' },
+  windingHeight: { label: 'Winding height', path: 'stator.windingHeight', min: 0.002, max: 0.015, unit: 'mm', scale: 1000, skipIf: (c) => isPcbCoil(c.stator.coilType) },
+  wireDiameter: { label: 'Wire diameter', path: 'stator.wireDiameter', min: 0.0002, max: 0.0012, unit: 'mm', scale: 1000, skipIf: (c) => isPcbCoil(c.stator.coilType) },
   // A PCB stator's only levers are the board itself. Without these the search
   // cannot touch copper cross-section -- which is what sets current density, the
   // constraint a PCB stator dies on -- so it would report every PCB design
@@ -55,15 +55,15 @@ export const DIMENSIONS = {
   // snaps to buyable half-ounce steps; layer count snaps to even integers,
   // because boards are pressed in balanced pairs.
   pcbCopperThickness: { label: 'Copper weight', path: 'stator.pcbCopperThickness', min: 17.5e-6, max: 210e-6, unit: 'µm', scale: 1e6,
-    snap: (v) => Math.max(17.5e-6, Math.round(v / 17.5e-6) * 17.5e-6), skipIf: (c) => c.stator.coilType !== 'pcb' },
-  pcbTraceWidth: { label: 'Trace width', path: 'stator.pcbTraceWidth', min: 0.0001, max: 0.001, unit: 'mm', scale: 1000, skipIf: (c) => c.stator.coilType !== 'pcb' },
+    snap: (v) => Math.max(17.5e-6, Math.round(v / 17.5e-6) * 17.5e-6), skipIf: (c) => !isPcbCoil(c.stator.coilType) },
+  pcbTraceWidth: { label: 'Trace width', path: 'stator.pcbTraceWidth', min: 0.0001, max: 0.001, unit: 'mm', scale: 1000, skipIf: (c) => !isPcbCoil(c.stator.coilType) },
   // Capped at 12, not the slider's 32: past a dozen layers the board is
   // prohibitively expensive to fabricate, so the search must not "solve"
   // feasibility by ordering a board nobody would pay for. The manual slider
   // still allows more for exploration; the optimiser stays inside the buildable
   // cost envelope.
   pcbLayers: { label: 'PCB layers', path: 'stator.pcbLayers', min: 2, max: 12, unit: '', scale: 1,
-    snap: (v) => Math.max(2, Math.round(v / 2) * 2), skipIf: (c) => c.stator.coilType !== 'pcb' },
+    snap: (v) => Math.max(2, Math.round(v / 2) * 2), skipIf: (c) => !isPcbCoil(c.stator.coilType) },
   gap: { label: 'Air gap', path: 'sim.gap', min: 0.001, max: 0.008, unit: 'mm', scale: 1000 },
   iMax: { label: 'Current limit', path: 'sim.iMax', min: 1, max: 16, unit: 'A', scale: 1 },
 };
@@ -95,6 +95,12 @@ export const OBJECTIVES = {
     },
   },
   power: { label: 'Min hover power', better: 'min', get: (m) => m.hoverPower, unit: 'W' },
+  // Copper current density at hover (A/mm^2). Hover power is a whole-board figure;
+  // current density is the LOCAL one that actually sets the hot-spot temperature
+  // and the thermal ceiling -- especially for a PCB stator, whose thin copper is
+  // the constraint it dies on. Minimising it directly buys thermal headroom where
+  // hover power alone can hide a coil running far hotter than its neighbours.
+  currentDensity: { label: 'Min hover current density', better: 'min', get: (m) => m.currentDensity, unit: 'A/mm²' },
   lift: { label: 'Max worst-case lift margin', better: 'max', get: (m) => m.worstLift, unit: '×' },
   amplifiers: { label: 'Min amplifiers', better: 'min', get: (m) => m.amplifiers, unit: '' },
   mass: { label: 'Min platen mass', better: 'min', get: (m) => m.mass, unit: 'kg' },
@@ -126,7 +132,7 @@ export const DEFAULT_CONSTRAINTS = {
  *  cross-section on a board. Holding PCB coils to a wound-coil limit rejects
  *  every PCB design ever built. */
 export function constraintsFor(cfg, base = DEFAULT_CONSTRAINTS) {
-  const pcb = cfg.stator.coilType === 'pcb';
+  const pcb = isPcbCoil(cfg.stator.coilType);
   // If the point of the design is that the magnets come off a shelf, then a
   // design needing custom magnetisation has not solved the problem it was set.
   // Without this the search cheerfully returns 5 mm cubes at seven segments per

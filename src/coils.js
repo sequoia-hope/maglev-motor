@@ -48,6 +48,35 @@ export function pcbTurnsPerLayer(w, eff) {
   return Math.max(1, Math.floor((w * (0.5 - PCB_INNER_FRAC)) / (eff * 2)));
 }
 
+/** Discretise one regular-polygon winding into filament segments -- the round/
+ *  hexagonal analogue of rectFilaments, used by the honeycomb PCB coil. Vertices
+ *  sit on a circle of the given circumradius at `phase + k*(2pi/nSides)`, walked
+ *  CCW (increasing angle) so the field adds the same way the rectangular loop's
+ *  does. A large nSides approximates a round coil; 6 is the hexagon. */
+function polyFilaments(circumOuter, circumInner, turns, rings, nSides, phase, perSide) {
+  const mid = [];
+  const dl = [];
+  const turnsPerRing = turns / rings;
+  const step = (2 * Math.PI) / nSides;
+  for (let r = 0; r < rings; r++) {
+    const t = rings === 1 ? 0.5 : r / (rings - 1);
+    const rad = circumInner + (circumOuter - circumInner) * t;
+    for (let k = 0; k < nSides; k++) {
+      const a0 = phase + k * step, a1 = phase + (k + 1) * step;
+      const A = [rad * Math.cos(a0), rad * Math.sin(a0)];
+      const B = [rad * Math.cos(a1), rad * Math.sin(a1)];
+      for (let s = 0; s < perSide; s++) {
+        const u0 = s / perSide, u1 = (s + 1) / perSide;
+        const p0 = [A[0] + (B[0] - A[0]) * u0, A[1] + (B[1] - A[1]) * u0];
+        const p1 = [A[0] + (B[0] - A[0]) * u1, A[1] + (B[1] - A[1]) * u1];
+        mid.push((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2, 0);
+        dl.push((p1[0] - p0[0]) * turnsPerRing, (p1[1] - p0[1]) * turnsPerRing, 0);
+      }
+    }
+  }
+  return { mid: Float64Array.from(mid), dl: Float64Array.from(dl), n: mid.length / 3 };
+}
+
 /** Discretise one rectangular winding into filament segments.
  *  Returns {mid:Float64Array(3*n), dl:Float64Array(3*n)} in coil-local coords
  *  (origin at coil centre, z at the coil mid-plane). dl already carries the
@@ -86,6 +115,15 @@ function windingResistance(outer, inner, turns, wireArea) {
   return (CU_RESISTIVITY * meanPerimeter * turns) / Math.max(wireArea, 1e-12);
 }
 
+/** A PCB stator, square-grid OR honeycomb. Both are multilayer spirals on a
+ *  fabricated board -- same turns-from-layers model, same board-thickness
+ *  stackup, same KiCad export, same "no winding to hide, drivers per coil" cost.
+ *  The whole app gates PCB-specific behaviour on this, so the hex variant inherits
+ *  every PCB code path instead of re-plumbing each one. */
+export function isPcbCoil(coilType) {
+  return coilType === 'pcb' || coilType === 'pcbhex';
+}
+
 export const COIL_TYPES = {
   square: {
     label: 'Square coils (grid)',
@@ -98,6 +136,10 @@ export const COIL_TYPES = {
   pcb: {
     label: 'PCB spiral coils (grid)',
     note: 'No winding to do: spirals on a multilayer board, tiled edge-to-edge to extend stroke. Few turns per unit area, so it needs a small air gap — and you still need a driver or switching matrix per coil.',
+  },
+  pcbhex: {
+    label: 'PCB hex coils (honeycomb)',
+    note: 'The same multilayer through-hole spirals as the PCB grid, but hexagonal and packed on a triangular lattice — six neighbours per coil instead of four. Hex packing is the densest tiling of round-ish coils, and the extra neighbour directions make the force more isotropic: the ripple as the platen slides diagonally no longer sees the gaps a square grid leaves at its corners. Same board, same driver-per-coil cost; watch the capability map even out versus the square grid.',
   },
 };
 
@@ -122,7 +164,7 @@ export function makeStator(cfg) {
   let outer, inner, effTurns, wireArea, thickness;
   let pcbEffTrace = null;
 
-  if (coilType === 'pcb') {
+  if (isPcbCoil(coilType)) {
     // A spiral on an N-layer board. Turns per layer is set by how many
     // concentric traces fit in half the coil width -- but at the effective trace
     // width, which the copper weight can force wider than requested (Bugeja's
@@ -182,7 +224,52 @@ export function makeStator(cfg) {
     };
   };
 
-  if (coilType === 'racetrack') {
+  // A hexagonal PCB coil: a flat winding whose outline is a regular hexagon,
+  // sized so its flat-to-flat width is the same w = coilPitch*coilFill the square
+  // coil uses (so the turns-from-layers count is identical). apothem = w/2 is the
+  // centre-to-flat depth the winding fills; the vertices sit at circumradius
+  // apothem/cos(30 deg). Pointy-top orientation (a vertex at the top, phase 30
+  // deg) so the coils nest into the honeycomb with their flats facing neighbours.
+  const mkHexCoil = (cx, cy) => {
+    const c30 = Math.cos(Math.PI / 6);
+    const circumOut = (outer[0] / 2) / c30;   // outer[0]/2 = apothem = w/2
+    const circumIn = (inner[0] / 2) / c30;
+    const fil = polyFilaments(circumOut, circumIn, effTurns, ringsPerCoil, 6, Math.PI / 6, segmentsPerSide);
+    // Hexagon perimeter = 6 * side, and side = circumradius for a hexagon.
+    const meanR = (circumOut + circumIn) / 2;
+    const R = (CU_RESISTIVITY * 6 * meanR * effTurns) / Math.max(wireArea, 1e-12);
+    // Outline vertices (pointy-top hexagon, local coords) so the renderer can draw
+    // the real coil shape instead of a bounding square.
+    const hexPoly = (rad) => Array.from({ length: 6 }, (_, k) => {
+      const a = Math.PI / 6 + k * (Math.PI / 3);
+      return [rad * Math.cos(a), rad * Math.sin(a)];
+    });
+    return {
+      x: cx, y: cy, z: -thickness / 2, angle: 0,
+      outer: [2 * circumOut, 2 * circumOut], inner: [2 * circumIn, 2 * circumIn],
+      poly: hexPoly(circumOut), polyInner: hexPoly(circumIn),
+      turns: effTurns, R, fil, current: 0,
+    };
+  };
+
+  if (coilType === 'pcbhex') {
+    // Honeycomb (triangular) lattice: rows spaced by pitch*sqrt(3)/2, alternate
+    // rows shifted a quarter pitch each way so the array stays symmetric about
+    // the centre. Every coil then has six nearest neighbours at exactly coilPitch,
+    // which is the packing the isotropy comes from.
+    const dv = coilPitch * Math.sqrt(3) / 2;
+    const nRows = Math.min(MAX_SIDE, Math.max(1, Math.round(statorSize / dv)));
+    const nCols = nSide;                       // = min(round(size/pitch), MAX_SIDE)
+    const spanY = (nRows - 1) * dv;
+    const rowSpan = (nCols - 1) * coilPitch;
+    for (let j = 0; j < nRows; j++) {
+      const off = (j % 2 ? 1 : -1) * coilPitch / 4;
+      const y = -spanY / 2 + j * dv;
+      for (let i = 0; i < nCols; i++) {
+        coils.push(mkHexCoil(-rowSpan / 2 + off + i * coilPitch, y));
+      }
+    }
+  } else if (coilType === 'racetrack') {
     // Two orthogonal banks, each SEGMENTED along its long axis. The
     // segmentation matters: with coils running the full width of the stator,
     // every coil's force is uniform along its length, and yaw torque becomes
@@ -247,7 +334,7 @@ export function makeStator(cfg) {
   return {
     cfg, coils, thickness, truncated,
     effTurns, wireArea,
-    turnsAreDerived: coilType !== 'pcb',
+    turnsAreDerived: !isPcbCoil(coilType),
     // The trace the board is really built with, and whether the copper weight
     // forced it wider than the user asked for (so the UI can say so honestly).
     pcbEffTrace,

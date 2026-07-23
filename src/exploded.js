@@ -44,7 +44,7 @@ export function renderExploded(canvas, scene) {
   // the labels.
   const B = cameraBasis(cam, w - LABEL_W, h);
   const painter = makePainter(B, zs);
-  const { P, pushBox, pushQuad } = painter;
+  const { P, pushBox, pushQuad, pushPrism } = painter;
 
   const span = Math.max(...parts.map((p) => p.size));
   const dz = explodeOffsets(parts, explode, span);
@@ -69,18 +69,24 @@ export function renderExploded(canvas, scene) {
 
     if (p.kind === 'coils') {
       for (const c of stator.coils) {
-        const hx = c.outer[0] / 2, hy = c.outer[1] / 2;
         const bot = zOf(i, c.z - stator.thickness / 2), top = zOf(i, c.z + stator.thickness / 2);
-        pushBox([
-          [c.x - hx, c.y - hy, bot], [c.x + hx, c.y - hy, bot],
-          [c.x + hx, c.y + hy, bot], [c.x - hx, c.y + hy, bot],
-          [c.x - hx, c.y - hy, top], [c.x + hx, c.y - hy, top],
-          [c.x + hx, c.y + hy, top], [c.x - hx, c.y + hy, top],
-        ], p.rgb, { skipBottom: true });
-        const ix = c.inner[0] / 2, iy = c.inner[1] / 2;
-        pushQuad([[c.x - ix, c.y - iy, top], [c.x + ix, c.y - iy, top],
-          [c.x + ix, c.y + iy, top], [c.x - ix, c.y + iy, top]],
-        pal.plane, { bias: -1e-7 });
+        if (c.poly) {
+          // Hexagonal coil: draw the real hexagon prism and hex winding window.
+          pushPrism(c.poly, c.x, c.y, top, bot, p.rgb, {});
+          pushQuad(c.polyInner.map(([x, y]) => [c.x + x, c.y + y, top]), pal.plane, { bias: -1e-7 });
+        } else {
+          const hx = c.outer[0] / 2, hy = c.outer[1] / 2;
+          pushBox([
+            [c.x - hx, c.y - hy, bot], [c.x + hx, c.y - hy, bot],
+            [c.x + hx, c.y + hy, bot], [c.x - hx, c.y + hy, bot],
+            [c.x - hx, c.y - hy, top], [c.x + hx, c.y - hy, top],
+            [c.x + hx, c.y + hy, top], [c.x - hx, c.y + hy, top],
+          ], p.rgb, { skipBottom: true });
+          const ix = c.inner[0] / 2, iy = c.inner[1] / 2;
+          pushQuad([[c.x - ix, c.y - iy, top], [c.x + ix, c.y - iy, top],
+            [c.x + ix, c.y + iy, top], [c.x - ix, c.y + iy, top]],
+          pal.plane, { bias: -1e-7 });
+        }
       }
       return;
     }

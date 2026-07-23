@@ -5,7 +5,7 @@ import {
   ARRAY_TYPES, makeTranslator, selfTest,
   applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES, arraySymmetry, imperialName,
 } from './halbach.js';
-import { COIL_TYPES, makeStator } from './coils.js';
+import { COIL_TYPES, makeStator, isPcbCoil } from './coils.js';
 import { buildKiCad, buildDriverBackplane, coilPreviewSVG, buildTile } from './kicad.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
 import { GROUPINGS, buildGrouping } from './grouping.js';
@@ -78,6 +78,33 @@ const PRESETS = {
       translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.048, platenMass: 0, maxOrder: 3 },
       stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
       sim: { gap: 0.0015, iMax: 4, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
+    },
+  },
+  pcb2oz: {
+    label: 'PCB stage (2 oz, cool-running)',
+    blurb: 'The answer to the thermal question: 2 oz (70 µm) inner copper instead of 1 oz. That needs a thicker board — twelve 2 oz layers press to a ~2.0 mm stackup, which is exactly the thickness a fab will run 2 oz on internal layers (thinner boards are 1 oz internal only). The copper cross-section quadruples: twice the thickness, and Bugeja\'s fab rule forces twice the minimum trace (8 mil / 0.204 mm), so 6 turns per layer, 72 total — half the 1 oz count. The point is current DENSITY, the thing that actually sets the hot-spot temperature: it falls to 23 A/mm² at hover (vs 40 for the 1 oz small stage) and the whole board dissipates just 1.8 W — an ~8 K rise, a board that runs barely warm. You pay for it in lift headroom (15.5× centred, 4.7× at the workspace corners — down from the 1 oz board\'s 27.7×/8.5×) and in fab cost (2 oz internal on a thick board is pricier), but 4.7× worst-case is ample for a levitation stage, and the copper is exactly what you were worried about overheating. Same platen and magnets as the small PCB stages: a 48 mm 2-D Halbach on 6×6×3 mm N52 (Supreme), 33 magnets in a 7×7 lattice, λ = 24 mm, 1.5 mm gap, 36 amplifiers on 2×2 regions. For more lift at higher cost, 14 layers (2.33 mm board) reaches ~8.4× centred; 12 layers at 2 oz is the value pick.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.048, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.000204, pcbCopperThickness: 70e-6, lockCoilPitch: false },
+      sim: { gap: 0.0015, iMax: 5, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
+    },
+  },
+  pcbhex: {
+    label: 'PCB stage (hexagonal honeycomb)',
+    blurb: 'The same board and magnets as the small PCB stage, with the square coil grid replaced by a hexagonal honeycomb: 168 hexagonal spirals packed on a triangular lattice — six neighbours per coil instead of four — on the same 12-layer, plated-through-hole, 1 oz board (Bugeja\'s method), driven from 36 amplifiers on 2×2 commutation regions. Hex packing evens the force out across the workspace: where the square grid peaks at 27.7× lift dead-centre but sags to 8.5× at the diagonal corners (its coils leave gaps there), the honeycomb spreads its authority — a lower 15.5× peak but a HIGHER 10.3× worst-case floor across a ±12 mm workspace, the number that decides whether a planar stage flies everywhere or falls through a corner. The trade is heat and fill: the honeycomb runs the coils harder (≈4.8 W hover vs 2.9 W) and is dialled to 84% fill, not 94%, so there is a real gutter between the hexes to route each coil\'s two back-side I/O pads — centred on their mating vias, aligned to the nearest coil edge, and kept entirely inside each coil\'s own cell so no pad reaches a neighbour (validatePcb checks this, zero contacts). 144 turns per spiral (12 per layer), corners rounded so each crossover via drops into a copper-free pocket. The board grows to ~101 mm square to hold the honeycomb\'s rim coils. Platen and magnet order are identical to the small square stage: a 48 mm 2-D Halbach on 6×6×3 mm N52 stock (Supreme), 33 magnets in a 7×7 lattice, λ = 24 mm. Reach for this when the workspace corners matter more than the centre.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.048, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcbhex', coilPitch: 0.008, coilFill: 0.84, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
+      sim: { gap: 0.0015, iMax: 4, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
+    },
+  },
+  pcbhex2oz: {
+    label: 'PCB stage (hexagonal, 2 oz)',
+    blurb: 'The honeycomb on 2 oz copper — the two thermal levers together. 168 hexagonal spirals on a triangular lattice, but pressed in 2 oz (70 µm) inner copper on a ~2.0 mm, 12-layer board (the thickness a fab needs for 2 oz internal). 2 oz roughly halves the honeycomb\'s current density — 53 A/mm² at hover versus 72 for the 1 oz hex stage — at 4.1 W and an ~18 K rise. It keeps the hex\'s even-across-the-workspace character (6.6× lift centred, 4.4× at the corners — a flatter ratio than the square grid) while running the copper cooler. But this is the compromise corner, and worth naming as such: 2 oz\'s fab rule forces an 8 mil (0.204 mm) trace, so only 5 turns per layer (60 total), and its wider crossover vias need more inter-coil gutter, so the fill drops to 76% (from the 1 oz hex\'s 84%) to keep each back-side I/O pad large enough to cover its own mating via and still clear the neighbours (validatePcb, zero contacts). The result flies with margin (4.4× worst-case) but trades away lift for the cooler copper. If you want the coolest board, the 2 oz SQUARE stage is better (23 A/mm², 15.5× lift); if you want the most isotropic, the 1 oz hex stage carries more lift. This is the one to pick only when you want both the honeycomb AND 2 oz thermal headroom and can spend the lift. Same platen and magnets as the other small stages: 48 mm 2-D Halbach on 6×6×3 mm N52 (Supreme), 33 magnets, λ = 24 mm, 1.5 mm gap, 36 amplifiers.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.048, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcbhex', coilPitch: 0.008, coilFill: 0.76, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbTraceWidth: 0.000204, pcbCopperThickness: 70e-6, lockCoilPitch: false },
+      sim: { gap: 0.0015, iMax: 5, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
     },
   },
   wound: {
@@ -180,23 +207,23 @@ const PARAMS = [
       { path: 'stator.coilFill', type: 'range', label: 'Coil fill fraction', min: 0.5, max: 1.0, step: 0.01, scale: 100, unit: '%', digits: 0 },
       { path: 'stator.statorSize', type: 'range', label: 'Stator size', min: 0.05, max: 0.6, step: 0.01, ...mm },
       { path: 'stator.windingHeight', type: 'range', label: 'Winding build height', min: 0.001, max: 0.020, step: 0.0005, ...mm, digits: 1,
-        show: (c) => c.stator.coilType !== 'pcb',
+        show: (c) => !isPcbCoil(c.stator.coilType),
         help: () => 'How tall the winding stands off the board. Turn count is DERIVED from this and the wire gauge (70% packing) — you cannot ask for turns that do not fit. Taller means more turns but also more air gap consumed.' },
       { path: 'stator.wireDiameter', type: 'range', label: 'Wire diameter', min: 0.0002, max: 0.002, step: 0.00005, scale: 1000, unit: 'mm', digits: 2,
-        show: (c) => c.stator.coilType !== 'pcb',
+        show: (c) => !isPcbCoil(c.stator.coilType),
         help: (c) => `Thicker wire cuts copper loss but fewer turns fit, and force is proportional to turns. Current build: ${app.stator ? app.stator.effTurns : '?'} turns per coil.` },
       { path: 'stator.pcbLayers', type: 'range', label: 'PCB copper layers', min: 2, max: 32, step: 2, scale: 1, unit: '', digits: 0,
-        show: (c) => c.stator.coilType === 'pcb',
+        show: (c) => isPcbCoil(c.stator.coilType),
         help: () => `Layers are the only way to buy turns on a PCB stator, but they are not free: the board grows `
           + `${app.stator ? (app.stator.thickness * 1000).toFixed(2) : '?'} mm thick here, and the copper centroid sinks with it. `
           + `Past a point the extra layers sit too deep in the field to pay for themselves — watch lift margin, not turn count. `
           + `And past 12 layers the board gets prohibitively expensive to fabricate, so the optimiser will not go there even though this slider will.` },
       { path: 'stator.pcbTraceWidth', type: 'range', label: 'Trace width', min: 0.0001, max: 0.001, step: 0.00001, scale: 1000, unit: 'mm', digits: 3,
-        show: (c) => c.stator.coilType === 'pcb',
+        show: (c) => isPcbCoil(c.stator.coilType),
         help: () => 'The conductor width. An equal space is assumed beside it, so the turn pitch is twice this — quote it to a fab as "trace/space". '
           + '0.1 mm is standard, 0.075 mm is cheap-fab advanced, below that gets expensive fast.' },
       { path: 'stator.pcbCopperThickness', type: 'range', label: 'Copper weight', min: 17.5e-6, max: 210e-6, step: 17.5e-6, scale: 1e6, unit: 'µm', digits: 0,
-        show: (c) => c.stator.coilType === 'pcb',
+        show: (c) => isPcbCoil(c.stator.coilType),
         help: () => '35 µm = 1 oz, 70 µm = 2 oz. This sets your resistance and therefore your thermal ceiling.' },
     ],
   },
@@ -267,7 +294,7 @@ const app = {
   viewSim: { section: { axis: 'none', frac: 0.5 }, zScale: 1 },
   running: true,
   tab: 'design',
-  traj: 'hover',
+  traj: 'circle',
   trajParams: { gap: 0.0015, amplitude: 0.025, speed: 2, tiltAmp: 0.02 },
   hist: null,
   charts: new Map(),
@@ -776,15 +803,16 @@ function renderBuild() {
   // machine -- so hand over the file. Only meaningful for PCB coils; a wound
   // stator has no copper to fabricate.
   const pcbCard = document.getElementById('pcbExportCard');
-  if (app.cfg.stator.coilType === 'pcb') {
+  if (isPcbCoil(app.cfg.stator.coilType)) {
     const kc = buildKiCad(app.stator, app.cfg);
     const s = kc.stats;
     const bp = buildDriverBackplane(app.stator, app.cfg).stats;
     const pv = coilPreviewSVG(app.cfg);
+    const hex = app.cfg.stator.coilType === 'pcbhex';
     pcbCard.style.display = '';
     pcbCard.innerHTML = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">PCB stator export</h4>
       <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">Two mating boards as <b>.kicad_pcb</b> files. The <b>coil board</b> is passive and dense —
-      ${s.coils} coils on ${s.layers} copper layers, ${s.turnsPerLayer} turns each per layer, series-stacked so every layer's field adds.
+      ${s.coils} ${hex ? 'hexagonal spirals on a honeycomb lattice' : 'square coils on a grid'}, ${s.layers} copper layers, ${s.turnsPerLayer} turns each per layer, series-stacked so every layer's field adds.
       ${s.segments.toLocaleString()} track segments, ${s.vias.toLocaleString()} plated through-hole vias (${s.viasPerCoil}/coil): inner crossovers in the centre hole, outer crossovers spread around the perimeter, ${s.traceMm.toFixed(3)} mm trace on a ${s.boardMm.toFixed(0)} mm board. Each coil brings its input and output to two <b>SMT pads</b> on the back (${s.termPads.toLocaleString()} pads), clear of the winding and the neighbours.</p>
       <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">The <b>driver backplane</b> mates to it: a 2-layer board carrying <b>${bp.drivers.toLocaleString()} H-bridge power stages</b> + ${bp.decaps.toLocaleString()} decoupling caps (one per coil), VBUS/GND copper pours, and a per-coil PWM pair — a distributed inverter, ${bp.mating.toLocaleString()} mating vias picking up the coil terminals.</p>
       <div style="display:flex;gap:12px;align-items:flex-start;margin:0 0 10px">
@@ -800,7 +828,9 @@ function renderBuild() {
       <button id="btnBackplane" class="ghost">Download driver backplane</button>
       <button id="btnTile" class="ghost">Download 3×3 tile</button>
       <button id="btnTileBp" class="ghost">3×3 backplane</button>
-      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">The <b>3×3 tile</b> is a ${(3 * app.cfg.stator.coilPitch * 1000).toFixed(0)} mm, 9-coil unit sized to whole cells so copies abut into a seamless stator — small enough to fab cheaply and panelise, and it opens fast. Tile it to any size; wire the edge coils' I/O pads to their neighbours or a backplane.</p>
+      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">The <b>3×3 tile</b> is a ${(3 * app.cfg.stator.coilPitch * 1000).toFixed(0)} mm, 9-coil unit — small enough to fab cheaply and panelise, and it opens fast. ${hex
+        ? 'On the honeycomb the rows offset by half a pitch, so tiles abut cleanly left-to-right but stack vertically only in even-row steps — panelise the full board when in doubt.'
+        : 'Sized to whole cells so copies abut into a seamless stator; tile it to any size.'} Wire the edge coils' I/O pads to their neighbours or a backplane.</p>
       ${s.segments > 120000 ? `<p style="font-size:12px;color:var(--warn);margin:8px 0 0">The full coil board is dense (${(s.segments / 1000).toFixed(0)}k features, ~${Math.round(s.segments * 0.11 / 1000)} MB) — KiCad will take a while to open it; the 3×3 tile opens instantly.</p>` : ''}
       <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Carl Bugeja's method: plated through-holes only (a standard 12-layer stackup a fab can press), corners rounded so the crossover vias sit in copper-free pockets clear of the winding, and the centre wound deep for turns instead of dead space. The drivers moved off the all-copper coil board onto the backplane, which has the free layers for VBUS/GND planes and PWM fanout (the PWM routing to a controller is left to place-and-route). The export writes the board the physics ran.</p>`;
     const dl = (text, name) => {
@@ -1155,6 +1185,7 @@ function setupChrome() {
   const trajSel = document.getElementById('trajSelect');
   trajSel.innerHTML = Object.entries(TRAJECTORIES)
     .map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+  trajSel.value = app.traj;                       // reflect the default (circle) in the dropdown
   trajSel.addEventListener('change', () => { app.traj = trajSel.value; });
 
   const bind = (id, outId, fmt, apply) => {

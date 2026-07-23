@@ -28,67 +28,77 @@
 // test/kicad.test.mjs checks both: the sign of each layer's enclosed area, and
 // that every via spans the full stack (F.Cu..B.Cu).
 
-import { effectiveTrace, pcbTurnsPerLayer, makeStator } from './coils.js';
+import { effectiveTrace, pcbTurnsPerLayer, makeStator, isPcbCoil } from './coils.js';
 
 /** PCB coil geometry in millimetres, recomputed from cfg so it matches
  *  coils.js exactly (same perLayer formula, same effective trace) without
  *  importing the filament model, whose `inner` is a physics approximation, not
  *  the real trace path. */
 export function pcbCoilGeometry(cfg) {
-  const { coilPitch, coilFill, pcbTraceWidth, pcbCopperThickness, pcbLayers } = cfg.stator;
+  const { coilPitch, coilFill, pcbTraceWidth, pcbCopperThickness, pcbLayers, coilType } = cfg.stator;
   const w = coilPitch * coilFill;
   const eff = effectiveTrace(pcbTraceWidth, pcbCopperThickness);
   const perLayer = pcbTurnsPerLayer(w, eff);
-  const halfOut = (w / 2) * 1000;
+  const halfOut = (w / 2) * 1000;             // apothem (centre-to-flat) of the outermost turn
   const pitch = 2 * eff * 1000;               // trace + equal space
   const halfIn = halfOut - pitch * perLayer;  // small centre hole by construction
-  // Corner fillet radius. Rounding the square corners opens a copper-free pocket
-  // at each cell corner where an outer layer-crossover via can sit clear of the
-  // winding -- and it is a gentler current path than a hard 90°. Capped so it
-  // never eats more than a corner of the innermost turn.
+  // Coil outline: a square (4 sides) or, for the honeycomb topology, a pointy-top
+  // hexagon (6 sides). Both are wound in APOTHEM space -- halfOut/halfIn are the
+  // centre-to-flat depths -- so the turns-from-layers count is identical; only the
+  // vertex count and orientation differ. The square keeps its original phase so
+  // its exported copper is byte-for-byte unchanged.
+  const sides = coilType === 'pcbhex' ? 6 : 4;
+  const phase = sides === 6 ? 0 : -Math.PI / 2;
+  // Corner fillet radius. Rounding the corners opens a copper-free pocket at each
+  // cell corner where an outer layer-crossover via can sit clear of the winding --
+  // and it is a gentler current path than a hard corner. Capped so it never eats
+  // more than a corner of the innermost turn.
   const corner = Math.min(0.8, Math.max(pitch, halfIn * 0.6));
   return {
-    w: w * 1000, halfOut, halfIn, pitch, corner,
+    w: w * 1000, halfOut, halfIn, pitch, corner, sides, phase,
     turns: perLayer, layers: pcbLayers,
     trace: eff * 1000,
   };
 }
 
-// CCW corner of a square of half-size r: index 0..3 walks +y up the right edge
-// first, which is counter-clockwise seen from +z. Same order on every layer is
-// what keeps the field additive.
-function corner(k, r) {
-  switch (((k % 4) + 4) % 4) {
-    case 0: return [r, -r];
-    case 1: return [r, r];
-    case 2: return [-r, r];
-    default: return [-r, -r];
-  }
+// One CCW vertex of a regular polygon inscribed at apothem `a` (centre-to-flat).
+// Index walks CCW seen from +z; the same walk order on every layer is what keeps
+// the field additive. `sides`/`phase` pick square vs hexagon and its orientation:
+// sides=4, phase=-pi/2 reproduces the original square corners (r,-r),(r,r),... to
+// the bit; sides=6, phase=0 is a pointy-top hexagon.
+function polyCorner(k, a, sides, phase) {
+  const R = a / Math.cos(Math.PI / sides);       // apothem -> circumradius
+  const kk = ((k % sides) + sides) % sides;
+  const ang = phase + (kk + 0.5) * (2 * Math.PI / sides);
+  return [R * Math.cos(ang), R * Math.sin(ang)];
 }
 
-// Quarter-turns per layer. A whole number of turns would land every layer's
-// ends on the SAME corner (corner 0), forcing every crossover into one spot and
-// long ring tabs. Adding 1/(N-1) of a turn walks each layer's ends 360/(N-1)°
-// further round than the last, so the N-1 crossovers spread evenly around the
-// coil and each one sits right at its layers' shared endpoint -- a short radial
-// stub, never a tab that rings around. The extra ~1/(N-1) turn is a fraction of
-// a percent of the winding and is spent as a sliver of arc at the boundary.
-function quarterTurns(g) {
-  return 4 * g.turns + 4 / Math.max(g.layers - 1, 1);
+// Edges (corner-to-corner steps) per layer. A whole number of TURNS would land
+// every layer's ends on the same corner, forcing every crossover into one spot
+// and long ring tabs. Adding sides/(N-1) of an edge walks each layer's ends
+// 360/(N-1) deg further round than the last, so the N-1 crossovers spread evenly
+// around the coil and each one sits right at its layers' shared endpoint -- a
+// short radial stub, never a tab that rings around.
+function edgeTurns(g) {
+  const s = g.sides ?? 4;
+  return s * g.turns + s / Math.max(g.layers - 1, 1);
 }
 
-/** Raw square-spiral corner vertices for one layer (before rounding). Each layer
- *  starts a little further round than the last, so the layers' shared ends fan
- *  out around the coil instead of stacking on one corner. */
+/** Raw spiral corner vertices for one layer (before rounding). Each layer starts
+ *  a little further round than the last, so the layers' shared ends fan out
+ *  around the coil instead of stacking on one corner. Square or hexagon per
+ *  g.sides/g.phase. */
 export function spiralVertices(g, layerIndex) {
-  const q = quarterTurns(g);
+  const sides = g.sides ?? 4, phase = g.phase ?? -Math.PI / 2;
+  const q = edgeTurns(g);
   const u0 = layerIndex * q, u1 = u0 + q;
   const inward = layerIndex % 2 === 0;
+  const step = g.pitch / sides;                  // radial advance per edge
   const rAt = (u) => Math.max(g.halfIn, Math.min(g.halfOut,
-    inward ? g.halfOut - (g.pitch / 4) * (u - u0) : g.halfIn + (g.pitch / 4) * (u - u0)));
+    inward ? g.halfOut - step * (u - u0) : g.halfIn + step * (u - u0)));
   const pt = (u) => {
     const k = Math.floor(u + 1e-9), t = u - k, r = rAt(u);
-    const a = corner(k, r), b = corner(k + 1, r);
+    const a = polyCorner(k, r, sides, phase), b = polyCorner(k + 1, r, sides, phase);
     return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
   };
   const pts = [pt(u0)];
@@ -117,7 +127,12 @@ export function spiralPath(g, layerIndex) {
     const A = V[i - 1], P = V[i], B = V[i + 1];
     const dinx = P[0] - A[0], diny = P[1] - A[1], lin = Math.hypot(dinx, diny);
     const dox = B[0] - P[0], doy = B[1] - P[1], lout = Math.hypot(dox, doy);
-    const cr = scale * Math.max(Math.abs(P[0]), Math.abs(P[1]));
+    // Fillet radius proportional to this turn's radius, so the concentric rounded
+    // rings nest self-similarly. For the square, the turn radius is the apothem
+    // max(|x|,|y|) (keeps the original output exactly); for other polygons it is
+    // the vertex distance.
+    const turnR = (g.sides ?? 4) === 4 ? Math.max(Math.abs(P[0]), Math.abs(P[1])) : Math.hypot(P[0], P[1]);
+    const cr = scale * turnR;
     const s = Math.min(cr, lin * 0.5, lout * 0.5);
     if (s < 1e-6 || lin < 1e-9 || lout < 1e-9) { prims.push({ t: 'seg', a: from, b: P }); from = P; continue; }
     const T1 = [P[0] - (dinx / lin) * s, P[1] - (diny / lin) * s];
@@ -204,18 +219,74 @@ export function viaPlan(g, N, cellHalf, viaSize) {
   const termPads = [];                           // {p, layer, w, h, a}
   const s0 = spiralVertices(g, 0)[0];
   const eN = spiralVertices(g, N - 1); const pN = eN[eN.length - 1];
-  const terms = [[s0, 0], [pN, N - 1]].map(([p, layer]) => {
-    const r = Math.hypot(p[0], p[1]) || 1, a = Math.atan2(p[1], p[0]);
-    const cb = cellHalf / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6);
-    return { p, layer, r, a, cb, gut: cb - r };
-  });
-  const wRad = Math.max(0.2, Math.min(0.5, 2 * Math.min(...terms.map((t) => t.gut)) - viaSize - g.trace));
-  const hTan = Math.min(0.7, 1.9 * g.corner);    // along the boundary; corner room is the limit
-  for (const t of terms) {
-    const padC = [t.p[0] * t.cb / t.r, t.p[1] * t.cb / t.r];
-    terminals.push([t.p[0], t.p[1], padC[0], padC[1], t.layer]);
-    termVias.push({ p: padC, layers: [t.layer] });
-    termPads.push({ p: padC, layer: t.layer, w: wRad, h: hTan, a: t.a });
+  const sides = g.sides ?? 4;
+  if (sides === 6) {
+    // Honeycomb: the square-cell trick below pushes the pad onto a boundary that
+    // is NOT where the neighbouring hexes are, so the pad can land inside a
+    // neighbour. Instead centre each pad on its mating via -- a short radial nudge
+    // off the winding end -- align it to the nearest hex edge (its long axis runs
+    // ALONG that flat), and shrink it until it sits entirely inside THIS coil's own
+    // honeycomb cell (apothem = cellHalf, flats at 0,60,...deg). A pad inside its
+    // own cell cannot reach a neighbour, because the cells tile without overlap.
+    const flats = [0, 1, 2, 3, 4, 5].map((k) => (k * Math.PI) / 3);
+    const off = viaSize * 1.05, margin = viaSize / 2 + g.trace;
+    for (const [p, layer] of [[s0, 0], [pN, N - 1]]) {
+      // Work in the frame of the nearest hex EDGE: `n` is that flat's outward
+      // normal, `t` runs along the edge. The outer winding ends sit near the coil
+      // vertices, so a plain radial nudge overshoots the cell; instead push out
+      // along `n` just past the winding but capped inside the cell, and clamp the
+      // along-edge position so the pad sits within the wedge the two adjacent
+      // flats leave -- entirely inside this coil's own cell.
+      const raw = Math.atan2(p[1], p[0]);
+      const fa = flats.reduce((best, fk) =>
+        (Math.abs(((raw - fk + Math.PI) % (2 * Math.PI)) - Math.PI)
+          < Math.abs(((raw - best + Math.PI) % (2 * Math.PI)) - Math.PI) ? fk : best), flats[0]);
+      const n = [Math.cos(fa), Math.sin(fa)], t = [-Math.sin(fa), Math.cos(fa)];
+      const pt = p[0] * t[0] + p[1] * t[1];
+      // Sit the via in the middle of the flat gutter: outside the winding flat
+      // (at apothem halfOut) and inside the cell flat (at cellHalf).
+      const mid = (g.halfOut + cellHalf) / 2;
+      const rVia = Math.min(cellHalf - margin, Math.max(g.halfOut + off, mid));
+      // Stay over the FLAT, clear of the vertex bulge: cap the along-edge offset
+      // by both the winding flat's half-length and the cell's width here.
+      const tWind = g.halfOut * Math.tan(Math.PI / 6);
+      const tCell = (cellHalf - 0.5 * rVia) / (Math.sqrt(3) / 2);
+      const tLim = Math.min(tWind, tCell) - margin;
+      const tVia = Math.max(-tLim, Math.min(tLim, pt));
+      const via = [n[0] * rVia + t[0] * tVia, n[1] * rVia + t[1] * tVia];
+      // Size: radial half-width limited by the gutter it must not cross into the
+      // winding, tangential by the flat; then shrink so every corner is in-cell.
+      let w = Math.min(0.4, 2 * (rVia - g.halfOut - margin));
+      let h = Math.min(0.8, 2 * (tLim - Math.abs(tVia)) + 0.4);
+      let s = 1;
+      for (const fk of flats) {
+        const m = [Math.cos(fk), Math.sin(fk)];
+        const slack = cellHalf - (via[0] * m[0] + via[1] * m[1]);
+        const need = (w / 2) * Math.abs(n[0] * m[0] + n[1] * m[1])
+          + (h / 2) * Math.abs(t[0] * m[0] + t[1] * m[1]);
+        if (need > 1e-9) s = Math.min(s, Math.max(0, slack) / need);
+      }
+      w = Math.max(0.15, w * s); h = Math.max(0.15, h * s);
+      terminals.push([p[0], p[1], via[0], via[1], layer]);
+      termVias.push({ p: via, layers: [layer] });
+      termPads.push({ p: via, layer, w, h, a: fa });
+    }
+  } else {
+    // Square grid: each lead drops straight out to a pad on the shared cell
+    // boundary -- thin radially (fits the inter-coil gutter), long tangentially.
+    const terms = [[s0, 0], [pN, N - 1]].map(([p, layer]) => {
+      const r = Math.hypot(p[0], p[1]) || 1, a = Math.atan2(p[1], p[0]);
+      const cb = cellHalf / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)), 1e-6);
+      return { p, layer, r, a, cb, gut: cb - r };
+    });
+    const wRad = Math.max(0.2, Math.min(0.5, 2 * Math.min(...terms.map((t) => t.gut)) - viaSize - g.trace));
+    const hTan = Math.min(0.7, 1.9 * g.corner);    // along the boundary; corner room is the limit
+    for (const t of terms) {
+      const padC = [t.p[0] * t.cb / t.r, t.p[1] * t.cb / t.r];
+      terminals.push([t.p[0], t.p[1], padC[0], padC[1], t.layer]);
+      termVias.push({ p: padC, layers: [t.layer] });
+      termPads.push({ p: padC, layer: t.layer, w: wRad, h: hTan, a: t.a });
+    }
   }
 
   let inner = 0, outer = 0;
@@ -246,8 +317,14 @@ export function coilPreviewSVG(cfg) {
   const poly = (pts, stroke, w, op) =>
     `<polyline points="${pts.map(P).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${w.toFixed(3)}" opacity="${op}" stroke-linejoin="round" stroke-linecap="round"/>`;
   const parts = [];
-  // Cell boundary.
-  parts.push(`<rect x="${-cellHalf}" y="${-cellHalf}" width="${2 * cellHalf}" height="${2 * cellHalf}" fill="none" stroke="#8884" stroke-width="0.05" stroke-dasharray="0.3 0.2"/>`);
+  // Cell boundary: a square cell for the grid, a hexagon for the honeycomb (drawn
+  // at the cell apothem = half the coil pitch, same orientation as the coil).
+  if ((g.sides ?? 4) === 6) {
+    const hex = Array.from({ length: 6 }, (_, k) => polyCorner(k, cellHalf, 6, g.phase)).map(P).join(' ');
+    parts.push(`<polygon points="${hex}" fill="none" stroke="#8884" stroke-width="0.05" stroke-dasharray="0.3 0.2"/>`);
+  } else {
+    parts.push(`<rect x="${-cellHalf}" y="${-cellHalf}" width="${2 * cellHalf}" height="${2 * cellHalf}" fill="none" stroke="#8884" stroke-width="0.05" stroke-dasharray="0.3 0.2"/>`);
+  }
   // EVERY layer's spiral, faint and colour-coded (they stack in Z, so the spirals
   // overlap in this top view -- what differs per layer is where it breaks out to
   // its crossover vias).
@@ -342,6 +419,27 @@ export function validatePcb(g, N, cellHalf, viaSize) {
     }
     if (dmin < g.trace / 2 - 1e-6) contacts.push({ via: pad.p, layer: N - 1, clearance: dmin, pad: true });
   }
+
+  // Honeycomb only: a pad must stay inside this coil's own hexagonal cell, or it
+  // reaches into a neighbouring coil (which the single-coil winding check above
+  // cannot see). Test every pad corner against the six cell half-planes.
+  if ((g.sides ?? 4) === 6) {
+    for (const pad of plan.termPads || []) {
+      const ca = Math.cos(pad.a), sa = Math.sin(pad.a);
+      const corners = [[1, 1], [1, -1], [-1, 1], [-1, -1]].map(([sx, sy]) => [
+        pad.p[0] + sx * (pad.w / 2) * ca - sy * (pad.h / 2) * sa,
+        pad.p[1] + sx * (pad.w / 2) * sa + sy * (pad.h / 2) * ca,
+      ]);
+      let outside = false;
+      for (const c of corners) {
+        for (let k = 0; k < 6 && !outside; k++) {
+          const ang = (k * Math.PI) / 3;
+          if (c[0] * Math.cos(ang) + c[1] * Math.sin(ang) > cellHalf + 1e-6) outside = true;
+        }
+      }
+      if (outside) contacts.push({ via: pad.p, layer: N - 1, clearance: 0, pad: true, neighbour: true });
+    }
+  }
   return contacts;
 }
 
@@ -383,13 +481,32 @@ function emitDecap(L, ref, ox, oy, f, S, vbus, gnd) {
   L.push('  )');
 }
 
+/** Half the square board edge (mm) that contains every coil plus its gutter. For
+ *  the square grid this is exactly S/2 (the nominal stator size); the honeycomb
+ *  packs coils a little past that nominal edge, so the outline grows to keep all
+ *  copper on the board rather than clipping the rim coils. */
+function boardHalf(g, stator, S, cellHalf) {
+  const sides = g.sides ?? 4, phase = g.phase ?? -Math.PI / 2;
+  let ex = 0, ey = 0;
+  for (let k = 0; k < sides; k++) {
+    const p = polyCorner(k, g.halfOut, sides, phase);
+    ex = Math.max(ex, Math.abs(p[0])); ey = Math.max(ey, Math.abs(p[1]));
+  }
+  const reach = Math.max(cellHalf, ex, ey);   // gutter, or the coil's own axis extent
+  let half = S / 2;
+  for (const c of stator.coils) {
+    half = Math.max(half, Math.abs(c.x * 1000) + reach, Math.abs(c.y * 1000) + reach);
+  }
+  return half;
+}
+
 /** A small n×n coil TILE, sized to exactly n coil cells so copies abut into a
  *  seamless larger stator. Same coils, vias, rounded corners and I/O pads as the
  *  full board -- just n² of them, on a board that is n·coilPitch square. Returns
  *  { text, stats } (the coil board) or null for non-PCB. Pair with a same-size
  *  backplane tile. Cheaper to fab and panelise than one giant board. */
 export function buildTile(cfg, n = 3, backplane = false) {
-  if (cfg.stator.coilType !== 'pcb') return null;
+  if (!isPcbCoil(cfg.stator.coilType)) return null;
   const tileCfg = { ...cfg, stator: { ...cfg.stator, statorSize: n * cfg.stator.coilPitch } };
   const stator = makeStator({ ...tileCfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
   return backplane ? buildDriverBackplane(stator, tileCfg) : buildKiCad(stator, tileCfg);
@@ -401,14 +518,15 @@ export function buildTile(cfg, n = 3, backplane = false) {
  *  other board is the bridge's load), a decoupling cap, shared VBUS/GND copper
  *  pours, and a per-coil PWM pair. Returns { text, stats } or null for non-PCB. */
 export function buildDriverBackplane(stator, cfg) {
-  if (cfg.stator.coilType !== 'pcb') return null;
+  if (!isPcbCoil(cfg.stator.coilType)) return null;
   const N = cfg.stator.pcbLayers;
   const g = pcbCoilGeometry(cfg);
   const S = cfg.stator.statorSize * 1000;
-  const cx0 = S / 2 + 10, cy0 = S / 2 + 10;
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const drill = via * 0.5;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const half = boardHalf(g, stator, S, cellHalf);   // matches the coil board's outline
+  const cx0 = half + 10, cy0 = half + 10;
   const plan = viaPlan(g, N, cellHalf, via);
   const C = stator.coils.length;
 
@@ -431,7 +549,7 @@ export function buildDriverBackplane(stator, cfg) {
     L.push(`  (net ${pB(i)} "PWMB_${i}")`);
   }
 
-  const edge = [[-S / 2, -S / 2], [S / 2, -S / 2], [S / 2, S / 2], [-S / 2, S / 2]];
+  const edge = [[-half, -half], [half, -half], [half, half], [-half, half]];
   for (let e = 0; e < 4; e++) {
     const a = edge[e], b = edge[(e + 1) % 4];
     L.push(`  (gr_line (start ${f(cx0 + a[0])} ${f(cy0 + a[1])}) (end ${f(cx0 + b[0])} ${f(cy0 + b[1])}) (layer "Edge.Cuts") (width 0.1))`);
@@ -471,7 +589,7 @@ export function buildDriverBackplane(stator, cfg) {
   return {
     text: L.join('\n') + '\n',
     stats: {
-      drivers, decaps, mating, layers: 2, coils: C, boardMm: S,
+      drivers, decaps, mating, layers: 2, coils: C, boardMm: 2 * half,
       driverTopology: 'H-bridge per coil (independent)',
       nets: 2 + 4 * C,
     },
@@ -481,15 +599,16 @@ export function buildDriverBackplane(stator, cfg) {
 /** Build a complete .kicad_pcb for the PCB stator. Returns { text, stats } or
  *  null when the coil type is not a PCB (nothing to fabricate as copper). */
 export function buildKiCad(stator, cfg) {
-  if (cfg.stator.coilType !== 'pcb') return null;
+  if (!isPcbCoil(cfg.stator.coilType)) return null;
 
   const N = cfg.stator.pcbLayers;
   const g = pcbCoilGeometry(cfg);
-  const S = cfg.stator.statorSize * 1000;             // board edge, mm
-  const cx0 = S / 2 + 10, cy0 = S / 2 + 10;           // keep all coords positive
+  const S = cfg.stator.statorSize * 1000;             // nominal stator, mm
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const drill = via * 0.5;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const half = boardHalf(g, stator, S, cellHalf);     // grows to contain hex-packed rim coils
+  const cx0 = half + 10, cy0 = half + 10;             // keep all coords positive
   const plan = viaPlan(g, N, cellHalf, via);
   const thVia = [cuName(0, N), cuName(N - 1, N)];      // full-stack through-hole
 
@@ -514,7 +633,7 @@ export function buildKiCad(stator, cfg) {
   stator.coils.forEach((_, i) => L.push(`  (net ${i + 1} "coil_${i}")`));
 
   // --- board outline ---
-  const edge = [[-S / 2, -S / 2], [S / 2, -S / 2], [S / 2, S / 2], [-S / 2, S / 2]];
+  const edge = [[-half, -half], [half, -half], [half, half], [-half, half]];
   for (let e = 0; e < 4; e++) {
     const a = edge[e], b = edge[(e + 1) % 4];
     L.push(`  (gr_line (start ${f(cx0 + a[0])} ${f(cy0 + a[1])}) (end ${f(cx0 + b[0])} ${f(cy0 + b[1])}) (layer "Edge.Cuts") (width 0.1))`);
@@ -585,7 +704,7 @@ export function buildKiCad(stator, cfg) {
       innerVias: plan.counts.inner, outerVias: plan.counts.outer,
       viaTech: 'through-hole (plated)', cornerVias: true,
       termPads, termPadsPerCoil: (plan.termPads || []).length,
-      nets: stator.coils.length, boardMm: S, traceMm: g.trace,
+      nets: stator.coils.length, boardMm: 2 * half, traceMm: g.trace,
       drivers: 0, driverTopology: 'backplane (separate board)',
     },
   };
