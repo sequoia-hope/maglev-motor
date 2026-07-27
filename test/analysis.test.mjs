@@ -106,6 +106,28 @@ console.log('\n=== sensorLayout: the recommendation is self-consistent ===');
   check('the pick clears the comfort margin (not flagged marginal)', !L.marginal);
 }
 
+console.log('\n=== placement -> observability, the loop closed ===');
+{
+  // The fit search nudges sensors off their ideal grid for manufacturability;
+  // a placement is only as good as the observability at the points actually
+  // placed. Feed the as-placed positions straight back through the sweep.
+  const { backsideFit } = await import('../src/kicad.js');
+  const cfg = { stator: { ...stator.cfg } };
+  const fit = backsideFit(cfg, { stator, sensorSpacing: 0.0216 });
+  check('the fit places the full sensor grid', fit.sensors && fit.sensors.failed === 0,
+    fit.sensors ? `${fit.sensors.placed}/${fit.sensors.wanted}` : 'no sensors');
+  const placed = fit.sensors.list.map((s) => [s.atMm[0] / 1000, s.atMm[1] / 1000]);
+  const ap = poseObservability(tr, {
+    sensors: placed, zBot: -stator.thickness, gap: 0.0015,
+    travelHalf: 0.024, tiltMax: 0.05, axis: 'all',
+  });
+  check('explicit-position sweep uses exactly the placed sensors', ap.nSensors === placed.length);
+  check('every pose stays estimable at the AS-PLACED positions',
+    ap.fracEstimable >= 0.999, `${(ap.fracEstimable * 100).toFixed(1)}% of ${ap.nPose} poses, worstObs ${ap.worstObs.toFixed(4)}`);
+  check('the nudges did not gut the conditioning',
+    ap.worstObs > 0.03, `worstObs ${ap.worstObs.toFixed(4)} (ideal-grid ballpark 0.05)`);
+}
+
 console.log('\n=== liftVsGap: the exponential wall has the right sign ===');
 {
   const gaps = [0.001, 0.002, 0.004];

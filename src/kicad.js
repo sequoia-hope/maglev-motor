@@ -451,8 +451,18 @@ export function validatePcb(g, N, cellHalf, viaSize) {
 
 // One SMD pad of a footprint on side S ('F' or 'B'), on a given net.
 // Coordinates are footprint-relative (mm).
-function fpPad(n, px, py, w, h, netNum, netName, S = 'F') {
-  return `    (pad "${n}" smd rect (at ${px} ${py}) (size ${w} ${h}) (layers "${S}.Cu" "${S}.Paste" "${S}.Mask") (net ${netNum} "${netName}"))`;
+function fpPad(n, px, py, w, h, netNum, netName, S = 'F', rot = 0) {
+  return `    (pad "${n}" smd rect (at ${px} ${py}${rot ? ` ${rot}` : ''}) (size ${w} ${h}) (layers "${S}.Cu" "${S}.Paste" "${S}.Mask") (net ${netNum} "${netName}"))`;
+}
+
+/** Rotate a local pad position by rotDeg with EXACTLY the math placementClear
+ *  verified against the keepouts. Rotated parts are emitted as unrotated
+ *  footprints with pre-rotated pad positions (plus per-pad angles), so the pads
+ *  land at the literal coordinates the fit search cleared -- immune to any
+ *  disagreement about KiCad's rotation handedness. */
+function rotXY(px, py, rotDeg) {
+  const a = (rotDeg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  return [px * c - py * s, px * s + py * c];
 }
 
 /** An integrated H-bridge power stage (VBUS, GND, two outputs, two PWM inputs)
@@ -539,6 +549,24 @@ export function buildDriverBackplane(stator, cfg) {
   const netGND = 1, netVBUS = 2;
   const oA = (i) => 3 + 4 * i, oB = (i) => 3 + 4 * i + 1, pA = (i) => 3 + 4 * i + 2, pB = (i) => 3 + 4 * i + 3;
 
+  // Command-spine nets: the shift chain that DRIVES the PWM nets, its shared
+  // clocks, the dead-man, and the header pass-throughs.
+  const chain = chainPlan(stator, cfg);
+  const M = chain.registers.length;
+  const base = 3 + 4 * C;
+  const spine = {
+    vcc: { num: base, name: 'VLOGIC' },
+    sclk: { num: base + 1, name: 'SCLK' },
+    rclk: { num: base + 2, name: 'RCLK' },
+    oen: { num: base + 3, name: 'OE_N' },
+    sync: { num: base + 4, name: 'SYNC' },
+    ng: { num: base + 5, name: 'DEADMAN_G' },
+    sda: { num: base + 6, name: 'SDA' },
+    scl: { num: base + 7, name: 'SCL' },
+    gnd: { num: netGND, name: 'GND' },
+  };
+  const dataNet = (r) => ({ num: base + 8 + r, name: `DATA_${r}` });
+
   const L = [];
   L.push('(kicad_pcb (version 20221018) (generator "maglev-sim")');
   L.push('  (general (thickness 1.6))');
@@ -554,6 +582,10 @@ export function buildDriverBackplane(stator, cfg) {
     L.push(`  (net ${pA(i)} "PWMA_${i}")`);
     L.push(`  (net ${pB(i)} "PWMB_${i}")`);
   }
+  for (const k of ['vcc', 'sclk', 'rclk', 'oen', 'sync', 'ng', 'sda', 'scl']) {
+    L.push(`  (net ${spine[k].num} "${spine[k].name}")`);
+  }
+  for (let r = 0; r <= M; r++) L.push(`  (net ${dataNet(r).num} "${dataNet(r).name}")`);
 
   const edge = [[-half, -half], [half, -half], [half, half], [-half, half]];
   for (let e = 0; e < 4; e++) {
@@ -591,25 +623,61 @@ export function buildDriverBackplane(stator, cfg) {
       mating++;
     });
   }
+
+  // The shift chain that makes the PWM nets real: one 595 per serpentine quad
+  // at its quad's centroid, DS -> Q7S daisy-chained in the same order.
+  for (let r = 0; r < M; r++) {
+    const reg = chain.registers[r];
+    const q = Array.from({ length: 8 }, (_, k) => {
+      const coil = reg.coils[k >> 1];
+      if (coil == null) return { num: 0, name: '' };
+      return k % 2 === 0
+        ? { num: pA(coil), name: `PWMA_${coil}` }
+        : { num: pB(coil), name: `PWMB_${coil}` };
+    });
+    emitShift595(L, reg.ref, cx0 + reg.x, cy0 - reg.y, 0, f, 'F', {
+      vcc: spine.vcc, gnd: spine.gnd, sclk: spine.sclk, rclk: spine.rclk,
+      oen: spine.oen, ds: dataNet(r), q7s: dataNet(r + 1), q,
+    });
+  }
+  // Dead-man in the south-west margin, header along the south edge.
+  emitDeadman(L, cx0 - half + 4, cy0 + half - 3, f, 'F', spine);
+  emitHeader(L, cx0, cy0 + half - 3, f, 'F', [
+    { num: netVBUS, name: 'VBUS' }, { num: netGND, name: 'GND' }, spine.vcc,
+    dataNet(0), dataNet(M), spine.sclk, spine.rclk, spine.sync, spine.sda, spine.scl,
+  ]);
+
   L.push(')');
   return {
     text: L.join('\n') + '\n',
     stats: {
       drivers, decaps, mating, layers: 2, coils: C, boardMm: 2 * half,
       driverTopology: 'H-bridge per coil (independent)',
-      nets: 2 + 4 * C,
+      registers: M, chainBits: chain.bits,
+      nets: 2 + 4 * C + 8 + (M + 1),
     },
+    // Firmware's contract with the copper: which frame bit reaches which coil
+    // pin. Generated beside the placement so it cannot go stale independently.
+    contract: { chainBits: chain.bits, shiftOrder: 'bit 0 is clocked out first', bitMap: chain.bitMap },
   };
 }
 
 /** Build a complete .kicad_pcb for the PCB stator. Returns { text, stats } or
  *  null when the coil type is not a PCB (nothing to fabricate as copper). */
-export function buildKiCad(stator, cfg) {
+export function buildKiCad(stator, cfg, opts = {}) {
   if (!isPcbCoil(cfg.stator.coilType)) return null;
 
   const N = cfg.stator.pcbLayers;                     // physical stackup (fab presses this)
   const g = pcbCoilGeometry(cfg);
   const NC = g.layers;                                // winding layers (= N minus electronics layers)
+  // Single-board build: with spare layer(s), the electronics land on B.Cu at
+  // the fit-verified positions. opts.sensorSpacing (m) additionally places the
+  // TMAG grid; without it the sensors are simply omitted from this export.
+  const elec = cfg.stator.pcbSpareLayers > 0
+    ? backsideFit(cfg, { stator, sensorSpacing: opts.sensorSpacing ?? null })
+    : null;
+  const bridgeFit = elec?.available && elec.parts.sop8.fits ? elec.parts.sop8 : null;
+  const chain = elec?.available ? chainPlan(stator, cfg) : null;
   const S = cfg.stator.statorSize * 1000;             // nominal stator, mm
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const drill = via * 0.5;
@@ -638,6 +706,34 @@ export function buildKiCad(stator, cfg) {
   const C = stator.coils.length;
   L.push('  (net 0 "")');
   stator.coils.forEach((_, i) => L.push(`  (net ${i + 1} "coil_${i}")`));
+  // Single-board electronics nets: per-coil PWM pairs, the command spine, the
+  // chain links, and per-bus I2C for the sensor grid.
+  const pwmA = (i) => ({ num: C + 1 + 2 * i, name: `PWMA_${i}` });
+  const pwmB = (i) => ({ num: C + 2 + 2 * i, name: `PWMB_${i}` });
+  let spine = null, dataNet = null, sdaNet = null, nSensBus = 0;
+  if (elec?.available) {
+    const sb = 3 * C + 1;
+    spine = {
+      vbus: { num: sb, name: 'VBUS' }, gnd: { num: sb + 1, name: 'GND' },
+      vcc: { num: sb + 2, name: 'VLOGIC' }, sclk: { num: sb + 3, name: 'SCLK' },
+      rclk: { num: sb + 4, name: 'RCLK' }, oen: { num: sb + 5, name: 'OE_N' },
+      sync: { num: sb + 6, name: 'SYNC' }, ng: { num: sb + 7, name: 'DEADMAN_G' },
+      scl: { num: sb + 8, name: 'SCL' },
+    };
+    const M = chain.registers.length;
+    dataNet = (r) => ({ num: sb + 9 + r, name: `DATA_${r}` });
+    nSensBus = elec.sensors ? Math.ceil(elec.sensors.placed / 4) : 0;
+    sdaNet = (b) => ({ num: sb + 9 + (M + 1) + b, name: `SDA_${b}` });
+    for (let i = 0; i < C; i++) {
+      L.push(`  (net ${pwmA(i).num} "${pwmA(i).name}")`);
+      L.push(`  (net ${pwmB(i).num} "${pwmB(i).name}")`);
+    }
+    for (const k of ['vbus', 'gnd', 'vcc', 'sclk', 'rclk', 'oen', 'sync', 'ng', 'scl']) {
+      L.push(`  (net ${spine[k].num} "${spine[k].name}")`);
+    }
+    for (let r = 0; r <= M; r++) L.push(`  (net ${dataNet(r).num} "${dataNet(r).name}")`);
+    for (let b = 0; b < nSensBus; b++) L.push(`  (net ${sdaNet(b).num} "${sdaNet(b).name}")`);
+  }
 
   // --- board outline ---
   const edge = [[-half, -half], [half, -half], [half, half], [-half, half]];
@@ -704,6 +800,75 @@ export function buildKiCad(stator, cfg) {
     });
   }
 
+  // --- single-board electronics on the spare bottom layer ---
+  // Everything lands at fit-verified positions: bridges at the one per-cell
+  // placement that provably tiles, registers searched clear near their quad
+  // centroids, sensors at the nudged grid spots. World-anchored parts are
+  // emitted as (coil centre) + (local offset) in the SAME local frame the fit
+  // search cleared, so the pads sit exactly where the proof looked.
+  let bridges = 0, sensorCount = 0, regsFallback = 0;
+  let contract = null;
+  if (elec?.available) {
+    const bx = (ci, lx) => cx0 + stator.coils[ci].x * 1000 + lx;
+    const by = (ci, ly) => cy0 - stator.coils[ci].y * 1000 + ly;
+    if (bridgeFit) {
+      for (let ci = 0; ci < C; ci++) {
+        emitBridge8(L, `U${ci}`, bx(ci, bridgeFit.at[0]), by(ci, bridgeFit.at[1]), bridgeFit.rotDeg, f, 'B', {
+          in1: pwmA(ci), in2: pwmB(ci), vbus: spine.vbus, gnd: spine.gnd,
+          outa: { num: ci + 1, name: `coil_${ci}` }, outb: { num: ci + 1, name: `coil_${ci}` },
+        });
+        bridges++;
+      }
+    }
+    const obsB = backsideObstacles(cfg);
+    const M = chain.registers.length;
+    for (let r = 0; r < M; r++) {
+      const reg = chain.registers[r];
+      let bi = 0, bd = Infinity;
+      for (let k = 0; k < C; k++) {
+        const d = Math.hypot(stator.coils[k].x * 1000 - reg.x, stator.coils[k].y * 1000 - reg.y);
+        if (d < bd) { bd = d; bi = k; }
+      }
+      const p = placeInCell(FOOTPRINTS.tssop16, obsB, elec.clearance, 3.5,
+        [reg.x - stator.coils[bi].x * 1000, reg.y - stator.coils[bi].y * 1000], 0.5);
+      // No clear spot: emit at the centroid anyway and count it, so the stats
+      // say "N registers need manual placement" instead of dropping them.
+      const at = p.fits ? p.at : [reg.x - stator.coils[bi].x * 1000, reg.y - stator.coils[bi].y * 1000];
+      if (!p.fits) regsFallback++;
+      const q = Array.from({ length: 8 }, (_, k) => {
+        const coil = reg.coils[k >> 1];
+        if (coil == null) return { num: 0, name: '' };
+        return k % 2 === 0 ? pwmA(coil) : pwmB(coil);
+      });
+      emitShift595(L, reg.ref, bx(bi, at[0]), by(bi, at[1]), p.fits ? p.rotDeg : 0, f, 'B', {
+        vcc: spine.vcc, gnd: spine.gnd, sclk: spine.sclk, rclk: spine.rclk,
+        oen: spine.oen, ds: dataNet(r), q7s: dataNet(r + 1), q,
+      });
+    }
+    const sensorContract = [];
+    if (elec.sensors) {
+      elec.sensors.list.forEach((s, k) => {
+        const bus = k >> 2;
+        emitSensor(L, `MS${k}`, bx(s.coil, s.local[0]), by(s.coil, s.local[1]), 0, f, 'B', {
+          scl: spine.scl, gnd: spine.gnd, sda: sdaNet(bus),
+          int: spine.sync, vcc: spine.vcc,
+        });
+        sensorContract.push({ ref: `MS${k}`, bus, addrVariant: k % 4, atMm: s.atMm, nudgeMm: s.nudgeMm });
+        sensorCount++;
+      });
+    }
+    emitDeadman(L, cx0 - half + 4, cy0 + half - 3, f, 'B', spine);
+    emitHeader(L, cx0, cy0 + half - 3, f, 'B', [
+      spine.vbus, spine.gnd, spine.vcc, dataNet(0), dataNet(M),
+      spine.sclk, spine.rclk, spine.sync, nSensBus > 0 ? sdaNet(0) : spine.scl, spine.scl,
+    ]);
+    contract = {
+      chainBits: chain.bits, shiftOrder: 'bit 0 is clocked out first',
+      bitMap: chain.bitMap, sensors: sensorContract,
+      note: nSensBus > 1 ? `SDA_1..SDA_${nSensBus - 1} route to the master section; the tile header carries SDA_0 only.` : undefined,
+    };
+  }
+
   L.push(')');
   return {
     text: L.join('\n') + '\n',
@@ -714,8 +879,15 @@ export function buildKiCad(stator, cfg) {
       viaTech: 'through-hole (plated)', cornerVias: true,
       termPads, termPadsPerCoil: (plan.termPads || []).length,
       nets: stator.coils.length, boardMm: 2 * half, traceMm: g.trace,
-      drivers: 0, driverTopology: 'backplane (separate board)',
+      drivers: bridges,
+      driverTopology: elec?.available
+        ? (bridges ? 'single-board: bridge per coil on B.Cu' : 'single-board: no bridge package fits')
+        : 'backplane (separate board)',
+      registers: elec?.available ? chain.registers.length : 0,
+      registersUnplaced: regsFallback,
+      sensors: sensorCount,
     },
+    contract,
   };
 }
 
@@ -740,9 +912,12 @@ export function buildKiCad(stator, cfg) {
  *  footprints -- close enough to answer "does this package class fit". */
 export const FOOTPRINTS = {
   sop8: {
-    label: 'SOP-8 bridge (MX1508-class)', body: [4.9, 3.9],
+    // Includes the bundled 100n decap's two pads beside the chip, so the fit
+    // verdict covers exactly what emitBridge8 places -- chip AND cap.
+    label: 'SOP-8 bridge + 100n (MX1508-class)', body: [4.9, 3.9],
     pads: [-1.905, -0.635, 0.635, 1.905].flatMap((y) =>
-      [[-2.7, y, 1.5, 0.6], [2.7, y, 1.5, 0.6]]),
+      [[-2.7, y, 1.5, 0.6], [2.7, y, 1.5, 0.6]])
+      .concat([[-0.5, 2.6, 0.4, 0.5], [0.5, 2.6, 0.4, 0.5]]),
   },
   dfn8: {
     label: '2x2 DFN bridge (DRV8837-class)', body: [2.2, 2.2],
@@ -898,14 +1073,24 @@ export function backsideFit(cfg, {
           const d = Math.hypot(c.x * 1000 - wx, c.y * 1000 - wy);
           if (d < bd) { bd = d; best = c; }
         }
+        let bi = 0;
+        for (let k = 0; k < stator.coils.length; k++) {
+          if (stator.coils[k] === best) { bi = k; break; }
+        }
         const r = placeInCell(footprints.sot23_6, obs, clearance, nudgeMax, [wx - best.x * 1000, wy - best.y * 1000]);
         if (r.fits) {
           worstNudge = Math.max(worstNudge, r.offMm);
-          placed.push([best.x * 1000 + r.at[0], best.y * 1000 + r.at[1]]);
+          // Anchor by (cell, local offset): the fit is proven in the coil-local
+          // frame, so emission must re-apply the offset in that same frame.
+          placed.push({
+            coil: bi, local: [r.at[0], r.at[1]],
+            atMm: [best.x * 1000 + r.at[0], best.y * 1000 + r.at[1]],
+            nudgeMm: r.offMm,
+          });
         } else { failed++; }
       }
     }
-    sensors = { wanted: n * n, placed: placed.length, failed, worstNudgeMm: worstNudge, positionsMm: placed };
+    sensors = { wanted: n * n, placed: placed.length, failed, worstNudgeMm: worstNudge, list: placed };
   }
 
   return {
@@ -915,4 +1100,174 @@ export function backsideFit(cfg, {
     holeMm: 2 * obs.g.halfIn,
     clearance, parts, sensors,
   };
+}
+
+// --- shift chain + firmware contract ----------------------------------------
+//
+// The PWM nets are only real if something drives them. One 74HC595 serves four
+// coils (8 outputs = 4 x IN1/IN2), registers daisy-chain DS -> Q7S in the same
+// serpentine order the coils are walked, and the whole chain hangs off five
+// shared lines (VLOGIC, SCLK, RCLK, /OE, DATA). Which frame bit lands on which
+// coil pin is FIRMWARE'S contract with the copper, so it is computed here --
+// once, next to the placement -- and returned as data instead of being
+// re-derived by hand on the other side of the toolchain.
+//
+// Shift order: bit 0 is the FIRST bit the MCU clocks out. After 8M clocks it
+// has been pushed all the way to the far end of the chain: chip M-1, output
+// Q7. So bit b lives at global output g = 8M-1-b, chip floor(g/8), Q(g%8).
+
+/** Group the coils into serpentine quads and plan one register per quad.
+ *  Returns { registers: [{ref, x, y (mm), coils}], bits, bitMap } where bitMap
+ *  is the frame contract: [{bit, ref, q, coil, input}] (coil = null for the
+ *  padding outputs of a short last quad). */
+export function chainPlan(stator, cfg) {
+  const p = cfg.stator.coilPitch * 1000;
+  const hex = cfg.stator.coilType === 'pcbhex';
+  const rowH = hex ? p * Math.sqrt(3) / 2 : p;
+  // Serpentine: rows bottom-to-top, alternate rows right-to-left, so quad
+  // members and consecutive registers are physical neighbours.
+  const order = stator.coils
+    .map((c, i) => ({ i, x: c.x * 1000, y: c.y * 1000, row: Math.round((c.y * 1000) / rowH) }))
+    .sort((a, b) => (a.row - b.row) || ((a.row % 2 === 0 ? 1 : -1) * (a.x - b.x)));
+  const registers = [];
+  for (let k = 0; k < order.length; k += 4) {
+    const quad = order.slice(k, k + 4);
+    registers.push({
+      ref: `SR${registers.length}`,
+      x: quad.reduce((a, c) => a + c.x, 0) / quad.length,
+      y: quad.reduce((a, c) => a + c.y, 0) / quad.length,
+      coils: quad.map((c) => c.i),
+    });
+  }
+  const M = registers.length;
+  const bitMap = [];
+  for (let r = 0; r < M; r++) {
+    for (let q = 0; q < 8; q++) {
+      const coil = registers[r].coils[q >> 1];
+      bitMap.push({
+        bit: 8 * M - 1 - (8 * r + q),
+        ref: registers[r].ref, q: `Q${q}`,
+        coil: coil ?? null, input: coil == null ? null : (q % 2 === 0 ? 'IN1' : 'IN2'),
+      });
+    }
+  }
+  bitMap.sort((a, b) => a.bit - b.bit);
+  return { registers, bits: 8 * M, bitMap };
+}
+
+/** A 74HC595 on a TSSOP-16 envelope, REAL pinout, at (ox,oy) rot deg on side S.
+ *  `n` maps function -> {num, name} nets: vcc, gnd, sclk, rclk, oen, ds, q7s,
+ *  and q[0..7] for the outputs (unused outputs pass net 0 / ""). */
+function emitShift595(L, ref, ox, oy, rot, f, S, n) {
+  const m = S === 'B' ? ' (justify mirror)' : '';
+  const PIN = [ // pin -> [function, local x, y] (TSSOP-16, pin 1 top-left, CCW)
+    ['q1', -2.9, -2.275], ['q2', -2.9, -1.625], ['q3', -2.9, -0.975], ['q4', -2.9, -0.325],
+    ['q5', -2.9, 0.325], ['q6', -2.9, 0.975], ['q7', -2.9, 1.625], ['gnd', -2.9, 2.275],
+    ['q7s', 2.9, 2.275], ['mr', 2.9, 1.625], ['sclk', 2.9, 0.975], ['rclk', 2.9, 0.325],
+    ['oen', 2.9, -0.325], ['ds', 2.9, -0.975], ['q0', 2.9, -1.625], ['vcc', 2.9, -2.275],
+  ];
+  const netFor = (fn) => {
+    if (fn === 'mr') return n.vcc;                       // /MR tied high
+    if (fn.startsWith('q') && fn.length <= 2 && fn !== 'q7s') return n.q[+fn.slice(1)] ?? { num: 0, name: '' };
+    return n[fn] ?? { num: 0, name: '' };
+  };
+  L.push(`  (footprint "maglev:SR595" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
+  L.push('    (attr smd)');
+  L.push(`    (fp_text reference "${ref}" (at 0 -3.1) (layer "${S}.SilkS") (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  L.push(`    (fp_text value "74HC595" (at 0 3.1) (layer "${S}.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  L.push(`    (fp_rect (start -2.5 -2.2) (end 2.5 2.2) (layer "${S}.CrtYd") (width 0.05))`);
+  PIN.forEach(([fn, px, py], k) => {
+    const net = netFor(fn);
+    const [rx, ry] = rotXY(px, py, rot);
+    L.push(fpPad(k + 1, f(rx), f(ry), 1.2, 0.4, net.num, net.name, S, f(rot)));
+  });
+  L.push('  )');
+}
+
+/** The /OE dead-man: SYNC strobes keep C1 charged through R1, holding Q1 on and
+ *  /OE low (outputs enabled); strobes stop -> C1 decays -> Q1 releases -> R2
+ *  pulls /OE high and every 595 tri-states, every bridge input floats to brake.
+ *  Envelope parts, function-labelled. */
+function emitDeadman(L, ox, oy, f, S, n) {
+  const two = (ref, val, x, a, b) => {
+    const m = S === 'B' ? ' (justify mirror)' : '';
+    L.push(`  (footprint "maglev:R0402" (layer "${S}.Cu") (at ${f(ox + x)} ${f(oy)})`);
+    L.push('    (attr smd)');
+    L.push(`    (fp_text reference "${ref}" (at 0 -0.6) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+    L.push(`    (fp_text value "${val}" (at 0 0.6) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+    L.push(fpPad(1, -0.5, 0, 0.4, 0.5, a.num, a.name, S));
+    L.push(fpPad(2, 0.5, 0, 0.4, 0.5, b.num, b.name, S));
+    L.push('  )');
+  };
+  two('R1', 'retrigger', 0, n.sync, n.ng);
+  two('C1', 'hold', 2.2, n.ng, n.gnd);
+  two('R2', 'pull-up', 4.4, n.oen, n.vcc);
+  const m = S === 'B' ? ' (justify mirror)' : '';
+  L.push(`  (footprint "maglev:SOT23" (layer "${S}.Cu") (at ${f(ox + 6.8)} ${f(oy)})`);
+  L.push('    (attr smd)');
+  L.push(`    (fp_text reference "Q1" (at 0 -1.6) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+  L.push(`    (fp_text value "dead-man" (at 0 1.6) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+  L.push(fpPad(1, -0.95, 1.0, 0.6, 0.7, n.ng.num, n.ng.name, S));   // gate
+  L.push(fpPad(2, 0.95, 1.0, 0.6, 0.7, n.gnd.num, n.gnd.name, S));  // source
+  L.push(fpPad(3, 0, -1.0, 0.6, 0.7, n.oen.num, n.oen.name, S));    // drain
+  L.push('  )');
+}
+
+/** The command-spine header: everything a tile (or the full board) needs from
+ *  the master, on ten 2 mm pads along the board's south edge. */
+function emitHeader(L, ox, oy, f, S, nets) {
+  const m = S === 'B' ? ' (justify mirror)' : '';
+  L.push(`  (footprint "maglev:HDR10" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
+  L.push('    (attr smd)');
+  L.push(`    (fp_text reference "J1" (at 0 -1.6) (layer "${S}.SilkS") (effects (font (size 0.4 0.4) (thickness 0.07))${m}))`);
+  L.push(`    (fp_text value "spine" (at 0 1.6) (layer "${S}.Fab") hide (effects (font (size 0.4 0.4) (thickness 0.07))${m}))`);
+  nets.forEach((net, k) => {
+    L.push(fpPad(k + 1, (k - (nets.length - 1) / 2) * 2, 0, 1.2, 1.8, net.num, net.name, S));
+  });
+  L.push('  )');
+}
+
+/** A TMAG5273-class 3-axis sensor on the SOT-23-6 envelope at (ox,oy) rot deg. */
+function emitSensor(L, ref, ox, oy, rot, f, S, n) {
+  const m = S === 'B' ? ' (justify mirror)' : '';
+  L.push(`  (footprint "maglev:TMAG" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
+  L.push('    (attr smd)');
+  L.push(`    (fp_text reference "${ref}" (at 0 -1.5) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+  L.push(`    (fp_text value "TMAG5273" (at 0 1.5) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+  const P = [ // [function, x, y] on the sot23_6 envelope
+    ['scl', -1.1, -0.95], ['gnd', -1.1, 0], ['sda', -1.1, 0.95],
+    ['int', 1.1, 0.95], ['vcc', 1.1, 0], ['nc', 1.1, -0.95],
+  ];
+  P.forEach(([fn, px, py], k) => {
+    const net = n[fn] ?? { num: 0, name: '' };
+    const [rx, ry] = rotXY(px, py, rot);
+    L.push(fpPad(k + 1, f(rx), f(ry), 0.9, 0.6, net.num, net.name, S, f(rot)));
+  });
+  L.push('  )');
+}
+
+/** An integrated-bridge envelope on the fit-verified SOP-8 land pattern (pads
+ *  land on the winding annulus). Function-named pads, not a specific part's
+ *  pinout -- MX1508-class per the BOM. */
+function emitBridge8(L, ref, ox, oy, rot, f, S, n) {
+  const m = S === 'B' ? ' (justify mirror)' : '';
+  L.push(`  (footprint "maglev:SOP8HB" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
+  L.push('    (attr smd)');
+  L.push(`    (fp_text reference "${ref}" (at 0 -2.6) (layer "${S}.SilkS") (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  L.push(`    (fp_text value "MX1508-class" (at 0 2.6) (layer "${S}.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  L.push(`    (fp_rect (start -2.45 -1.95) (end 2.45 1.95) (layer "${S}.CrtYd") (width 0.05))`);
+  const P = [ // matches FOOTPRINTS.sop8 pad geometry
+    ['in1', -2.7, -1.905], ['in2', -2.7, -0.635], ['vbus', -2.7, 0.635], ['gnd', -2.7, 1.905],
+    ['outa', 2.7, -1.905], ['outb', 2.7, -0.635], ['gnd2', 2.7, 0.635], ['vbus2', 2.7, 1.905],
+  ];
+  const pad = (name, fn, px, py, w, h) => {
+    const net = n[fn] ?? { num: 0, name: '' };
+    const [rx, ry] = rotXY(px, py, rot);
+    L.push(fpPad(name, f(rx), f(ry), w, h, net.num, net.name, S, f(rot)));
+  };
+  P.forEach(([fn, px, py], k) => pad(k + 1, fn === 'gnd2' ? 'gnd' : fn === 'vbus2' ? 'vbus' : fn, px, py, 1.5, 0.6));
+  // The bundled 100n decap beside the chip (part of the fit envelope).
+  pad('C1', 'vbus', -0.5, 2.6, 0.4, 0.5);
+  pad('C2', 'gnd', 0.5, 2.6, 0.4, 0.5);
+  L.push('  )');
 }

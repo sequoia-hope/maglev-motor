@@ -257,10 +257,19 @@ export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSe
 export function poseObservability(tr, {
   gridHalf, spacing, zBot, axis = 'all', gap = 0.002,
   travelHalf = 0, tiltMax = 0, posStep, thr = 0.02, eps = 2e-4, dth = 1e-3,
+  sensors: sensorsIn = null,
 } = {}) {
+  // Either a regular grid (gridHalf + spacing), or EXPLICIT positions --
+  // [x, y] metres -- for re-verifying a grid after manufacturability nudges
+  // moved the sensors off their ideal spots (see backsideFit). A placement is
+  // only as good as the observability at the points actually placed.
   const sensors = [];
-  for (let x = -gridHalf; x <= gridHalf + 1e-9; x += spacing)
-    for (let y = -gridHalf; y <= gridHalf + 1e-9; y += spacing) sensors.push([x, y, zBot]);
+  if (sensorsIn) {
+    for (const p of sensorsIn) sensors.push([p[0], p[1], zBot]);
+  } else {
+    for (let x = -gridHalf; x <= gridHalf + 1e-9; x += spacing)
+      for (let y = -gridHalf; y <= gridHalf + 1e-9; y += spacing) sensors.push([x, y, zBot]);
+  }
   if (sensors.length < 3) return { available: false, reason: 'toofew', nSensors: sensors.length };
 
   const comps = axis === 'bz' ? [2] : axis === 'all' ? [0, 1, 2] : [0, 1];

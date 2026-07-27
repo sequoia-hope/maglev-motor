@@ -313,5 +313,75 @@ console.log('\n=== electronics-layer fit: the parts land clear of the via fields
   check('square-grid electronics layer fits a bridge as well', sq.available && sq.parts.sop8.fits);
 }
 
+// The shift chain and the firmware contract. A PWM net is only real if exactly
+// one register output drives it; a contract is only real if it is a bijection
+// between frame bits and coil pins. Both are parsed back out of the emitted
+// text, so the board and the map cannot disagree.
+console.log('\n=== shift chain: the PWM nets are driven, and the contract is a bijection ===');
+{
+  const { buildDriverBackplane, buildKiCad, chainPlan } = await import('../src/kicad.js');
+  const scfg = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.84, statorSize: 0.024 } };
+  const sstat = makeStator({ ...scfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const C = sstat.coils.length;
+
+  const plan = chainPlan(sstat, scfg);
+  const seen = new Set();
+  plan.registers.forEach((r) => r.coils.forEach((c) => seen.add(c)));
+  check('every coil appears in exactly one register quad',
+    seen.size === C && plan.registers.reduce((a, r) => a + r.coils.length, 0) === C,
+    `${C} coils across ${plan.registers.length} registers`);
+  const bits = plan.bitMap.map((b) => b.bit);
+  check('frame bits are a permutation of 0..bits-1',
+    new Set(bits).size === plan.bits && Math.min(...bits) === 0 && Math.max(...bits) === plan.bits - 1);
+  const perCoil = {};
+  for (const b of plan.bitMap) if (b.coil != null) perCoil[b.coil] = (perCoil[b.coil] || 0) + 1;
+  check('every coil gets exactly two frame bits (IN1 + IN2)',
+    Object.keys(perCoil).length === C && Object.values(perCoil).every((n) => n === 2));
+
+  const bp = buildDriverBackplane(sstat, scfg);
+  check('backplane text is balanced with the chain emitted',
+    (bp.text.match(/\(/g) || []).length === (bp.text.match(/\)/g) || []).length);
+  const padNet = (text, name) => (text.match(new RegExp(`\\(pad [^\\n]*\\(net \\d+ "${name}"\\)`, 'g')) || []).length;
+  let pwmOK = true, dataOK = true;
+  for (let i = 0; i < C; i++) {
+    if (padNet(bp.text, `PWMA_${i}`) !== 2 || padNet(bp.text, `PWMB_${i}`) !== 2) pwmOK = false;
+  }
+  check('every PWM net lands on exactly two pads (bridge input + 595 output)', pwmOK);
+  for (let r = 0; r <= bp.stats.registers; r++) {
+    if (padNet(bp.text, `DATA_${r}`) !== 2) dataOK = false;   // Q7S->DS links; ends reach the header
+  }
+  check('every chain link (and both chain ends) lands on exactly two pads', dataOK);
+  check('the dead-man and the spine header are on the board',
+    /reference "Q1"/.test(bp.text) && /reference "J1"/.test(bp.text));
+  check('the backplane ships a contract', bp.contract && bp.contract.bitMap.length === bp.stats.chainBits);
+
+  // The single-board build: electronics on B.Cu of the coil board itself, at
+  // the fit-verified spots, with the same contract plus the sensor buses.
+  const dcfg = { stator: { ...scfg.stator, statorSize: 0.048, pcbSpareLayers: 1 } };
+  const dstat = makeStator({ ...dcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const out = buildKiCad(dstat, dcfg, { sensorSpacing: 0.0216 });
+  check('single-board export is balanced', (out.text.match(/\(/g) || []).length === (out.text.match(/\)/g) || []).length);
+  check('one bridge per coil on the electronics layer',
+    out.stats.drivers === dstat.coils.length
+    && (out.text.match(/maglev:SOP8HB/g) || []).length === dstat.coils.length);
+  check('registers and sensors emitted match the stats',
+    (out.text.match(/maglev:SR595/g) || []).length === out.stats.registers
+    && (out.text.match(/maglev:TMAG/g) || []).length === out.stats.sensors && out.stats.sensors > 0);
+  check('every register found a fit-searched spot', out.stats.registersUnplaced === 0);
+  let sbPwmOK = true;
+  for (let i = 0; i < dstat.coils.length; i++) {
+    if (padNet(out.text, `PWMA_${i}`) !== 2 || padNet(out.text, `PWMB_${i}`) !== 2) sbPwmOK = false;
+  }
+  check('single-board PWM nets are each driven once and consumed once', sbPwmOK);
+  check('the contract lists every sensor with its bus and address variant',
+    out.contract.sensors.length === out.stats.sensors
+    && out.contract.sensors.every((s, k) => s.bus === (k >> 2) && s.addrVariant === k % 4));
+  // A passive board (no spare layer) must be unchanged in spirit: no parts.
+  const pcfg = { stator: { ...scfg.stator, statorSize: 0.048 } };
+  const pstat = makeStator({ ...pcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const passive = buildKiCad(pstat, pcfg);
+  check('a board with no electronics layer stays passive', passive.stats.drivers === 0 && !passive.contract);
+}
+
 console.log(fails ? `\n${fails} FAILURES` : '\nall kicad checks pass');
 process.exit(fails ? 1 : 0);
