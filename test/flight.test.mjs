@@ -55,7 +55,7 @@ for (const [key, preset] of Object.entries(PRESETS)) {
   console.log(`  worst-case lift over +/-${(reach * 1000).toFixed(0)}mm workspace: ${worstLift.toFixed(2)}x at (${(worstAt[0] * 1000).toFixed(0)}, ${(worstAt[1] * 1000).toFixed(0)}) mm`);
   check('can hover everywhere in the workspace', worstLift > 1.2, `worst ${worstLift.toFixed(2)}x`);
 
-  for (const trajName of ['hover', 'circle', 'raster']) {
+  for (const trajName of ['hover', 'circle', 'raster', 'spin']) {
     const state = makeState(tr, cfg.sim.gap);
     const ctrl = makeController(cfg.sim);
     const dist = makeDisturbance();
@@ -64,10 +64,15 @@ for (const [key, preset] of Object.entries(PRESETS)) {
     // Start 20% below the setpoint so the loop has to actually catch it.
     state.r[2] = cfg.sim.gap * 0.8;
     let worst = 0, worstLate = 0, peakI = 0, pw = 0;
+    // Spin bookkeeping: unwrapped yaw actually travelled, and the worst
+    // attitude error once settled -- a spin that quietly slips turns or drags
+    // a fat lag would still pass the position checks.
+    let yawGone = 0, prevYaw = 0, attLate = 0;
+    const yawOf = (qq) => Math.atan2(2 * (qq[0] * qq[3] + qq[1] * qq[2]), 1 - 2 * (qq[2] * qq[2] + qq[3] * qq[3]));
     const T = 4;
     for (let i = 0; i < T / dt; i++) {
       const target = TRAJECTORIES[trajName].at(state.t, tp);
-      const { w } = control(ctrl, state, tr, dt, target);
+      const { w, ea } = control(ctrl, state, tr, dt, target);
       const bw = buildWrench(stator, tr, state.r, state.q);
       const Wm = cfg.sim.grouping === 'independent' ? bw
         : groupWrench(bw, buildGrouping(stator, tr, state.r, state.q, cfg.sim.grouping, bw.idx));
@@ -78,14 +83,29 @@ for (const [key, preset] of Object.entries(PRESETS)) {
       const e = Math.hypot(state.r[0] - target.r[0], state.r[1] - target.r[1], state.r[2] - target.r[2]);
       worst = Math.max(worst, e);
       if (state.t > 2) worstLate = Math.max(worstLate, e);
+      if (trajName === 'spin') {
+        const y = yawOf(state.q);
+        let dy = y - prevYaw;
+        if (dy > Math.PI) dy -= 2 * Math.PI; else if (dy < -Math.PI) dy += 2 * Math.PI;
+        yawGone += dy; prevYaw = y;
+        if (state.t > 2) attLate = Math.max(attLate, Math.hypot(ea[0], ea[1], ea[2]));
+      }
       for (let j = 0; j < alloc.i.length; j++) peakI = Math.max(peakI, Math.abs(alloc.i[j]));
       pw = copperLoss(stator, Wm, alloc.i);
       if (!isFinite(state.r[2])) break;
     }
     const tilt = Math.acos(Math.max(-1, Math.min(1, 1 - 2 * (state.q[1] ** 2 + state.q[2] ** 2))));
-    console.log(`  ${trajName.padEnd(7)} settled err ${(worstLate * 1e6).toFixed(0).padStart(6)} um · peak transient ${(worst * 1000).toFixed(2)} mm · peak I ${peakI.toFixed(2)} A · P ${pw.toFixed(1)} W · tilt ${(tilt * 1000).toFixed(2)} mrad`);
+    console.log(`  ${trajName.padEnd(7)} settled err ${(worstLate * 1e6).toFixed(0).padStart(6)} um · peak transient ${(worst * 1000).toFixed(2)} mm · peak I ${peakI.toFixed(2)} A · P ${pw.toFixed(1)} W · tilt ${(tilt * 1000).toFixed(2)} mrad${trajName === 'spin' ? ` · yaw ${yawGone.toFixed(1)} rad, att lag ${(attLate * 1e3).toFixed(1)} mrad` : ''}`);
     check(`${trajName}: stayed airborne`, !state.landed && isFinite(state.r[2]), `z = ${(state.r[2] * 1000).toFixed(2)} mm`);
     check(`${trajName}: settled`, worstLate < 5e-4, `${(worstLate * 1e6).toFixed(0)} um`);
+    if (trajName === 'spin') {
+      // The platen must actually have gone round -- continuously, through the
+      // 45 deg relative angles a fixed-phase drive cannot commutate.
+      check('spin: full continuous rotation', yawGone > tp.speed * T * 0.95,
+        `${yawGone.toFixed(1)} of ${(tp.speed * T).toFixed(0)} rad`);
+      check('spin: tracked without slipping a turn', attLate < 0.05,
+        `worst attitude error ${(attLate * 1e3).toFixed(1)} mrad`);
+    }
   }
 }
 

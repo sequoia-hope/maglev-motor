@@ -92,6 +92,22 @@ export const TRAJECTORIES = {
       rpy: [p.tiltAmp * Math.sin(p.speed * t), p.tiltAmp * Math.sin(p.speed * t * 0.7), 0],
     }),
   },
+  spin: {
+    // CONTINUOUS yaw rotation while hovering: the magnet array turns without
+    // bound over the coil grid, so the allocator must re-commutate through
+    // every relative angle -- including the 45 deg worst case a fixed-phase
+    // drive cannot reach. Yaw is the one axis with no tilt clamp and no
+    // wrap-around cost (quat.errorVec always steers the short way), so the
+    // target angle simply grows; `omega` feeds the rate forward, without which
+    // a pure PD lags a constant-rate spin by exactly kd*w/kp.
+    label: 'Yaw spin',
+    at: (t, p) => ({
+      r: [0, 0, p.gap],
+      v: [0, 0, 0],
+      rpy: [0, 0, p.speed * t],
+      omega: [0, 0, p.speed],
+    }),
+  },
   zsweep: {
     label: 'Air-gap sweep',
     at: (t, p) => ({
@@ -155,13 +171,18 @@ export function control(ctrl, state, tr, dt, target) {
   // trajectory by exactly a_cmd/kp -- millimetres on a slow machine, which
   // looks like a controller bug but is just the missing term.
   const af = target.a ?? [0, 0, 0];
+  // Angular-rate feedforward, the attitude twin of the acceleration term: a
+  // trajectory that ROTATES steadily (the yaw spin) would otherwise drag a
+  // constant error of kd*omega/kp behind it -- degrees of lag that look like
+  // a tuning problem but are just the missing reference rate.
+  const om = target.omega ?? [0, 0, 0];
   const w = [
     m * (gp.kp * ep[0] + gp.kd * ev[0] + gp.ki * ctrl.ei[0] + af[0]),
     m * (gp.kp * ep[1] + gp.kd * ev[1] + gp.ki * ctrl.ei[1] + af[1]),
     m * (gp.kp * ep[2] + gp.kd * ev[2] + gp.ki * ctrl.ei[2] + af[2]) + m * g, // gravity FF
-    I[0] * (ga.kp * ea[0] - ga.kd * state.w[0] + ga.ki * ctrl.ea[0]),
-    I[1] * (ga.kp * ea[1] - ga.kd * state.w[1] + ga.ki * ctrl.ea[1]),
-    I[2] * (ga.kp * ea[2] - ga.kd * state.w[2] + ga.ki * ctrl.ea[2]),
+    I[0] * (ga.kp * ea[0] + ga.kd * (om[0] - state.w[0]) + ga.ki * ctrl.ea[0]),
+    I[1] * (ga.kp * ea[1] + ga.kd * (om[1] - state.w[1]) + ga.ki * ctrl.ea[1]),
+    I[2] * (ga.kp * ea[2] + ga.kd * (om[2] - state.w[2]) + ga.ki * ctrl.ea[2]),
   ];
 
   ctrl.last = { ep, ea, w };
