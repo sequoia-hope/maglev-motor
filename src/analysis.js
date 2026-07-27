@@ -7,10 +7,10 @@
 //   * how hot does the stator get?   -> hover power, everywhere
 
 import { quat } from './math.js';
-import { makeTranslator, fieldAt, peakField, fieldLocal, cellSize } from './halbach.js';
+import { makeTranslator, fieldAt, peakField, cellSize, eachCell } from './halbach.js';
 import { makeStator } from './coils.js';
 import { buildWrench, analysePose, allocate, copperLoss, capability, singularValues } from './physics.js';
-import { arrayField, layTile } from './reference-field.js';
+import { arrayField } from './reference-field.js';
 
 const _B = new Float64Array(3);
 
@@ -35,13 +35,31 @@ export function fieldCrossCheck(tr, { grid = 11, maxCells = 3000 } = {}) {
   const th = tr.cfg.magnetThickness;
   const gap = tr.cfg.gap;
   const half = tr.patches[0].w / 2;
-  const N = Math.max(1, Math.round(half / cell));
-  const cells = layTile(tile, tile.nx, cell, -N, N);
+  // Lay the reference from the SAME cells the BOM ships (eachCell -> axisCells),
+  // not a re-derived extent. The first cut re-derived the count and laid 9x9
+  // cells to check a platen whose real array is 7x7 -- a bigger array has less
+  // edge error, so the check was understating the very thing it exists to
+  // report. Using eachCell also keeps the registration identical by
+  // construction: if the build sheet moves, this check moves with it.
+  const cells = [];
+  eachCell(tile, tr.patches, (u, v, k) => {
+    const m = [tile.cells[k], tile.cells[k + 1], tile.cells[k + 2]];
+    if (Math.hypot(m[0], m[1], m[2]) > 1e-9) cells.push({ x: u, y: v, m });
+  });
   if (!cells.length) return { available: false, reason: 'empty' };
   if (cells.length > maxCells) return { available: false, reason: 'toobig', nCells: cells.length };
 
   const zc = -th / 2 - gap;                 // the air-gap plane below the array
   const B = [0, 0, 0];
+  // Compare against fieldAt -- the entry point the physics actually uses -- not
+  // raw fieldLocal. The physical blocks sit half a cell off the raw harmonic
+  // frame (tr.phase bridges them inside fieldAt; field.test 5b pins that), and
+  // fieldAt also applies the footprint taper, so this measures the SHIPPED
+  // field model against the exact field of the SHIPPED array. The first cut
+  // compared frames half a cell apart and got away with it only because it also
+  // laid its reference in the wrong frame.
+  const I3 = quat.toMat3(quat.identity());
+  const ORIGIN = [0, 0, 0];
 
   // Peak |B| from a FINE scan over the central two cells (where the field crests,
   // away from the edges so both models are in their comfort zone). Both models are
@@ -55,7 +73,7 @@ export function fieldCrossCheck(tr, { grid = 11, maxCells = 3000 } = {}) {
       const x = (i / 12 - 0.5) * 2 * cell, y = (j / 12 - 0.5) * 2 * cell;
       const e = arrayField(cells, cell, th, x, y, zc);
       peakExact = Math.max(peakExact, Math.hypot(e[0], e[1], e[2]));
-      fieldLocal(tr.harm, x, y, gap, B);
+      fieldAt(tr, x, y, -gap, ORIGIN, I3, B);
       peakHarm = Math.max(peakHarm, Math.hypot(B[0], B[1], B[2]));
     }
   }
@@ -71,7 +89,7 @@ export function fieldCrossCheck(tr, { grid = 11, maxCells = 3000 } = {}) {
       const x = (i / (grid - 1) - 0.5) * 2 * half;
       const y = (j / (grid - 1) - 0.5) * 2 * half;
       const exact = arrayField(cells, cell, th, x, y, zc);
-      fieldLocal(tr.harm, x, y, gap, B);
+      fieldAt(tr, x, y, -gap, ORIGIN, I3, B);
       const e = Math.hypot(B[0] - exact[0], B[1] - exact[1], B[2] - exact[2]) / norm;
       if (e > mx) mx = e;
       const rr = Math.max(Math.abs(x), Math.abs(y)) / half;
@@ -170,7 +188,6 @@ export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSe
       ax += Math.abs(nb[0]); ay += Math.abs(nb[1]); az += Math.abs(nb[2]); // worst case: all aligned
     }
     const coilInPlane = Math.sqrt(cxy2), coilVert = Math.sqrt(cz2);
-    fullScale.push(Math.hypot(ax, ay, az) * iRef);   // saturation ceiling the sensor must clear
 
     fieldAt(tr, px, py, zBot, r, R, mvBot);
     fieldAt(tr, px, py, zTop, r, R, mvTop);
@@ -178,6 +195,11 @@ export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSe
     const mVert = Math.abs(mvBot[2]);
     const mMagBot = Math.hypot(mvBot[0], mvBot[1], mvBot[2]);
     const mMagTop = Math.hypot(mvTop[0], mvTop[1], mvTop[2]);
+    // Saturation ceiling: worst-case coil field (every current at iRef, all
+    // contributions aligned) PLUS the mover's own field through the board. The
+    // UI promises "self+neighbours+mover" and the first cut delivered only the
+    // coils -- understating the ceiling by the tens of mT the magnets add.
+    fullScale.push(Math.hypot(ax, ay, az) * iRef + mMagBot);
 
     const selfMag = Math.hypot(self[0], self[1], self[2]) || 1;
     purities.push(Math.hypot(self[0], self[1]) / selfMag);   // in-plane share of self-field

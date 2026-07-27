@@ -1080,6 +1080,10 @@ function renderSensorCheck() {
   const pct = (x) => `${(x * 100).toFixed(0)}%`;
   const cp = (x) => x < 0.1 ? `${(x * 100).toFixed(1)}%` : `${(x * 100).toFixed(0)}%`;
   const mT = (x) => (x * 1000).toFixed(1);
+  // On a perfectly symmetric lattice (the hex honeycomb) the in-plane coil
+  // field at a coil centre cancels to numerical zero and these ratios blow up
+  // to ~1e16 -- true, but "11015915080651042.0x" is not a number for a card.
+  const ratio = (x) => x > 1000 ? '>1000' : x.toFixed(x < 10 ? 2 : 1);
   const lossCls = r.boardLoss < 0.5 ? 'ok' : r.boardLoss < 0.75 ? '' : 'bad';
   const cleanCls = r.cleanFactor > 5 ? 'ok' : r.cleanFactor > 2 ? '' : 'bad';
   const verdict = r.cleanFactor > 5
@@ -1091,8 +1095,8 @@ function renderSensorCheck() {
     `<strong>Flux-sensor check (bottom-side, ${r.boardMM.toFixed(1)} mm board, ${r.nSensors} sensors).</strong> `
     + `Mover reaches the bottom copper at <b>${mT(r.moverBot)} mT</b> (vs ${mT(r.moverTop)} mT at the top face — the board eats <span class="${lossCls}">${pct(r.boardLoss)}</span>).<br>`
     + `A planar coil's self-field is <b>${pct(1 - r.selfInPlaneShare)}</b> on Bz: only ${pct(r.selfInPlaneShare)} leaks into Bx/By. `
-    + `So at ${r.iRef} A coil current the mover signal is <span class="${cleanCls}">${r.cleanFactor.toFixed(1)}×</span> cleaner in-plane than vertical `
-    + `(mover/coil-field ${r.ratioIn.toFixed(2)} in-plane vs ${r.ratioVert.toFixed(2)} on Bz).<br>`
+    + `So at ${r.iRef} A coil current the mover signal is <span class="${cleanCls}">${ratio(r.cleanFactor)}×</span> cleaner in-plane than vertical `
+    + `(mover/coil-field ${ratio(r.ratioIn)} in-plane vs ${ratio(r.ratioVert)} on Bz).<br>`
     + `Sensor full-scale must clear <b>±${(r.fullScale * 1000).toFixed(0)} mT</b> (self+neighbours+mover, worst case). `
     + `To recover the mover to SNR ${r.snrTarget}, the coil-field model C must be calibrated to <b>${cp(r.calVert)}</b> on Bz`
     + `${r.calVert < 0.01 ? ' (very tight — get gap from the in-plane axes/geometry instead)' : ''}`

@@ -15,7 +15,7 @@
 // cannot fly closer to the stator than you can hold position.
 
 import { configFill } from './halbach.js';
-import { isPcbCoil } from './coils.js';
+import { isPcbCoil, pcbBoardThickness } from './coils.js';
 
 export const MATERIALS = {
   al6061: { label: 'Aluminium 6061', rho: 2700, E: 69e9, cte: 23.6e-6, k: 167 },
@@ -141,7 +141,14 @@ export function stackUp(cfg, mech = DEFAULT_MECH) {
   // rise is not known until the design is evaluated, so callers pass it in;
   // without it this term uses a nominal 20 K.
   const dT = isFinite(m.deltaT) ? m.deltaT : 20;
-  const statorStack = m.spreaderThickness + m.sensorThickness + (cfg.stator.windingHeight ?? 0.002);
+  // The coil layer's real thickness: for a PCB stator that is the PRESSED BOARD
+  // (derived from the layer count), not windingHeight -- the presets keep
+  // windingHeight at a nominal 1.6 mm while a 12-layer 2 oz board presses to
+  // ~2.0 mm, and the stack table was quoting the wrong board.
+  const coilT = isPcbCoil(cfg.stator.coilType)
+    ? pcbBoardThickness(cfg.stator.pcbLayers, cfg.stator.pcbCopperThickness)
+    : (cfg.stator.windingHeight ?? 0.002);
+  const statorStack = m.spreaderThickness + m.sensorThickness + coilT;
   const platenStack = magT + m.backingThickness;
   const thermalGrowth = dT * (mat(m.spreaderMaterial).cte * statorStack
     + mat(m.backingMaterial).cte * platenStack);
@@ -176,7 +183,7 @@ export function stackUp(cfg, mech = DEFAULT_MECH) {
     { name: 'Platen backing plate', t: m.backingThickness, material: mat(m.backingMaterial).label, side: 'platen', mass: backingMass },
     { name: 'Magnet retainer + magnets', t: magT, material: `${mat(m.pocketMaterial).label} / NdFeB`, side: 'platen', mass: magnetMass + pocketMass + adhesiveMass },
     { name: 'AIR GAP', t: cfg.sim.gap, material: '—', side: 'gap' },
-    { name: 'Coil layer', t: cfg.stator.windingHeight ?? 0.002, material: 'copper / former', side: 'stator' },
+    { name: 'Coil layer', t: coilT, material: isPcbCoil(cfg.stator.coilType) ? 'copper / FR-4' : 'copper / former', side: 'stator' },
     { name: 'Hall sensor PCB', t: m.sensorThickness, material: mat('fr4').label, side: 'stator' },
     { name: 'Thermal spreader', t: m.spreaderThickness, material: mat(m.spreaderMaterial).label, side: 'stator' },
   ];

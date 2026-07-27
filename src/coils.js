@@ -48,6 +48,14 @@ export function pcbTurnsPerLayer(w, eff) {
   return Math.max(1, Math.floor((w * (0.5 - PCB_INNER_FRAC)) / (eff * 2)));
 }
 
+/** Pressed thickness of an N-layer board: the one stackup formula, shared so
+ *  the physics (makeStator), the mechanical stack table and the thermal-growth
+ *  term cannot quote three different boards. */
+export function pcbBoardThickness(pcbLayers, pcbCopperThickness) {
+  return pcbLayers * pcbCopperThickness
+    + (pcbLayers - 1) * PCB_DIELECTRIC + 2 * PCB_MASK;
+}
+
 /** Discretise one regular-polygon winding into filament segments -- the round/
  *  hexagonal analogue of rectFilaments, used by the honeycomb PCB coil. Vertices
  *  sit on a circle of the given circumradius at `phase + k*(2pi/nSides)`, walked
@@ -197,8 +205,7 @@ export function makeStator(cfg) {
     // straight to 32 layers and reports lift the board cannot deliver. In
     // reality every layer pushes the copper centroid further from the magnets,
     // and the field it sits in falls off as exp(-2*pi*z/lambda).
-    thickness = pcbLayers * pcbCopperThickness
-      + (pcbLayers - 1) * PCB_DIELECTRIC + 2 * PCB_MASK;
+    thickness = pcbBoardThickness(pcbLayers, pcbCopperThickness);
     // Centroid of the winding copper: layers 1..coilLayers counted from the top
     // face. With no spare layers this is exactly -thickness/2 (the old value);
     // with spare layers the winding centroid rises by half the vacated stack.

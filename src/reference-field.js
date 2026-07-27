@@ -73,8 +73,12 @@ export function arrayField(cells, cell, th, x, y, z) {
 }
 
 /** Lay a tile out over cell indices [lo,hi] on both axes, dropping the nulls.
- *  Registration matches src/halbach.js: cell index i is centred at
- *  (i + 0.5)*cell and takes its magnetisation from tile cell i mod n. */
+ *  Registration matches the RAW harmonic frame of src/halbach.js (fieldLocal):
+ *  cell index i is centred at (i + 0.5)*cell and takes its magnetisation from
+ *  tile cell i mod n. NOTE the physical blocks (axisCells/eachCell) sit half a
+ *  cell off this frame -- fieldAt() bridges the two via tr.phase, and
+ *  field.test 5b pins that bridge. Compare layTile output against fieldLocal,
+ *  or eachCell output against fieldAt; never mix the frames. */
 export function layTile(tile, seg, cell, lo, hi) {
   const cells = [];
   for (let j = lo; j <= hi; j++) {
