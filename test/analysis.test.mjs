@@ -128,6 +128,43 @@ console.log('\n=== placement -> observability, the loop closed ===');
     ap.worstObs > 0.03, `worstObs ${ap.worstObs.toFixed(4)} (ideal-grid ballpark 0.05)`);
 }
 
+console.log('\n=== yaw isotropy is the LATTICE, not the drive ===');
+{
+  // The spin sweeps first looked like an argument for per-coil drive: grouped
+  // square-grid presets spiked ~20x in hover power mid-rotation. Wrong
+  // attribution -- the INDEPENDENT square grid spikes almost as hard (x16 at
+  // 45 deg), because the square coil lattice itself goes degenerate against
+  // the rotated checkerboard. The honeycomb is yaw-isotropic with EITHER
+  // drive. Pin both halves so neither claim can quietly rot.
+  const { analysePose } = await import('../src/physics.js');
+  const { quat } = await import('../src/math.js');
+  const sq = makeStator({
+    coilType: 'pcb', coilPitch: 0.008, coilFill: 0.94, statorSize: 0.096,
+    windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12,
+    pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6,
+    ringsPerCoil: 2, segmentsPerSide: 3,
+  });
+  const sweep = (st, mode) => {
+    let p0 = 0, worst = 0;
+    for (const deg of [0, 45, 75]) {
+      const h = (deg * Math.PI / 180) / 2;
+      const a = analysePose(st, tr, [0.002, 0.0012, 0.0015], [Math.cos(h), 0, 0, Math.sin(h)], 4, mode);
+      const p = a.hoverSaturated <= 1e-6 ? a.hoverPower : Infinity;
+      if (deg === 0) p0 = p;
+      worst = Math.max(worst, p);
+    }
+    return worst / p0;
+  };
+  const hexR3 = sweep(stator, 'r3'), hexInd = sweep(stator, 'independent');
+  const sqR3 = sweep(sq, 'r3'), sqInd = sweep(sq, 'independent');
+  check('the honeycomb spins nearly free even GROUPED (r3 within 1.5x of level)',
+    hexR3 < 1.5, `x${hexR3.toFixed(2)} worst-over-yaw`);
+  check('independent drive on the honeycomb is no better than ~20% over grouped',
+    hexR3 / hexInd < 1.25, `r3 x${hexR3.toFixed(2)} vs independent x${hexInd.toFixed(2)}`);
+  check('the square grid pays heavily at 45 deg REGARDLESS of drive',
+    sqR3 > 5 && sqInd > 5, `r3 x${sqR3.toFixed(1)}, independent x${sqInd.toFixed(1)}`);
+}
+
 console.log('\n=== liftVsGap: the exponential wall has the right sign ===');
 {
   const gaps = [0.001, 0.002, 0.004];
