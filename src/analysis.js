@@ -219,58 +219,85 @@ export function sensorObservability(stator, tr, { iRef = 7.5, gap = 0.002, maxSe
  *  pose by fitting the known Halbach field model? This is the model-based way to
  *  sense position: place sensors on a known grid, measure one or more field
  *  components, and least-squares-fit pose (r,q) to the measurements. It works iff
- *  the pose->measurement Jacobian is well conditioned everywhere the mover travels
+ *  the pose->measurement Jacobian is well conditioned EVERYWHERE the mover travels
  *  -- otherwise some DOF is unobservable (a direction you can move without moving
- *  any reading). We build that Jacobian numerically at poses spanning one unit
- *  cell and report the WORST-case conditioning. axis: 'inplane' (Bx,By -- the
- *  self-field-free axes), 'bz' (vertical only), or 'all' (3-axis). Lets you check
- *  whether cheap 1-axis in-plane sensors, spread out, can model the field. */
-export function poseObservability(tr, { half, zBot, spacing, axis = 'inplane', gap = 0.002, eps = 2e-4, dth = 1e-3 } = {}) {
+ *  any reading).
+ *
+ *  Full-stroke version: the sensor grid spans the whole stator (gridHalf); the
+ *  mover centre is swept across its full travel (travelHalf, which naturally
+ *  covers both macro position and sub-cell phase) AND over a tilt envelope
+ *  (tiltMax). At each pose we cull sensors to the ones actually under the mover
+ *  (footprint), so edge/corner coverage -- where a sparse grid is thinnest -- is
+ *  modelled honestly. Reports the WORST-case conditioning over all poses, where it
+ *  occurs, and the fraction of poses that clear an estimable threshold.
+ *  axis: 'inplane' (Bx,By) | 'bz' | 'all' (3-axis). charLength = platen half, so a
+ *  tilt is scored in the linear units of the edge motion it produces. */
+export function poseObservability(tr, {
+  gridHalf, spacing, zBot, axis = 'all', gap = 0.002,
+  travelHalf = 0, tiltMax = 0, posStep, thr = 0.02, eps = 2e-4, dth = 1e-3,
+} = {}) {
   const sensors = [];
-  for (let x = -half; x <= half + 1e-9; x += spacing)
-    for (let y = -half; y <= half + 1e-9; y += spacing)
-      if (Math.hypot(x, y) <= tr.footprintRadius) sensors.push([x, y, zBot]);
-  if (sensors.length < 6) return { available: false, reason: 'toofew', nSensors: sensors.length };
+  for (let x = -gridHalf; x <= gridHalf + 1e-9; x += spacing)
+    for (let y = -gridHalf; y <= gridHalf + 1e-9; y += spacing) sensors.push([x, y, zBot]);
+  if (sensors.length < 3) return { available: false, reason: 'toofew', nSensors: sensors.length };
 
   const comps = axis === 'bz' ? [2] : axis === 'all' ? [0, 1, 2] : [0, 1];
-  const R0 = quat.toMat3(quat.identity());
   const pitch = tr.cfg.pitch;
-  const nMeas = comps.length * sensors.length;
+  const charLength = tr.cfg.platenSize / 2;
+  const step = posStep ?? pitch / 3;               // incommensurate-ish with pitch -> samples phase too
   const _b = new Float64Array(3);
-  const fieldAll = (r, R, arr) => {
-    for (let s = 0; s < sensors.length; s++) {
-      const p = sensors[s];
-      fieldAt(tr, p[0], p[1], p[2], r, R, _b);
-      for (let c = 0; c < comps.length; c++) arr[s * comps.length + c] = _b[comps[c]];
-    }
-  };
 
-  let worstObs = Infinity, worstSigmaMin = Infinity;
-  const steps = 3;
-  const mp = new Float64Array(nMeas), mm = new Float64Array(nMeas);
-  for (let ix = 0; ix < steps; ix++) {
-    for (let iy = 0; iy < steps; iy++) {
-      const r0 = [(ix / steps) * pitch, (iy / steps) * pitch, gap];
-      const W = new Float64Array(6 * nMeas);   // 6 DOF (rows) x nMeas (cols), for singularValues
-      for (let d = 0; d < 3; d++) {            // translational DOF: central difference in r
+  // Mover-centre positions: full travel, or a single centred unit cell (travelHalf=0).
+  const centres = [];
+  if (travelHalf <= 0) {
+    for (let ix = 0; ix < 3; ix++) for (let iy = 0; iy < 3; iy++) centres.push([(ix / 3) * pitch, (iy / 3) * pitch]);
+  } else {
+    for (let cx = -travelHalf; cx <= travelHalf + 1e-9; cx += step)
+      for (let cy = -travelHalf; cy <= travelHalf + 1e-9; cy += step) centres.push([cx, cy]);
+  }
+  // Tilt envelope: level plus the extreme roll/pitch/combined poses.
+  const tilts = tiltMax > 0
+    ? [[0, 0], [tiltMax, 0], [0, tiltMax], [tiltMax * 0.7, tiltMax * 0.7]]
+    : [[0, 0]];
+
+  let worstObs = Infinity, worstAt = null, nEst = 0, nPose = 0;
+  for (const [cx, cy] of centres) {
+    // Only sensors under the mover carry field; far ones add null rows. Cull them.
+    const local = sensors.filter((s) => Math.hypot(s[0] - cx, s[1] - cy) <= tr.footprintRadius);
+    for (const [trx, tvy] of tilts) {
+      const q0 = quat.fromEuler(trx, tvy, 0);
+      const R0 = quat.toMat3(q0);
+      const nMeas = comps.length * local.length;
+      const mp = new Float64Array(nMeas), mm = new Float64Array(nMeas);
+      const W = new Float64Array(6 * nMeas);
+      const fieldAll = (r, R, arr) => {
+        for (let s = 0; s < local.length; s++) {
+          const p = local[s];
+          fieldAt(tr, p[0], p[1], p[2], r, R, _b);
+          for (let c = 0; c < comps.length; c++) arr[s * comps.length + c] = _b[comps[c]];
+        }
+      };
+      const r0 = [cx, cy, gap];
+      for (let d = 0; d < 3; d++) {                // translational DOF
         const rp = r0.slice(), rm = r0.slice(); rp[d] += eps; rm[d] -= eps;
         fieldAll(rp, R0, mp); fieldAll(rm, R0, mm);
         for (let k = 0; k < nMeas; k++) W[k * 6 + d] = (mp[k] - mm[k]) / (2 * eps);
       }
-      for (let d = 0; d < 3; d++) {            // rotational DOF: small tilt about the mover centre
+      for (let d = 0; d < 3; d++) {                // rotational DOF, about the (possibly tilted) base pose
         const e = [0, 0, 0]; e[d] = dth;
-        const qp = quat.mul(quat.fromEuler(e[0], e[1], e[2]), quat.identity());
-        const qm = quat.mul(quat.fromEuler(-e[0], -e[1], -e[2]), quat.identity());
+        const qp = quat.mul(quat.fromEuler(e[0], e[1], e[2]), q0);
+        const qm = quat.mul(quat.fromEuler(-e[0], -e[1], -e[2]), q0);
         fieldAll(r0, quat.toMat3(qp), mp); fieldAll(r0, quat.toMat3(qm), mm);
         for (let k = 0; k < nMeas; k++) W[k * 6 + 3 + d] = (mp[k] - mm[k]) / (2 * dth);
       }
-      const sv = singularValues({ W, n: nMeas }, half); // half = charLength: puts tilt in linear units
-      const obs = sv[0] > 1e-30 ? sv[5] / sv[0] : 0;    // smallest/largest singular value = 1/cond
-      if (obs < worstObs) worstObs = obs;
-      if (sv[5] < worstSigmaMin) worstSigmaMin = sv[5];
+      const sv = nMeas >= 6 ? singularValues({ W, n: nMeas }, charLength) : [0, 0, 0, 0, 0, 0];
+      const obs = sv[0] > 1e-30 ? sv[5] / sv[0] : 0;
+      nPose++;
+      if (obs >= thr) nEst++;
+      if (obs < worstObs) { worstObs = obs; worstAt = { cx, cy, roll: trx, pitch: tvy, nLocal: local.length }; }
     }
   }
-  return { available: true, nSensors: sensors.length, nMeas, axis, spacing, worstObs, worstSigmaMin };
+  return { available: true, nSensors: sensors.length, axis, spacing, worstObs, worstAt, fracEstimable: nEst / nPose, nPose };
 }
 
 /** Air-gap field on a horizontal plane, in the translator's own frame.
