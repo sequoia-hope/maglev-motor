@@ -12,7 +12,7 @@ import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
 import { render, makeCamera, fitCamera, attachOrbit, theme } from './render3d.js';
 import { lineChart, heatmap, barStrip, trackHover } from './plots.js';
-import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, fieldCrossCheck, sensorObservability } from './analysis.js';
+import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, fieldCrossCheck, sensorObservability, sensorLayout } from './analysis.js';
 import { MATERIALS, PROCESSES, COOLING, DEFAULT_MECH, stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
 import { buildAssembly } from './assembly.js';
 import { renderExploded } from './exploded.js';
@@ -361,13 +361,21 @@ function rebuild(resetSim = false) {
   // Depends on coil geometry + magnet field + gap + coil current, so cache on all
   // of those (it Biot-Savarts every coil onto every sensor -- not a per-drag cost).
   {
-    const key = [JSON.stringify(app.cfg.stator), app.cfg.translator.pitch,
-      app.cfg.translator.magnetThickness, app.cfg.translator.arrayType,
-      app.cfg.sim.gap, app.cfg.sim.iMax, q.ringsPerCoil, q.segmentsPerSide].join('|');
+    const geom = [JSON.stringify(app.cfg.stator), app.cfg.translator.pitch,
+      app.cfg.translator.magnetThickness, app.cfg.translator.arrayType, app.cfg.translator.layout,
+      app.cfg.translator.platenSize, app.cfg.sim.gap, q.ringsPerCoil, q.segmentsPerSide];
+    const key = [...geom, app.cfg.sim.iMax].join('|');
     if (key !== app._sensorKey) {
       app.sensorCheck = sensorObservability(app.stator, app.tr,
         { iRef: app.cfg.sim.iMax, gap: app.cfg.sim.gap });
       app._sensorKey = key;
+    }
+    // Recommended distributed-sensor grid: full-stroke, so it also depends on tilt.
+    const lkey = [...geom, app.cfg.sim.maxTilt].join('|');
+    if (lkey !== app._layoutKey) {
+      app.sensorLayout = sensorLayout(app.stator, app.tr,
+        { gap: app.cfg.sim.gap, maxTilt: app.cfg.sim.maxTilt });
+      app._layoutKey = lkey;
     }
   }
   app.analysis = analysePose(
@@ -1009,6 +1017,33 @@ function renderSelfTest() {
      (${(t.relError * 100).toFixed(2)}% <span class="${t.pass ? 'ok' : 'bad'}">${t.pass ? 'PASS' : 'FAIL'}</span>)`;
   renderFieldCheck();
   renderSensorCheck();
+  renderSensorLayout();
+}
+
+/** Recommended distributed flux-sensor grid: the coarsest 3-axis spacing that
+ *  keeps the mover's pose observable across the whole travel + tilt envelope, and
+ *  whether a cheaper 1-axis array survives at that spacing. Turns "how many
+ *  sensors, spaced how?" into a live number that tracks the magnet pitch. */
+function renderSensorLayout() {
+  const el = document.getElementById('sensorLayout');
+  if (!el) return;
+  const r = app.sensorLayout;
+  if (!r || !r.available) {
+    el.innerHTML = `<strong>Sensor grid.</strong> <span style="color:var(--muted)">not available for this design.</span>`;
+    return;
+  }
+  const mm = (x) => (x * 1000).toFixed(1);
+  const obsCls = r.worstObs >= 0.05 ? 'ok' : r.worstObs >= 0.02 ? '' : 'bad';
+  const cost = (r.nGrid * 0.42).toFixed(0);
+  const oneAxis = r.oneAxisOK
+    ? `A cheap <b>1-axis Bz</b> array also survives at this spacing (needs per-sensor self-field subtraction).`
+    : `A 1-axis array would <span class="bad">alias here</span> (${(r.oneAxisFrac * 100).toFixed(0)}% of poses observable) — go 3-axis, or drop to a finer incommensurate spacing for 1-axis.`;
+  el.innerHTML =
+    `<strong>Distributed sensor grid.</strong> To fit 6-DOF pose from the field over the full ±${mm(r.travelHalf)} mm travel and ${r.tiltDeg.toFixed(1)}° tilt: `
+    + `a <b>3-axis grid at ${mm(r.spacing)} mm</b> (${r.frac.toFixed(2)}λ) — <b>${r.nGrid} sensors</b> over the stator, ~${r.underMover} under the mover, `
+    + `worst-case observability <span class="${obsCls}">${r.worstObs.toFixed(3)}</span>${r.marginal ? ' <span class="bad">(marginal — no coarser grid is robust)</span>' : ' (all poses estimable)'}. `
+    + `≈ <b>$${cost}</b> in TMAG5273-class parts.<br>`
+    + `<span style="color:var(--muted)">${oneAxis} Rule: never space sensors at λ or λ/2 — those alias into blind poses.</span>`;
 }
 
 /** Bottom-side flux-sensor observability card: with no components allowed on the

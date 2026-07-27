@@ -300,6 +300,48 @@ export function poseObservability(tr, {
   return { available: true, nSensors: sensors.length, axis, spacing, worstObs, worstAt, fracEstimable: nEst / nPose, nPose };
 }
 
+/** Recommend a distributed flux-sensor grid for THIS design: the coarsest (fewest
+ *  sensors) 3-axis spacing that keeps every pose over the full travel + tilt
+ *  envelope estimable with margin, plus whether a cheaper 1-axis Bz array would
+ *  survive at that spacing. Sweeps only incommensurate fractions of the magnet
+ *  pitch, because spacing at pitch or pitch/2 aliases into dead poses. */
+export function sensorLayout(stator, tr, { gap = 0.002, maxTilt = 0.05 } = {}) {
+  if (!stator.coils.length || !stator.cfg) return { available: false };
+  const pitch = tr.cfg.pitch;
+  const gridHalf = stator.cfg.statorSize / 2;
+  const travelHalf = Math.max(0, (stator.cfg.statorSize - tr.cfg.platenSize) / 2);
+  const zBot = -stator.thickness;
+  const COMFORT = 0.03;
+  const common = { gridHalf, zBot, gap, travelHalf, tiltMax: maxTilt };
+
+  // Deliberately incommensurate with the pitch (no 1.0 or 0.5): those alias.
+  const fracs = [0.9, 0.8, 0.75, 0.7, 0.65, 0.6];
+  let pick = null;
+  for (const f of fracs) {
+    const r = poseObservability(tr, { ...common, spacing: pitch * f, axis: 'all' });
+    if (r.fracEstimable >= 0.999 && r.worstObs >= COMFORT) { pick = { r, f }; break; }
+  }
+  if (!pick) {
+    const f = fracs[fracs.length - 1];
+    pick = { r: poseObservability(tr, { ...common, spacing: pitch * f, axis: 'all' }), f, marginal: true };
+  }
+  const spacing = pitch * pick.f;
+  const bz = poseObservability(tr, { ...common, spacing, axis: 'bz' });
+
+  return {
+    available: true,
+    pitch, spacing, frac: pick.f,
+    nGrid: pick.r.nSensors,
+    underMover: pick.r.worstAt ? pick.r.worstAt.nLocal : 0,
+    worstObs: pick.r.worstObs,
+    worstAt: pick.r.worstAt,
+    marginal: !!pick.marginal,
+    oneAxisOK: bz.fracEstimable >= 0.999 && bz.worstObs >= COMFORT,
+    oneAxisFrac: bz.fracEstimable,
+    travelHalf, tiltDeg: maxTilt * 57.2958,
+  };
+}
+
 /** Air-gap field on a horizontal plane, in the translator's own frame.
  *  component: 'bz' | 'mag'. */
 export function fieldMap(tr, gap, half, n, component = 'bz') {
