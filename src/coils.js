@@ -149,6 +149,7 @@ export function makeStator(cfg) {
   const {
     coilType, coilPitch, coilFill, statorSize,
     windingHeight, wireDiameter, pcbLayers, pcbTraceWidth, pcbCopperThickness,
+    pcbSpareLayers = 0,
     ringsPerCoil = 2, segmentsPerSide = 4,
   } = cfg;
 
@@ -163,6 +164,7 @@ export function makeStator(cfg) {
 
   let outer, inner, effTurns, wireArea, thickness;
   let pcbEffTrace = null;
+  let coilZ = null;
 
   if (isPcbCoil(coilType)) {
     // A spiral on an N-layer board. Turns per layer is set by how many
@@ -173,7 +175,15 @@ export function makeStator(cfg) {
     const eff = effectiveTrace(pcbTraceWidth, pcbCopperThickness);
     pcbEffTrace = eff;
     const perLayer = pcbTurnsPerLayer(w, eff);
-    effTurns = perLayer * pcbLayers;
+    // Spare layers are copper given to ELECTRONICS, not turns: a driver-per-coil
+    // board that carries its bridges and flux sensors on the bottom face needs
+    // the bottom layer(s) free of winding. The board is still pressed at the
+    // full layer count -- thickness (and so the magnet-to-copper distances and
+    // the sensor attenuation) do not change -- but only the top
+    // (pcbLayers - spare) layers wind, so the turns drop and the surviving
+    // copper's centroid sits HIGHER in the stack, slightly closer to the magnets.
+    const coilLayers = Math.max(1, pcbLayers - pcbSpareLayers);
+    effTurns = perLayer * coilLayers;
     outer = [w, w];
     // Inner half-width is where the winding actually stops after an integer
     // number of turns -- matched to the copper so the force integral sees the
@@ -189,6 +199,11 @@ export function makeStator(cfg) {
     // and the field it sits in falls off as exp(-2*pi*z/lambda).
     thickness = pcbLayers * pcbCopperThickness
       + (pcbLayers - 1) * PCB_DIELECTRIC + 2 * PCB_MASK;
+    // Centroid of the winding copper: layers 1..coilLayers counted from the top
+    // face. With no spare layers this is exactly -thickness/2 (the old value);
+    // with spare layers the winding centroid rises by half the vacated stack.
+    coilZ = -(PCB_MASK
+      + (coilLayers * pcbCopperThickness + (coilLayers - 1) * PCB_DIELECTRIC) / 2);
   } else {
     // Turn count is DERIVED from geometry, never assumed. A winding only holds
     // as many turns as fit in its window: (window area x packing) / wire area.
@@ -216,7 +231,7 @@ export function makeStator(cfg) {
     // and the quoted air gap is the real clearance between magnet face and
     // copper. Getting this wrong lets a thick winding stack swallow the platen.
     return {
-      x: cx, y: cy, z: -thickness / 2, angle: ang,
+      x: cx, y: cy, z: coilZ ?? -thickness / 2, angle: ang,
       outer: o, inner: i, turns: effTurns,
       R: windingResistance(o, i, effTurns, wireArea),
       fil,
@@ -245,7 +260,7 @@ export function makeStator(cfg) {
       return [rad * Math.cos(a), rad * Math.sin(a)];
     });
     return {
-      x: cx, y: cy, z: -thickness / 2, angle: 0,
+      x: cx, y: cy, z: coilZ ?? -thickness / 2, angle: 0,
       outer: [2 * circumOut, 2 * circumOut], inner: [2 * circumIn, 2 * circumIn],
       poly: hexPoly(circumOut), polyInner: hexPoly(circumIn),
       turns: effTurns, R, fil, current: 0,

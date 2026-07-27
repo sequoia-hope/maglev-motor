@@ -227,5 +227,46 @@ console.log('\n=== hexagonal honeycomb coils export a clean board ===');
     `${htile ? htile.stats.coils : 0} coils`);
 }
 
+// A spare (electronics) layer surrenders bottom copper to parts: the physical
+// stackup keeps every layer, but the winding must stop one short -- and with
+// zero spare layers the export must not change AT ALL, because that path ships.
+console.log('\n=== spare electronics layers: wind less, press the same board ===');
+{
+  const base = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.84 } };
+  const drv = { stator: { ...base.stator, pcbSpareLayers: 1 } };
+  const N = base.stator.pcbLayers;
+  const g0 = pcbCoilGeometry(base), g1 = pcbCoilGeometry(drv);
+  check('spare=0 winds every layer', g0.layers === N && g0.physLayers === N,
+    `${g0.layers} of ${g0.physLayers}`);
+  check('spare=1 winds one fewer layer, same physical stack',
+    g1.layers === N - 1 && g1.physLayers === N, `${g1.layers} of ${g1.physLayers}`);
+  const s0 = makeStator({ ...base.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const s1 = makeStator({ ...drv.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  check('physics turns drop by exactly one layer of turns',
+    s1.effTurns === s0.effTurns - g0.turns, `${s1.effTurns} vs ${s0.effTurns}`);
+  check('board thickness is unchanged (the fab presses the same stack)',
+    Math.abs(s1.thickness - s0.thickness) < 1e-12, `${(s1.thickness * 1e3).toFixed(3)} mm`);
+  check('the surviving winding centroid sits closer to the magnets',
+    s1.coils[0].z > s0.coils[0].z, `${(s1.coils[0].z * 1e3).toFixed(3)} vs ${(s0.coils[0].z * 1e3).toFixed(3)} mm`);
+  const k1 = buildKiCad(s1, drv);
+  check('spare=1 exports every physical layer in the stackup',
+    (k1.text.match(/"(?:F|B|In\d+)\.Cu" signal/g) || []).length === N);
+  // The bottom copper is the electronics face: via annulars and I/O pads may
+  // touch it, spiral tracks must not. The deepest spiral lives on In(N-2).
+  const laid = new Set((k1.text.match(/\(segment .*?\(layer "([^"]+)"\)/g) || [])
+    .map((s) => s.match(/\(layer "([^"]+)"\)/)[1]));
+  check('no spiral or stub copper lands on the electronics layer (B.Cu)',
+    !laid.has('B.Cu'), [...laid].sort().join(','));
+  check(`the deepest winding layer is In${N - 2}.Cu`, laid.has(`In${N - 2}.Cu`));
+  check('vias stay full-stack plated through-holes',
+    (k1.text.match(/\(via .*/g) || []).every((v) => /\(layers "F.Cu" "B.Cu"\)/.test(v)));
+  check('I/O pads still land on the back (electronics) face',
+    /\(pad "1" smd rect .*\(layers "B.Cu" "B.Paste" "B.Mask"\)/.test(k1.text));
+  const cellHalf = base.stator.coilPitch * 1000 / 2;
+  const hvia = Math.min(0.4, Math.max(0.2, g1.pitch * 0.6));
+  check('spare=1 winding validates clean (validatePcb over the coil layers)',
+    validatePcb(g1, g1.layers, cellHalf, hvia).length === 0);
+}
+
 console.log(fails ? `\n${fails} FAILURES` : '\nall kicad checks pass');
 process.exit(fails ? 1 : 0);

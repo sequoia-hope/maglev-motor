@@ -107,6 +107,15 @@ const PRESETS = {
       sim: { gap: 0.0015, iMax: 5, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'r3' },
     },
   },
+  pcbhexdrv: {
+    label: 'PCB stage (hex, driver-per-coil)',
+    blurb: 'The honeycomb built to be DRIVEN: one cheap H-bridge per coil, no amplifier sharing, and the electronics on the board itself. The bottom copper layer is surrendered to parts — 168 coils wind the top 11 layers of the same 12-layer, plated-through-hole, 1 oz stack (132 turns per spiral, 12 per layer), and the vacated back face carries each coil\'s bridge, the shift-register chain that feeds it, and the sparse 3-axis flux-sensor grid, with every coil\'s two I/O pads already landing there. The winding you give up is real but small (~8% of turns). What changes the electronics is the coil itself: 132 turns of 0.103 mm trace is a 9.1 Ω, quarter-amp load — at hover the busiest coil draws 0.27 A at about 2.4 V — so a 9 V bus caps the coil near 1 A at 100% duty and the current limit IS the bus voltage. Sub-amp bridge silicon costs pennies, its on-resistance vanishes against 9 Ω, and no per-coil current sensing is needed: the coil is resistive at control bandwidth (L/R is tens of µs against a millisecond control period), so commanded duty × bus voltage ÷ calibrated R is the current. Flown at that honest 1 A ceiling it still lifts 3.7× centred and 3.0× at the workspace corners across ±12 mm — down from the 15.5× the unreachable 4 A limit promised, and ample; hover force is untouched because hover needs 0.27 A, not headroom. It runs as hot as the honeycomb always did (≈5.2 W hover worst-case, ~24 K rise, 75 A/mm² in the thin 1 oz copper). Same platen and magnets as the other small stages: a 48 mm 2-D Halbach on 6×6×3 mm N52 (Supreme), 33 magnets in 49 pockets, λ = 24 mm, 1.5 mm gap. Pick this when you are building the independent-driver board the Design tab\'s flux-sensor cards describe, and the 1 oz hex stage when a shared-amplifier build wants the extra winding layer back.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single', pitch: 0.024, magnetThickness: 0.003, Br: 1.43, segments: 4, platenSize: 0.048, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcbhex', coilPitch: 0.008, coilFill: 0.84, statorSize: 0.096, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbSpareLayers: 1, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
+      sim: { gap: 0.0015, iMax: 1.0, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
+    },
+  },
   wound: {
     label: 'Hand-wound square coils (Zhu/Teo/Pang)',
     blurb: 'Four 1-D Halbach arrays in a cross, thrusting tangentially, over a grid of square coils. Driven as the published eight-phase scheme: 8 amplifiers for ~120 live coils, full 6-DOF.',
@@ -218,6 +227,12 @@ const PARAMS = [
           + `${app.stator ? (app.stator.thickness * 1000).toFixed(2) : '?'} mm thick here, and the copper centroid sinks with it. `
           + `Past a point the extra layers sit too deep in the field to pay for themselves — watch lift margin, not turn count. `
           + `And past 12 layers the board gets prohibitively expensive to fabricate, so the optimiser will not go there even though this slider will.` },
+      { path: 'stator.pcbSpareLayers', type: 'range', label: 'Electronics layers', min: 0, max: 4, step: 1, scale: 1, unit: '', digits: 0,
+        show: (c) => isPcbCoil(c.stator.coilType),
+        help: (c) => {
+          const n = c.stator.pcbLayers, s = c.stator.pcbSpareLayers || 0;
+          return `Bottom layers surrendered to parts instead of winding — the driver-per-coil build puts each coil's H-bridge and the flux sensors on the back face, which then cannot carry a spiral. The board is still pressed at ${n} layers (thickness and sensor attenuation unchanged) but only ${Math.max(1, n - s)} of them wind, so turns drop ${s ? `~${((s / n) * 100).toFixed(0)}%` : 'not at all'} and the surviving copper sits slightly closer to the magnets. 0 = passive coil board with a separate driver backplane.`;
+        } },
       { path: 'stator.pcbTraceWidth', type: 'range', label: 'Trace width', min: 0.0001, max: 0.001, step: 0.00001, scale: 1000, unit: 'mm', digits: 3,
         show: (c) => isPcbCoil(c.stator.coilType),
         help: () => 'The conductor width. An equal space is assumed beside it, so the turn pitch is twice this — quote it to a fab as "trace/space". '
@@ -329,6 +344,9 @@ function rebuild(resetSim = false) {
   // independent pole pitch, and letting a stale one through would build a
   // translator whose cells are not the size of the magnets in the BOM.
   applyMagnetDrive(app.cfg.translator);
+  // Older presets and saved configs predate the electronics-layers knob; a
+  // slider bound to undefined renders NaN, so pin the default here.
+  if (app.cfg.stator.pcbSpareLayers == null) app.cfg.stator.pcbSpareLayers = 0;
   const q = QUALITY[app.cfg.sim.quality];
   if (!app.cfg.mech) app.cfg.mech = mechDefaultsFor(app.cfg, DEFAULT_MECH);
   // Mechanical stack first: it supplies the platen mass the physics needs.

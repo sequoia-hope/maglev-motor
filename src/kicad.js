@@ -36,6 +36,12 @@ import { effectiveTrace, pcbTurnsPerLayer, makeStator, isPcbCoil } from './coils
  *  the real trace path. */
 export function pcbCoilGeometry(cfg) {
   const { coilPitch, coilFill, pcbTraceWidth, pcbCopperThickness, pcbLayers, coilType } = cfg.stator;
+  // Spare layers carry electronics, not winding (see coils.js): the board is
+  // pressed at pcbLayers but only the top (pcbLayers - spare) wind. g.layers is
+  // the WINDING count -- everything that plans spirals and crossovers keys off
+  // it -- while g.physLayers names the physical stackup the fab presses.
+  const spare = cfg.stator.pcbSpareLayers || 0;
+  const windLayers = Math.max(1, pcbLayers - spare);
   const w = coilPitch * coilFill;
   const eff = effectiveTrace(pcbTraceWidth, pcbCopperThickness);
   const perLayer = pcbTurnsPerLayer(w, eff);
@@ -56,7 +62,7 @@ export function pcbCoilGeometry(cfg) {
   const corner = Math.min(0.8, Math.max(pitch, halfIn * 0.6));
   return {
     w: w * 1000, halfOut, halfIn, pitch, corner, sides, phase,
-    turns: perLayer, layers: pcbLayers,
+    turns: perLayer, layers: windLayers, physLayers: pcbLayers,
     trace: eff * 1000,
   };
 }
@@ -303,7 +309,7 @@ export function viaPlan(g, N, cellHalf, viaSize) {
  *  via that validatePcb flags in red. Returns { svg, stats }. */
 export function coilPreviewSVG(cfg) {
   const g = pcbCoilGeometry(cfg);
-  const N = cfg.stator.pcbLayers;
+  const N = g.layers;   // winding layers only -- a spare electronics layer has no spiral to draw
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
   const plan = viaPlan(g, N, cellHalf, via);
@@ -519,8 +525,8 @@ export function buildTile(cfg, n = 3, backplane = false) {
  *  pours, and a per-coil PWM pair. Returns { text, stats } or null for non-PCB. */
 export function buildDriverBackplane(stator, cfg) {
   if (!isPcbCoil(cfg.stator.coilType)) return null;
-  const N = cfg.stator.pcbLayers;
   const g = pcbCoilGeometry(cfg);
+  const N = g.layers;   // terminal-via positions come from the winding plan
   const S = cfg.stator.statorSize * 1000;
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const drill = via * 0.5;
@@ -601,15 +607,16 @@ export function buildDriverBackplane(stator, cfg) {
 export function buildKiCad(stator, cfg) {
   if (!isPcbCoil(cfg.stator.coilType)) return null;
 
-  const N = cfg.stator.pcbLayers;
+  const N = cfg.stator.pcbLayers;                     // physical stackup (fab presses this)
   const g = pcbCoilGeometry(cfg);
+  const NC = g.layers;                                // winding layers (= N minus electronics layers)
   const S = cfg.stator.statorSize * 1000;             // nominal stator, mm
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const drill = via * 0.5;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
   const half = boardHalf(g, stator, S, cellHalf);     // grows to contain hex-packed rim coils
   const cx0 = half + 10, cy0 = half + 10;             // keep all coords positive
-  const plan = viaPlan(g, N, cellHalf, via);
+  const plan = viaPlan(g, NC, cellHalf, via);
   const thVia = [cuName(0, N), cuName(N - 1, N)];      // full-stack through-hole
 
   // --- header + layer stackup ---
@@ -641,7 +648,7 @@ export function buildKiCad(stator, cfg) {
 
   // --- coils ---
   let segments = 0, vias = 0, termPads = 0;
-  const layerPath = Array.from({ length: N }, (_, j) => spiralPath(g, j));
+  const layerPath = Array.from({ length: NC }, (_, j) => spiralPath(g, j));
   for (let ci = 0; ci < stator.coils.length; ci++) {
     const c = stator.coils[ci];
     const net = ci + 1;
@@ -651,8 +658,10 @@ export function buildKiCad(stator, cfg) {
     const tx = (p0) => f(ox + p0);
     const ty = (p1) => f(oy + p1);
 
-    // The spiral tracks, layer by layer: straight edges and arc corners.
-    for (let j = 0; j < N; j++) {
+    // The spiral tracks, layer by layer: straight edges and arc corners. Only
+    // the winding layers carry spirals -- a spare (electronics) bottom layer
+    // gets via annulars and I/O pads, never turns.
+    for (let j = 0; j < NC; j++) {
       const layer = cuName(j, N);
       for (const p of layerPath[j]) {
         if (p.t === 'arc') {
@@ -699,7 +708,7 @@ export function buildKiCad(stator, cfg) {
   return {
     text: L.join('\n') + '\n',
     stats: {
-      coils: stator.coils.length, layers: N, turnsPerLayer: g.turns,
+      coils: stator.coils.length, layers: N, coilLayers: NC, turnsPerLayer: g.turns,
       segments, vias, viasPerCoil: plan.counts.perCoil,
       innerVias: plan.counts.inner, outerVias: plan.counts.outer,
       viaTech: 'through-hole (plated)', cornerVias: true,

@@ -198,11 +198,19 @@ export function buildAssembly(cfg, stack, tr, stator) {
 
   // Coil layer occupies whatever span the coils actually sit in -- a racetrack
   // stator has two banks at different depths, and pretending it is one layer
-  // would understate the stator's height by most of a winding.
+  // would understate the stator's height by most of a winding. A PCB stator is
+  // simpler AND different: the physical board always spans [-thickness, 0]
+  // regardless of coil z, because c.z is the WINDING centroid -- with spare
+  // (electronics) layers it sits above the board's mid-plane, and deriving the
+  // slab from it would poke the drawn board through the air-gap datum.
   let coilTop = -Infinity, coilBot = Infinity;
-  for (const c of stator.coils) {
-    coilTop = Math.max(coilTop, c.z + stator.thickness / 2);
-    coilBot = Math.min(coilBot, c.z - stator.thickness / 2);
+  if (isPcbCoil(cfg.stator.coilType)) {
+    coilTop = 0; coilBot = -stator.thickness;
+  } else {
+    for (const c of stator.coils) {
+      coilTop = Math.max(coilTop, c.z + stator.thickness / 2);
+      coilBot = Math.min(coilBot, c.z - stator.thickness / 2);
+    }
   }
   const coilSpan = coilTop - coilBot;
 
@@ -244,7 +252,9 @@ export function buildAssembly(cfg, stack, tr, stator) {
       mass: stator.copperMass,
       rgb: [186, 116, 62],
       spec: isPcb
-        ? `${stator.coils.length} spirals, ${stator.effTurns} turns each (${cfg.stator.pcbLayers} layers)`
+        ? `${stator.coils.length} spirals, ${stator.effTurns} turns each (${cfg.stator.pcbSpareLayers
+          ? `${cfg.stator.pcbLayers - cfg.stator.pcbSpareLayers} coil + ${cfg.stator.pcbSpareLayers} electronics of ${cfg.stator.pcbLayers} layers`
+          : `${cfg.stator.pcbLayers} layers`})`
         : `${stator.coils.length} coils, ${stator.effTurns} turns of AWG ${awg.gauge}`,
       note: isPcb
         ? `${(wireLen).toFixed(0)} m of trace, ${(stator.copperMass * 1000).toFixed(0)} g of copper, ${(stator.coils[0]?.R ?? 0).toFixed(2)} Ω per coil.`
