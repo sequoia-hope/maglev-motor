@@ -497,25 +497,6 @@ function emitDecap(L, ref, ox, oy, f, S, vbus, gnd) {
   L.push('  )');
 }
 
-/** Half the square board edge (mm) that contains every coil plus its gutter. For
- *  the square grid this is exactly S/2 (the nominal stator size); the honeycomb
- *  packs coils a little past that nominal edge, so the outline grows to keep all
- *  copper on the board rather than clipping the rim coils. */
-function boardHalf(g, stator, S, cellHalf) {
-  const sides = g.sides ?? 4, phase = g.phase ?? -Math.PI / 2;
-  let ex = 0, ey = 0;
-  for (let k = 0; k < sides; k++) {
-    const p = polyCorner(k, g.halfOut, sides, phase);
-    ex = Math.max(ex, Math.abs(p[0])); ey = Math.max(ey, Math.abs(p[1]));
-  }
-  const reach = Math.max(cellHalf, ex, ey);   // gutter, or the coil's own axis extent
-  let half = S / 2;
-  for (const c of stator.coils) {
-    half = Math.max(half, Math.abs(c.x * 1000) + reach, Math.abs(c.y * 1000) + reach);
-  }
-  return half;
-}
-
 /** A small n×n coil TILE, sized to exactly n coil cells so copies abut into a
  *  seamless larger stator. Same coils, vias, rounded corners and I/O pads as the
  *  full board -- just n² of them, on a board that is n·coilPitch square. Returns
@@ -537,11 +518,13 @@ export function buildDriverBackplane(stator, cfg) {
   if (!isPcbCoil(cfg.stator.coilType)) return null;
   const g = pcbCoilGeometry(cfg);
   const N = g.layers;   // terminal-via positions come from the winding plan
-  const S = cfg.stator.statorSize * 1000;
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const drill = via * 0.5;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
-  const half = boardHalf(g, stator, S, cellHalf);   // matches the coil board's outline
+  // The backplane wears the same self-tileable cell-union outline as the coil
+  // board it mates to, so a tiled stator's backplanes tile with it.
+  const outline = cellOutline(stator, cfg);
+  const half = outline.reduce((a, p) => Math.max(a, Math.abs(p[0]), Math.abs(p[1])), 0);
   const cx0 = half + 10, cy0 = half + 10;
   const plan = viaPlan(g, N, cellHalf, via);
   const C = stator.coils.length;
@@ -587,17 +570,16 @@ export function buildDriverBackplane(stator, cfg) {
   }
   for (let r = 0; r <= M; r++) L.push(`  (net ${dataNet(r).num} "${dataNet(r).name}")`);
 
-  const edge = [[-half, -half], [half, -half], [half, half], [-half, half]];
-  for (let e = 0; e < 4; e++) {
-    const a = edge[e], b = edge[(e + 1) % 4];
-    L.push(`  (gr_line (start ${f(cx0 + a[0])} ${f(cy0 + a[1])}) (end ${f(cx0 + b[0])} ${f(cy0 + b[1])}) (layer "Edge.Cuts") (width 0.1))`);
+  for (let e = 0; e < outline.length; e++) {
+    const a = outline[e], b = outline[(e + 1) % outline.length];
+    L.push(`  (gr_line (start ${f(cx0 + a[0])} ${f(cy0 - a[1])}) (end ${f(cx0 + b[0])} ${f(cy0 - b[1])}) (layer "Edge.Cuts") (width 0.1))`);
   }
 
   // Power planes: GND pour on the back, VBUS pour on the front, both over the
   // whole board -- the room a 2-layer backplane has and the coil board does not.
   const zone = (net, name, layer) => {
     L.push(`  (zone (net ${net}) (net_name "${name}") (layer "${layer}") (hatch edge 0.5) (connect_pads (clearance 0.2)) (min_thickness 0.25) (fill yes (thermal_gap 0.3) (thermal_bridge_width 0.4))`);
-    L.push('    (polygon (pts ' + edge.map((p) => `(xy ${f(cx0 + p[0])} ${f(cy0 + p[1])})`).join(' ') + '))');
+    L.push('    (polygon (pts ' + outline.map((p) => `(xy ${f(cx0 + p[0])} ${f(cy0 - p[1])})`).join(' ') + '))');
     L.push('  )');
   };
   zone(netGND, 'GND', 'B.Cu');
@@ -678,11 +660,15 @@ export function buildKiCad(stator, cfg, opts = {}) {
     : null;
   const bridgeFit = elec?.available && elec.parts.sop8.fits ? elec.parts.sop8 : null;
   const chain = elec?.available ? chainPlan(stator, cfg) : null;
-  const S = cfg.stator.statorSize * 1000;             // nominal stator, mm
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const drill = via * 0.5;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
-  const half = boardHalf(g, stator, S, cellHalf);     // grows to contain hex-packed rim coils
+  // Self-tileable outline: the union boundary of the coil cells. Everything
+  // conductive lives inside its own cell (validatePcb), so cutting along cell
+  // boundaries loses nothing -- and abutted copies of the board continue the
+  // lattice seamlessly (see tileability() for the hex row-parity caveat).
+  const outline = cellOutline(stator, cfg);
+  const half = outline.reduce((a, p) => Math.max(a, Math.abs(p[0]), Math.abs(p[1])), 0);
   const cx0 = half + 10, cy0 = half + 10;             // keep all coords positive
   const plan = viaPlan(g, NC, cellHalf, via);
   const thVia = [cuName(0, N), cuName(N - 1, N)];      // full-stack through-hole
@@ -735,11 +721,10 @@ export function buildKiCad(stator, cfg, opts = {}) {
     for (let b = 0; b < nSensBus; b++) L.push(`  (net ${sdaNet(b).num} "${sdaNet(b).name}")`);
   }
 
-  // --- board outline ---
-  const edge = [[-half, -half], [half, -half], [half, half], [-half, half]];
-  for (let e = 0; e < 4; e++) {
-    const a = edge[e], b = edge[(e + 1) % 4];
-    L.push(`  (gr_line (start ${f(cx0 + a[0])} ${f(cy0 + a[1])}) (end ${f(cx0 + b[0])} ${f(cy0 + b[1])}) (layer "Edge.Cuts") (width 0.1))`);
+  // --- board outline: the cell-union boundary (self-tileable) ---
+  for (let e = 0; e < outline.length; e++) {
+    const a = outline[e], b = outline[(e + 1) % outline.length];
+    L.push(`  (gr_line (start ${f(cx0 + a[0])} ${f(cy0 - a[1])}) (end ${f(cx0 + b[0])} ${f(cy0 - b[1])}) (layer "Edge.Cuts") (width 0.1))`);
   }
 
   // --- coils ---
@@ -886,6 +871,7 @@ export function buildKiCad(stator, cfg, opts = {}) {
       registers: elec?.available ? chain.registers.length : 0,
       registersUnplaced: regsFallback,
       sensors: sensorCount,
+      tile: tileability(stator, cfg),
     },
     contract,
   };
@@ -1270,4 +1256,132 @@ function emitBridge8(L, ref, ox, oy, rot, f, S, n) {
   pad('C1', 'vbus', -0.5, 2.6, 0.4, 0.5);
   pad('C2', 'gnd', 0.5, 2.6, 0.4, 0.5);
   L.push('  )');
+}
+
+// --- self-tileable board outline --------------------------------------------
+//
+// One board is rarely the whole machine: stroke grows by abutting more stators.
+// A straight cut cannot do that for the honeycomb -- at fill 0.84 the hex
+// coils' vertices reach 0.49*pitch from their centres while a straight edge
+// leaves only 0.43*pitch of row margin, and the +/-pitch/4 row offsets poke
+// alternate rows past any vertical line. But the honeycomb CELLS tile the
+// plane by definition, and validatePcb already confines every trace, via and
+// pad to its coil's own cell. So the board outline that tiles is the union
+// boundary of the cells themselves: castellated left/right (following the row
+// offsets), zigzag top/bottom (hex edges). Two copies mesh exactly when the
+// lattice period continues across the seam -- horizontally always, vertically
+// iff the row count is EVEN (the offset alternation must not skip a beat).
+// The square grid is the same computation with 4-sided cells, and degenerates
+// to the rectangle it always was.
+
+/** The lattice cell polygon around one coil centre (mm, CCW). */
+function cellPolygon(cx, cy, cellHalf, sides) {
+  const R = cellHalf / Math.cos(Math.PI / sides);
+  const phase = sides === 6 ? Math.PI / 6 : -Math.PI / 4;
+  return Array.from({ length: sides }, (_, k) => {
+    const a = phase + (k * 2 * Math.PI) / sides;
+    return [cx + R * Math.cos(a), cy + R * Math.sin(a)];
+  });
+}
+
+/** Union boundary of every coil's cell, as a closed CCW polygon (mm, board
+ *  centre at origin). Shared edges cancel; the survivors chain into the
+ *  outline; collinear runs merge (which is what keeps the square grid's
+ *  outline the same four lines it always was). */
+export function cellOutline(stator, cfg) {
+  const sides = cfg.stator.coilType === 'pcbhex' ? 6 : 4;
+  const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const key = (p) => `${p[0].toFixed(4)},${p[1].toFixed(4)}`;
+  const edges = new Map();   // "a|b" (canonical) -> {a, b} in walk order
+  for (const c of stator.coils) {
+    const poly = cellPolygon(c.x * 1000, c.y * 1000, cellHalf, sides);
+    for (let k = 0; k < sides; k++) {
+      const a = poly[k], b = poly[(k + 1) % sides];
+      const ka = key(a), kb = key(b);
+      const canon = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      if (edges.has(canon)) edges.delete(canon);   // interior edge: appears twice
+      else edges.set(canon, { a, b, ka, kb });
+    }
+  }
+  // Chain the boundary edges into a loop.
+  const byStart = new Map();
+  for (const e of edges.values()) byStart.set(e.ka, e);
+  const first = edges.values().next().value;
+  const loop = [first.a];
+  let cur = first;
+  for (let guard = 0; guard < edges.size; guard++) {
+    const next = byStart.get(cur.kb);
+    if (!next || next === first) break;
+    loop.push(next.a);
+    cur = next;
+  }
+  loop.push(cur.b);   // close back to the start vertex
+  // Merge collinear runs.
+  const out = [];
+  const n = loop.length - 1;   // last repeats first
+  for (let i = 0; i < n; i++) {
+    const p = loop[(i - 1 + n) % n], q = loop[i], r = loop[(i + 1) % n];
+    const cross = (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]);
+    if (Math.abs(cross) > 1e-6) out.push(q);
+  }
+  return out;
+}
+
+/** Can this board extend the stator by abutting copies of itself?
+ *  Horizontal tiling holds whenever every row is full (it is, by
+ *  construction); vertical tiling additionally needs an even row count so the
+ *  hex row-offset alternation continues across the seam. Also reports the
+ *  worst copper-to-outline clearance, since the seam puts two boards' rim
+ *  copper a fab-clearance apart. */
+export function tileability(stator, cfg) {
+  if (!isPcbCoil(cfg.stator.coilType)) return { available: false };
+  const hex = cfg.stator.coilType === 'pcbhex';
+  const p = cfg.stator.coilPitch * 1000;
+  const rowH = hex ? p * Math.sqrt(3) / 2 : p;
+  // Rows by quantised y; columns = coils per row (the hex row offsets shift x
+  // by +/-p/4, so quantising x across ALL rows would double-count columns).
+  const rowOf = new Map();
+  for (const c of stator.coils) {
+    const r = Math.round((c.y * 1000) / rowH);
+    rowOf.set(r, (rowOf.get(r) || 0) + 1);
+  }
+  const nRows = rowOf.size;
+  const nCols = Math.max(...rowOf.values());
+  const rowsEven = !hex || nRows % 2 === 0;
+  // Copper-to-cell-boundary clearance: everything is in-cell (validatePcb), so
+  // the binding items are the terminal pads and outer vias nearest a flat.
+  // Flat normals: k*60 deg for the pointy-top hex cell, k*90 deg for the square.
+  const g = pcbCoilGeometry(cfg);
+  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
+  const cellHalf = p / 2;
+  const plan = viaPlan(g, g.layers, cellHalf, via);
+  const sides = hex ? 6 : 4;
+  let clear = Infinity;
+  const flats = Array.from({ length: sides }, (_, k) => (k * 2 * Math.PI) / sides);
+  for (const a of flats) {
+    const ux = Math.cos(a), uy = Math.sin(a);
+    for (const v of [...plan.vias, ...plan.termVias]) {
+      clear = Math.min(clear, cellHalf - (v.p[0] * ux + v.p[1] * uy) - via / 2);
+    }
+    for (const t of plan.termPads || []) {
+      // Oriented half-extent of the pad along this flat normal.
+      const ext = (t.w / 2) * Math.abs(Math.cos(t.a - a)) + (t.h / 2) * Math.abs(Math.sin(t.a - a));
+      clear = Math.min(clear, cellHalf - (t.p[0] * ux + t.p[1] * uy) - ext);
+    }
+  }
+  // Two abutted boards put rim copper 2*clear apart across the seam. The hex
+  // clears it because its pads are confined in-cell (the honeycomb forced
+  // that); the square grid's pads deliberately straddle the cell boundary --
+  // at high fill the gutter cannot hold them inside -- so square boards do NOT
+  // self-tile: abutted copies land pad on pad. The number says which.
+  const SEAM_MIN = 0.2;   // mm of copper-to-copper a fab (and sanity) want
+  const copperOK = 2 * clear >= SEAM_MIN;
+  return {
+    available: true,
+    latticeX: true, latticeY: rowsEven, copperOK,
+    tileable: rowsEven && copperOK,
+    nRows, nCols,
+    periodXmm: nCols * p, periodYmm: nRows * rowH,
+    edgeClearMm: clear, seamGapMm: 2 * clear,
+  };
 }

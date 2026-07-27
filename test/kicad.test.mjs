@@ -383,5 +383,87 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
   check('a board with no electronics layer stays passive', passive.stats.drivers === 0 && !passive.contract);
 }
 
+// The self-tileable outline: the board edge follows the coil-cell boundary, so
+// abutted copies must continue the lattice exactly. That claim is checked the
+// only way that matters -- translate the board by its own period and measure
+// the seam: every cross-board nearest-neighbour spacing must be exactly one
+// coil pitch, as if the seam were not there.
+console.log('\n=== the full board tiles with itself ===');
+{
+  const { cellOutline, tileability, buildKiCad } = await import('../src/kicad.js');
+  const hcfg = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.84, statorSize: 0.096 } };
+  const hs = makeStator({ ...hcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const t = tileability(hs, hcfg);
+  check('the shipped hex board is self-tileable (even rows, seam copper clear)',
+    t.tileable === true, `${t.nRows} rows, seam ${t.seamGapMm.toFixed(2)} mm`);
+
+  const outline = cellOutline(hs, hcfg);
+  check('the outline is a closed polygon of many cell edges', outline.length > 20);
+  // Point-in-polygon: every coil centre is inside the outline.
+  const inside = (px, py) => {
+    let odd = false;
+    for (let i = 0, j = outline.length - 1; i < outline.length; j = i++) {
+      const [xi, yi] = outline[i], [xj, yj] = outline[j];
+      if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) odd = !odd;
+    }
+    return odd;
+  };
+  check('every coil centre lies inside the outline',
+    hs.coils.every((c) => inside(c.x * 1000, c.y * 1000)));
+
+  // THE seam test. Tile the board at +periodX and at +periodY: across each
+  // seam, every boundary coil's nearest neighbour on the other board must sit
+  // at exactly one coil pitch -- no gap, no clash.
+  const p = hcfg.stator.coilPitch * 1000;
+  const seamOK = (dx, dy) => {
+    let minD = Infinity;
+    for (const a of hs.coils) {
+      for (const b of hs.coils) {
+        const d = Math.hypot(b.x * 1000 + dx - a.x * 1000, b.y * 1000 + dy - a.y * 1000);
+        if (d > 1e-6 && d < minD) minD = d;
+      }
+    }
+    return minD;
+  };
+  const dxMin = seamOK(t.periodXmm, 0);
+  check('horizontal seam: the lattice continues at exactly one pitch',
+    Math.abs(dxMin - p) < 1e-6, `nearest cross-board spacing ${dxMin.toFixed(6)} mm vs pitch ${p}`);
+  const dyMin = seamOK(0, t.periodYmm);
+  check('vertical seam: the lattice continues at exactly one pitch',
+    Math.abs(dyMin - p) < 1e-6, `nearest cross-board spacing ${dyMin.toFixed(6)} mm vs pitch ${p}`);
+  // And the regions must mesh without overlap. Interlocking outlines SHARE
+  // boundary (that is what meshing means), so testing shifted vertices is
+  // wrong -- the right statement for cell-union regions: no shifted CELL
+  // CENTRE falls inside this board. Centres one pitch apart share a flat and
+  // nothing more; a centre inside the outline would be a genuine collision.
+  check('no shifted-board cell reaches inside this board (X seam)',
+    hs.coils.every((c) => !inside(c.x * 1000 + t.periodXmm, c.y * 1000)));
+  check('no shifted-board cell reaches inside this board (Y seam)',
+    hs.coils.every((c) => !inside(c.x * 1000, c.y * 1000 + t.periodYmm)));
+
+  // An odd-row hex board must be called out as vertically untileable.
+  const odd = { stator: { ...hcfg.stator, statorSize: 0.090 } };  // 13 rows
+  const os = makeStator({ ...odd.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const ot = tileability(os, odd);
+  check('an odd-row honeycomb is reported vertically untileable',
+    ot.nRows % 2 === 1 && ot.latticeY === false && ot.tileable === false, `${ot.nRows} rows`);
+
+  // The square grid keeps its plain rectangle -- and is HONESTLY reported as
+  // non-tiling, because its I/O pads straddle the cell boundary at high fill.
+  const sqs = makeStator({ ...cfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const so = cellOutline(sqs, cfg);
+  check('the square grid outline stays a plain rectangle', so.length === 4);
+  const st2 = tileability(sqs, cfg);
+  check('the square grid is honestly reported as not self-tiling (pads on the boundary)',
+    st2.latticeX && st2.latticeY && st2.copperOK === false && st2.tileable === false,
+    `seam ${st2.seamGapMm.toFixed(2)} mm`);
+
+  // The export carries the verdict, and the hex board file has the castellated
+  // edge, not a rectangle.
+  const out = buildKiCad(hs, hcfg);
+  check('the exported hex board has the cell-boundary outline',
+    (out.text.match(/gr_line/g) || []).length > 20 && out.stats.tile.tileable === true);
+}
+
 console.log(fails ? `\n${fails} FAILURES` : '\nall kicad checks pass');
 process.exit(fails ? 1 : 0);
