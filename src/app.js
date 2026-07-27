@@ -6,7 +6,7 @@ import {
   applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES, arraySymmetry, imperialName,
 } from './halbach.js';
 import { COIL_TYPES, makeStator, isPcbCoil } from './coils.js';
-import { buildKiCad, buildDriverBackplane, coilPreviewSVG, buildTile } from './kicad.js';
+import { buildKiCad, buildDriverBackplane, coilPreviewSVG, buildTile, backsideFit } from './kicad.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
 import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
@@ -394,6 +394,16 @@ function rebuild(resetSim = false) {
       app.sensorLayout = sensorLayout(app.stator, app.tr,
         { gap: app.cfg.sim.gap, maxTilt: app.cfg.sim.maxTilt });
       app._layoutKey = lkey;
+    }
+    // Can the electronics layer physically host the parts? Depends on the coil
+    // geometry and the recommended sensor spacing (for the grid placement).
+    const fkey = [...geom, app.sensorLayout?.spacing ?? 0].join('|');
+    if (fkey !== app._fitKey) {
+      app.fitCheck = backsideFit(app.cfg, {
+        stator: app.stator,
+        sensorSpacing: app.sensorLayout?.available ? app.sensorLayout.spacing : null,
+      });
+      app._fitKey = fkey;
     }
   }
   app.analysis = analysePose(
@@ -1036,6 +1046,41 @@ function renderSelfTest() {
   renderFieldCheck();
   renderSensorCheck();
   renderSensorLayout();
+  renderFitCheck();
+}
+
+/** Electronics-layer fit card: whether the parts the driver-per-coil build
+ *  needs can physically land on the surrendered bottom copper -- solder pads
+ *  clear of every through-via land and I/O pad, and (for per-cell parts) an
+ *  identical placement that tiles the lattice. Placement-envelope models only:
+ *  it answers the package-class question, not routing. */
+function renderFitCheck() {
+  const el = document.getElementById('fitCheck');
+  if (!el) return;
+  const r = app.fitCheck;
+  if (!r || !r.available) {
+    const why = !isPcbCoil(app.cfg.stator.coilType)
+      ? 'only meaningful for a PCB stator.'
+      : 'no electronics layer — the winding owns the bottom copper. The drivers live on the separate backplane (fit there is trivial); set <b>Electronics layers ≥ 1</b> to check the single-board build.';
+    el.innerHTML = `<strong>Electronics-layer fit.</strong> <span style="color:var(--muted)">${why}</span>`;
+    return;
+  }
+  const p = r.parts;
+  const verdict = (v) => v.fits
+    ? `<span class="ok">fits</span> (${v.offMm.toFixed(1)} mm off-centre, ${v.rotDeg.toFixed(0)}°)`
+    : `<span class="bad">does not fit</span>`;
+  const bridge = p.sop8.fits ? 'SOP-8' : p.dfn8.fits ? '2×2 DFN only' : null;
+  const sens = r.sensors
+    ? `Sensor grid: <b>${r.sensors.placed}/${r.sensors.wanted}</b> TMAG positions clear${r.sensors.failed ? ` (<span class="bad">${r.sensors.failed} blocked</span>)` : ''}, worst nudge ${r.sensors.worstNudgeMm.toFixed(1)} mm — re-check observability at the nudged spots before trusting an aggressive nudge. `
+    : '';
+  const summary = bridge
+    ? `The single-board build is geometrically viable: one <b>${bridge}</b> bridge per cell, pads landing on the bare-mask winding annulus between the centre-hole and gutter via fields.`
+    : `<span class="bad">No bridge package tiles the cells — this board wants the separate driver backplane.</span>`;
+  el.innerHTML =
+    `<strong>Electronics-layer fit (${r.obstaclesPerCell} via/pad keepouts per cell, ${r.gutterMm.toFixed(1)} mm gutter, ${r.holeMm.toFixed(1)} mm centre hole).</strong> `
+    + `Bridge SOP-8 ${verdict(p.sop8)} · DFN ${verdict(p.dfn8)} · sensor SOT-23-6 ${verdict(p.sot23_6)} · 74HC595 (1 per 4 coils) ${verdict(p.tssop16)}.<br>`
+    + sens
+    + `<span style="color:var(--muted)">${summary} Envelope check only — pad-vs-copper clearance ${r.clearance} mm; routing is yours in KiCad.</span>`;
 }
 
 /** Recommended distributed flux-sensor grid: the coarsest 3-axis spacing that

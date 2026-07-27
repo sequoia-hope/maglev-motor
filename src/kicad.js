@@ -718,3 +718,201 @@ export function buildKiCad(stator, cfg) {
     },
   };
 }
+
+// --- back-side component fit ------------------------------------------------
+//
+// The single-board driver-per-coil build surrenders the bottom copper to parts
+// (pcbSpareLayers), but "a layer with no winding" is not "a layer with room":
+// every crossover and terminal via is a plated through-hole whose land arrives
+// on B.Cu whether the winding does or not, plus the two I/O pads per coil. A
+// component's SOLDER PADS must clear all of that copper; its body may span
+// tented vias. Whether a given package class fits is therefore a geometry
+// question the model can answer, and it decides the build: per-cell bridges on
+// the coil board, or the separate backplane.
+//
+// The lattice is periodic, so one cell is solved and the answer stamps to all
+// of them: obstacles are this cell's plan plus its neighbours' translated
+// copies, and the part's extent must also clear its OWN copies one lattice
+// step away (identical placement per cell tiles iff the extent fits a period).
+
+/** Representative land patterns, millimetres, centred, pads before rotation.
+ *  These are placement-envelope models (body + pad rectangles), not fab-ready
+ *  footprints -- close enough to answer "does this package class fit". */
+export const FOOTPRINTS = {
+  sop8: {
+    label: 'SOP-8 bridge (MX1508-class)', body: [4.9, 3.9],
+    pads: [-1.905, -0.635, 0.635, 1.905].flatMap((y) =>
+      [[-2.7, y, 1.5, 0.6], [2.7, y, 1.5, 0.6]]),
+  },
+  dfn8: {
+    label: '2x2 DFN bridge (DRV8837-class)', body: [2.2, 2.2],
+    pads: [-0.75, -0.25, 0.25, 0.75].flatMap((y) =>
+      [[-0.85, y, 0.6, 0.3], [0.85, y, 0.6, 0.3]]),
+  },
+  sot23_6: {
+    label: 'SOT-23-6 sensor (TMAG5273)', body: [2.9, 1.6],
+    pads: [-0.95, 0, 0.95].flatMap((y) =>
+      [[-1.1, y, 0.9, 0.6], [1.1, y, 0.9, 0.6]]),
+  },
+  tssop16: {
+    // One per FOUR coils, so it need not tile every cell: `sparse` skips the
+    // periodic-copy check (copies sit >= 2 lattice steps apart) while the
+    // via/pad obstacles -- which repeat in EVERY cell -- are still enforced.
+    label: 'TSSOP-16 shift register (74HC595)', body: [5.0, 4.4], sparse: true,
+    pads: Array.from({ length: 8 }, (_, k) => -2.275 + k * 0.65).flatMap((y) =>
+      [[-2.9, y, 1.2, 0.4], [2.9, y, 1.2, 0.4]]),
+  },
+};
+
+// Oriented rectangle {cx, cy, w, h, ang} helpers.
+function rectCorners(r) {
+  const c = Math.cos(r.ang), s = Math.sin(r.ang), hw = r.w / 2, hh = r.h / 2;
+  return [[hw, hh], [hw, -hh], [-hw, -hh], [-hw, hh]]
+    .map(([x, y]) => [r.cx + x * c - y * s, r.cy + x * s + y * c]);
+}
+function rectsOverlap(a, b) {
+  // Separating-axis test on both rectangles' edge normals.
+  for (const r of [a, b]) {
+    for (const [ux, uy] of [[Math.cos(r.ang), Math.sin(r.ang)], [-Math.sin(r.ang), Math.cos(r.ang)]]) {
+      const pa = rectCorners(a).map(([x, y]) => x * ux + y * uy);
+      const pb = rectCorners(b).map(([x, y]) => x * ux + y * uy);
+      if (Math.max(...pa) < Math.min(...pb) || Math.max(...pb) < Math.min(...pa)) return false;
+    }
+  }
+  return true;
+}
+function rectHitsCircle(r, cx, cy, rad) {
+  // Closest point on the rectangle to the circle centre, in the rect's frame.
+  const c = Math.cos(r.ang), s = Math.sin(r.ang), dx = cx - r.cx, dy = cy - r.cy;
+  const lx = dx * c + dy * s, ly = -dx * s + dy * c;
+  const qx = Math.max(Math.abs(lx) - r.w / 2, 0), qy = Math.max(Math.abs(ly) - r.h / 2, 0);
+  return qx * qx + qy * qy <= rad * rad;
+}
+
+/** Everything already occupying the electronics face of ONE coil cell, in
+ *  coil-local millimetres: crossover + terminal via lands (discs) and the two
+ *  I/O pads (rects). Shares viaPlan with the export, so the keepouts are the
+ *  copper actually emitted, not a redescription of it. */
+export function backsideObstacles(cfg) {
+  const g = pcbCoilGeometry(cfg);
+  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
+  const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const plan = viaPlan(g, g.layers, cellHalf, via);
+  const discs = [...plan.vias, ...plan.termVias].map((v) => ({ x: v.p[0], y: v.p[1], r: via / 2 }));
+  const rects = (plan.termPads || []).map((p) => ({ cx: p.p[0], cy: p.p[1], w: p.w, h: p.h, ang: p.a }));
+  const hex = (g.sides ?? 4) === 6;
+  const p = cfg.stator.coilPitch * 1000;
+  // Nearest-neighbour lattice offsets (mm): 6 for the triangular lattice, 8 for
+  // the square grid (diagonals included -- a big part can reach them).
+  const dv = p * Math.sqrt(3) / 2;
+  const offsets = hex
+    ? [[p, 0], [-p, 0], [p / 2, dv], [p / 2, -dv], [-p / 2, dv], [-p / 2, -dv]]
+    : [[p, 0], [-p, 0], [0, p], [0, -p], [p, p], [p, -p], [-p, p], [-p, -p]];
+  return { discs, rects, offsets, cellHalf, via, hex, pitchMm: p, g };
+}
+
+function padClear(pad, obs, clearance) {
+  for (const [ox, oy] of [[0, 0], ...obs.offsets]) {
+    for (const d of obs.discs) {
+      if (rectHitsCircle(pad, d.x + ox, d.y + oy, d.r + clearance)) return false;
+    }
+    for (const r of obs.rects) {
+      if (rectsOverlap(pad, { ...r, cx: r.cx + ox, cy: r.cy + oy, w: r.w + 2 * clearance, h: r.h + 2 * clearance })) return false;
+    }
+  }
+  return true;
+}
+
+/** Is the footprint, placed at (cx,cy) rotation ang (coil-local mm), clear of
+ *  every obstacle AND of its own periodic copies? Exported so the tests can
+ *  re-verify any placement the search returns. */
+export function placementClear(fp, cx, cy, ang, obs, clearance) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  for (const [px, py, w, h] of fp.pads) {
+    const pad = { cx: cx + px * c - py * s, cy: cy + px * s + py * c, w, h, ang };
+    if (!padClear(pad, obs, clearance)) return false;
+  }
+  // Periodic-copy check on the part's full extent (body + pads): identical
+  // per-cell placement tiles iff the extent clears its own lattice translates.
+  const ex = Math.max(fp.body[0] / 2, ...fp.pads.map(([px, , w]) => Math.abs(px) + w / 2));
+  const ey = Math.max(fp.body[1] / 2, ...fp.pads.map(([, py, , h]) => Math.abs(py) + h / 2));
+  const extent = { cx, cy, w: 2 * ex, h: 2 * ey, ang };
+  if (!fp.sparse) {
+    for (const [ox, oy] of obs.offsets) {
+      if (rectsOverlap(extent, { ...extent, cx: cx + ox, cy: cy + oy })) return false;
+    }
+  }
+  return true;
+}
+
+const ROTS = [0, Math.PI / 6, Math.PI / 4, Math.PI / 3, Math.PI / 2, 2 * Math.PI / 3, 3 * Math.PI / 4, 5 * Math.PI / 6];
+
+/** Search one cell for a clear placement of `fp`. Candidates spiral outward
+ *  from the cell centre so the first hit is also the most central. */
+function placeInCell(fp, obs, clearance, searchHalf = null, centre = [0, 0], step = 0.25) {
+  const half = searchHalf ?? obs.cellHalf;
+  const cand = [];
+  for (let x = -half; x <= half + 1e-9; x += step) {
+    for (let y = -half; y <= half + 1e-9; y += step) cand.push([centre[0] + x, centre[1] + y]);
+  }
+  cand.sort((a, b) => Math.hypot(a[0] - centre[0], a[1] - centre[1]) - Math.hypot(b[0] - centre[0], b[1] - centre[1]));
+  for (const [cx, cy] of cand) {
+    for (const ang of ROTS) {
+      if (placementClear(fp, cx, cy, ang, obs, clearance)) {
+        return { fits: true, at: [cx, cy], rotDeg: (ang * 180) / Math.PI, offMm: Math.hypot(cx - centre[0], cy - centre[1]) };
+      }
+    }
+  }
+  return { fits: false };
+}
+
+/** Can the electronics layer actually HOST the electronics? Per package class:
+ *  a per-cell placement that clears every via land and I/O pad (own cell and
+ *  neighbours) and tiles the lattice. Optionally, with `stator` and
+ *  `sensorSpacing`: place a SOT-23-6 at each recommended sensor-grid point,
+ *  nudging within `nudgeMax` mm, and report the worst nudge -- feed the nudged
+ *  positions back through poseObservability before trusting them. */
+export function backsideFit(cfg, {
+  stator = null, sensorSpacing = null, clearance = 0.2, nudgeMax = 2.5, footprints = FOOTPRINTS,
+} = {}) {
+  if (!isPcbCoil(cfg.stator.coilType)) return { available: false, reason: 'notpcb' };
+  if (!(cfg.stator.pcbSpareLayers > 0)) return { available: false, reason: 'nolayer' };
+  const obs = backsideObstacles(cfg);
+  const parts = {};
+  for (const [key, fp] of Object.entries(footprints)) {
+    parts[key] = { label: fp.label, ...placeInCell(fp, obs, clearance) };
+  }
+
+  let sensors = null;
+  if (stator && sensorSpacing) {
+    const gridHalf = cfg.stator.statorSize / 2;
+    const n = Math.floor((2 * gridHalf) / sensorSpacing) + 1;
+    const placed = [];
+    let failed = 0, worstNudge = 0;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const wx = (-gridHalf + i * sensorSpacing) * 1000, wy = (-gridHalf + j * sensorSpacing) * 1000;
+        // Local frame of the nearest coil: the obstacle plan is coil-local.
+        let best = null, bd = Infinity;
+        for (const c of stator.coils) {
+          const d = Math.hypot(c.x * 1000 - wx, c.y * 1000 - wy);
+          if (d < bd) { bd = d; best = c; }
+        }
+        const r = placeInCell(footprints.sot23_6, obs, clearance, nudgeMax, [wx - best.x * 1000, wy - best.y * 1000]);
+        if (r.fits) {
+          worstNudge = Math.max(worstNudge, r.offMm);
+          placed.push([best.x * 1000 + r.at[0], best.y * 1000 + r.at[1]]);
+        } else { failed++; }
+      }
+    }
+    sensors = { wanted: n * n, placed: placed.length, failed, worstNudgeMm: worstNudge, positionsMm: placed };
+  }
+
+  return {
+    available: true,
+    obstaclesPerCell: obs.discs.length + obs.rects.length,
+    gutterMm: obs.pitchMm * (1 - cfg.stator.coilFill),
+    holeMm: 2 * obs.g.halfIn,
+    clearance, parts, sensors,
+  };
+}

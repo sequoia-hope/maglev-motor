@@ -268,5 +268,50 @@ console.log('\n=== spare electronics layers: wind less, press the same board ===
     validatePcb(g1, g1.layers, cellHalf, hvia).length === 0);
 }
 
+// The electronics-layer fit check: the single-board driver-per-coil build only
+// exists if solder pads can land clear of the through-via fields. These pin the
+// shipped verdicts (SOP-8 bridges DO fit per hex cell -- pads on the bare-mask
+// winding annulus) and make the search re-verify its own answers.
+console.log('\n=== electronics-layer fit: the parts land clear of the via fields ===');
+{
+  const { backsideFit, backsideObstacles, placementClear, FOOTPRINTS } = await import('../src/kicad.js');
+  const hcfg = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.84, pcbSpareLayers: 1 } };
+  const hstat = makeStator({ ...hcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+  const fit = backsideFit(hcfg, { stator: hstat, sensorSpacing: 0.0216 });
+  check('fit check runs on the hex electronics layer', fit.available === true,
+    `${fit.obstaclesPerCell} keepouts/cell`);
+  check('a per-cell SOP-8 bridge fits (the single-board build is viable)',
+    fit.parts.sop8.fits === true,
+    fit.parts.sop8.fits ? `at (${fit.parts.sop8.at.map((v) => v.toFixed(2))}) rot ${fit.parts.sop8.rotDeg}°` : '');
+  check('the DFN fallback and the sensor package fit too',
+    fit.parts.dfn8.fits && fit.parts.sot23_6.fits);
+  check('the shift register (1 per 4 coils, sparse) finds a spot',
+    fit.parts.tssop16.fits === true);
+  // The search must not be grading its own homework: re-verify every returned
+  // placement independently through placementClear.
+  const obs = backsideObstacles(hcfg);
+  const allClear = Object.entries(fit.parts).every(([k, p]) =>
+    !p.fits || placementClear(FOOTPRINTS[k], p.at[0], p.at[1], (p.rotDeg * Math.PI) / 180, obs, fit.clearance));
+  check('every reported placement re-validates against the obstacle list', allClear);
+  // The periodic-copy check has to actually bite. Note a part longer than the
+  // pitch in ONE dimension can still legitimately tile the triangular lattice
+  // by threading between columns (the first version of this test learned that);
+  // only a part bigger than the pitch in BOTH dimensions is truly untileable.
+  const tooBig = { label: 'too big', body: [9.0, 9.0], pads: [[-4.2, -4.2, 0.5, 0.5], [4.2, 4.2, 0.5, 0.5]] };
+  const fw = backsideFit(hcfg, { footprints: { tooBig } });
+  check('a part bigger than the pitch both ways is rejected by the tiling check',
+    fw.parts.tooBig.fits === false);
+  check('sensor grid places completely with a modest nudge',
+    fit.sensors && fit.sensors.failed === 0 && fit.sensors.worstNudgeMm < 2.0,
+    fit.sensors ? `${fit.sensors.placed}/${fit.sensors.wanted}, worst nudge ${fit.sensors.worstNudgeMm.toFixed(2)} mm` : '');
+  check('no electronics layer -> no single-board fit to report',
+    backsideFit({ stator: { ...cfg.stator, coilType: 'pcbhex' } }).available === false);
+  check('non-PCB stators are refused',
+    backsideFit({ stator: { ...cfg.stator, coilType: 'square' } }).available === false);
+  // The square PCB grid goes through the same machinery.
+  const sq = backsideFit({ stator: { ...cfg.stator, pcbSpareLayers: 1 } });
+  check('square-grid electronics layer fits a bridge as well', sq.available && sq.parts.sop8.fits);
+}
+
 console.log(fails ? `\n${fails} FAILURES` : '\nall kicad checks pass');
 process.exit(fails ? 1 : 0);
