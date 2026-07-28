@@ -14,10 +14,10 @@
         "min_silk_clearance": 0,
         "min_text_height": 0.8,
         "min_text_thickness": 0.08,
-        "min_through_hole_diameter": 0.15,
+        "min_through_hole_diameter": 0.1963,
         "min_track_width": 0.09,
         "min_via_annular_width": 0.13,
-        "min_via_diameter": 0.25,
+        "min_via_diameter": 0.4563,
         "solder_mask_to_copper_clearance": 0,
         "use_height_for_length_calcs": true
       },

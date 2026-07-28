@@ -7,7 +7,9 @@ const cfg = P[process.argv[2] || 'amzhex'].cfg;
 const g = pcbCoilGeometry(cfg);
 const cellHalf = cfg.stator.coilPitch * 1000 / 2;
 const v = viaSize(g, cellHalf);
-console.log('via', v.toFixed(3), 'drill', viaDrill(v).toFixed(3), 'gutter', JSON.stringify(gutterFits(g, cellHalf)));
+// g.thickness, or this reports the flat 0.2 mm drill for a board the aspect
+// ratio says needs 0.23.
+console.log('via', v.toFixed(3), 'drill', viaDrill(v, g.thickness).toFixed(3), 'gutter', JSON.stringify(gutterFits(g, cellHalf)));
 const plan = viaPlan(g, g.layers, cellHalf, v);
 const inner = plan.vias.filter((_, i) => i % 2 === 0);
 console.log('inner r', inner.map((x) => Math.hypot(...x.p).toFixed(3)).join(' '));

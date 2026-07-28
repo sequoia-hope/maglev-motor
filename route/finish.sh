@@ -13,15 +13,20 @@ mkdir -p "$OUT"
 
 echo "== merging $SES into $BOARD"
 node mkses.mjs "$BOARD" "$SES" "$OUT/$NAME.kicad_pcb" || exit 1
+# The rule files are written for the board that was just merged -- thickness
+# included, because the via rules are aspect-ratio limits and a 12-layer rule
+# file passes holes a 14-layer board cannot have (see fabRuleFiles).
 node -e "
 import('../src/kicad.js').then(async (K) => {
-  const { writeFileSync } = await import('fs');
-  const r = K.fabRuleFiles({ trackWidth: 0.103 });
+  const { writeFileSync, readFileSync } = await import('fs');
+  const { viaForBoard } = await import('./mkses.mjs');
+  const fit = viaForBoard(readFileSync('$OUT/$NAME.kicad_pcb', 'utf8'));
+  const r = K.fabRuleFiles({ trackWidth: 0.103, boardThickness: fit.thickness });
   writeFileSync('$OUT/$NAME.kicad_dru', r.dru);
   writeFileSync('$OUT/$NAME.kicad_pro', r.pro);
-});" 
+});" || exit 1
 
-echo "== DRC (JLCPCB 12-layer rules)"
+echo "== DRC (JLCPCB rules, for this board's own stackup)"
 # NOT --severity-all: that reports items the project marks "ignore" too, which
 # here means the "footprint library not configured" note about this machine's
 # KiCad setup rather than anything about the board.

@@ -8,12 +8,34 @@
 // `node mkses.mjs <board.kicad_pcb> <routed.ses> <out.kicad_pcb>`
 
 import { readFileSync, writeFileSync } from 'fs';
+import { FAB, viaDrill, minViaFor } from '../src/kicad.js';
 
 const f = (v) => (Math.abs(v) < 1e-9 ? 0 : +v.toFixed(6));
 
-export function mergeSes(boardPath, sesPath, outPath, { viaDia, viaDrill, layers }) {
+/** The via to write for a board, read off the board itself. The merge step is
+ *  the last place a routed via's size is decided, and it used to decide it with
+ *  `VIA_DRILL || 0.2` -- a default with no board behind it, which stamped 698
+ *  9.2:1 holes into a 14-layer stack. The .kicad_pcb states its own pressed
+ *  thickness in its first line, so ask it. */
+export function viaForBoard(board) {
+  const m = board.match(/\(general\s*\(thickness ([\d.]+)\)/);
+  const t = m ? +m[1] : 0;
+  return { thickness: t, dia: Math.max(FAB.viaDia, minViaFor(t)), drill: viaDrill(FAB.viaDia, t) };
+}
+
+export function mergeSes(boardPath, sesPath, outPath, { viaDia, viaDrill, layers } = {}) {
   const board = readFileSync(boardPath, 'utf8');
   const ses = readFileSync(sesPath, 'utf8');
+
+  // Unstated via geometry comes from the board's own stackup, never a constant.
+  const fit = viaForBoard(board);
+  if (viaDia == null) viaDia = fit.dia;
+  if (viaDrill == null) viaDrill = fit.drill;
+  if (fit.thickness && viaDrill * FAB.maxAspect < fit.thickness - 1e-9) {
+    throw new Error(`via drill ${viaDrill} mm through ${fit.thickness} mm of board is `
+      + `${(fit.thickness / viaDrill).toFixed(1)}:1, past the fab's ${FAB.maxAspect}:1 `
+      + `(this board needs ${fit.drill} mm)`);
+  }
 
   // Net name -> number, from the board's own net table.
   const netNum = new Map();
@@ -70,11 +92,17 @@ export function mergeSes(boardPath, sesPath, outPath, { viaDia, viaDrill, layers
   return { wires, vias, skippedNets: skipped };
 }
 
-if (process.argv[1].endsWith('mkses.mjs')) {
+// argv[1] is undefined under `node -e`, which is how finish.sh imports
+// viaForBoard -- an unguarded .endsWith() there threw and silently skipped
+// writing the rule files while the rest of the script carried on.
+if (process.argv[1]?.endsWith('mkses.mjs')) {
   const [, , b, s, o] = process.argv;
+  // No numeric defaults: unset means "whatever this board's stackup allows".
+  // An explicit VIA_DRILL is still honoured, but only if it is legal for the
+  // board -- mergeSes throws on an over-deep hole rather than writing it.
   const r = mergeSes(b, s, o, {
-    viaDia: +(process.env.VIA_DIA || 0.5),
-    viaDrill: +(process.env.VIA_DRILL || 0.2),
+    viaDia: process.env.VIA_DIA ? +process.env.VIA_DIA : null,
+    viaDrill: process.env.VIA_DRILL ? +process.env.VIA_DRILL : null,
     layers: (process.env.VIA_SPAN || 'F.Cu,B.Cu').split(','),
   });
   console.log(JSON.stringify(r));

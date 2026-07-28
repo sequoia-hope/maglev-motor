@@ -108,20 +108,40 @@ export function viaDrill(d, thicknessMm = 0) {
  *  from FAB rather than kept as a copy, because a rule file that disagrees with
  *  the geometry is worse than no rule file -- it certifies the wrong board.
  *  Returns { dru, pro } as text; the caller writes them next to the .kicad_pcb
- *  under the same basename, which is where kicad-cli looks for them. */
-export function fabRuleFiles({ trackWidth = 0.103 } = {}) {
+ *  under the same basename, which is where kicad-cli looks for them.
+ *
+ *  `boardThickness` (mm, the pressed stackup) is what makes the via rules
+ *  honest. The plated-hole limit is an ASPECT RATIO, so it is the only fab
+ *  number that moves when layers are added and nothing else changes: 0.2 mm
+ *  through the 1.57 mm of a 12-layer board is 7.9:1 and fine, and through the
+ *  1.84 mm of a 14-layer one it is 9.2:1 and past what this fab plates. Omit it
+ *  and the files describe a zero-thickness board -- which is what let the
+ *  netclass hand the autorouter a 0.2 mm drill to scatter 698 times across a
+ *  14-layer board that DRC then passed, because every rule here was a diameter
+ *  and none of them was the ratio. */
+export function fabRuleFiles({ trackWidth = 0.103, boardThickness = 0 } = {}) {
+  // The three via numbers, all derived from the stack rather than assumed. The
+  // drill is the fab's comfortable 0.2 mm unless the aspect ratio forbids it;
+  // the diameter grows only if it must, to keep the ring legal on a wider hole.
+  const drill = viaDrill(FAB.viaDia, boardThickness);
+  const dia = Math.max(FAB.viaDia, minViaFor(boardThickness));
+  const minDrill = minDrillFor(boardThickness);
   const dru = `(version 1)
 
 # ${FAB.name}. Every number is transcribed from the fab's published capability
 # table; this file is GENERATED from FAB in src/kicad.js, so it and the copper
 # it checks come from one place.
 
+# Plated-hole aspect ratio, ${FAB.maxAspect}:1, expressed as the drill floor it
+# implies -- KiCad has no aspect-ratio constraint, and a ratio the rule file
+# cannot state is a ratio nothing checks. Board thickness ${boardThickness || '(unset)'} mm
+# / ${FAB.maxAspect} = ${+(boardThickness / FAB.maxAspect).toFixed(4)} mm, against the bare ${FAB.minDrill} mm floor.
 (rule "min via drill"
-\t(constraint hole_size (min ${FAB.minDrill}mm))
+\t(constraint hole_size (min ${+minDrill.toFixed(4)}mm))
 \t(condition "A.Type == 'Via'"))
 
 (rule "min via diameter"
-\t(constraint via_diameter (min ${FAB.minViaDia}mm))
+\t(constraint via_diameter (min ${+Math.max(FAB.minViaDia, minViaFor(boardThickness)).toFixed(4)}mm))
 \t(condition "A.Type == 'Via'"))
 
 (rule "min annular ring"
@@ -158,15 +178,22 @@ export function fabRuleFiles({ trackWidth = 0.103 } = {}) {
           min_silk_clearance: 0,
           min_text_height: 0.8,
           min_text_thickness: 0.08,
-          min_through_hole_diameter: FAB.minDrill,
+          // Thickness-derived, like the .dru above: this is the built-in rule
+          // that catches a plated hole the stack is too deep for, including on
+          // a pad rather than a via.
+          min_through_hole_diameter: +minDrill.toFixed(4),
           min_track_width: FAB.minTrace,
           min_via_annular_width: FAB.minAnnular,
-          min_via_diameter: FAB.minViaDia,
+          min_via_diameter: +Math.max(FAB.minViaDia, minViaFor(boardThickness)).toFixed(4),
           solder_mask_to_copper_clearance: 0,
           use_height_for_length_calcs: true,
         },
         track_widths: [0, trackWidth, 0.2, 0.3, 0.5],
-        via_dimensions: [{ diameter: 0, drill: 0 }, { diameter: FAB.viaDia, drill: FAB.viaDrill }],
+        // The via offered in board setup is the one the stack can hold. It used
+        // to be the flat FAB.viaDia/viaDrill pair, which is why a 14-layer
+        // board's routed vias came out 0.2 mm: nothing between the fab table
+        // and the router knew how thick the board was.
+        via_dimensions: [{ diameter: 0, drill: 0 }, { diameter: +dia.toFixed(4), drill: +drill.toFixed(4) }],
         // The footprints are function-named envelopes emitted inline rather
         // than links into a library, so KiCad's "footprint library not
         // configured" note describes this machine's setup, not the board.
@@ -197,8 +224,8 @@ export function fabRuleFiles({ trackWidth = 0.103 } = {}) {
         priority: 2147483647,
         schematic_color: 'rgba(0, 0, 0, 0.000)',
         track_width: trackWidth,
-        via_diameter: FAB.viaDia,
-        via_drill: FAB.viaDrill,
+        via_diameter: +dia.toFixed(4),
+        via_drill: +drill.toFixed(4),
         wire_width: 6,
       }],
       meta: { version: 4 },

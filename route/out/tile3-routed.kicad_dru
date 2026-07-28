@@ -4,12 +4,16 @@
 # table; this file is GENERATED from FAB in src/kicad.js, so it and the copper
 # it checks come from one place.
 
+# Plated-hole aspect ratio, 8:1, expressed as the drill floor it
+# implies -- KiCad has no aspect-ratio constraint, and a ratio the rule file
+# cannot state is a ratio nothing checks. Board thickness 1.57 mm
+# / 8 = 0.1963 mm, against the bare 0.15 mm floor.
 (rule "min via drill"
-	(constraint hole_size (min 0.15mm))
+	(constraint hole_size (min 0.1963mm))
 	(condition "A.Type == 'Via'"))
 
 (rule "min via diameter"
-	(constraint via_diameter (min 0.25mm))
+	(constraint via_diameter (min 0.4563mm))
 	(condition "A.Type == 'Via'"))
 
 (rule "min annular ring"

@@ -58,7 +58,11 @@ const coils = stator.coils.map((c) => [cx0 + c.x * 1000, cy0 - c.y * 1000]);
 // the via's own radius itself, so pre-growing it here charged both twice and
 // shrank the legal gutter from 0.91 mm to 0.23 mm -- which is why the first
 // runs placed four vias on a nine-coil board and extra layers bought nothing.
-const routeVia = { name: 'Via_route', dia: vSize, drill: viaDrill(vSize) };
+// g.thickness is not optional here. viaDrill() defaults it to zero, which means
+// "no aspect-ratio limit" -- and that default is what handed freerouting a
+// 0.2 mm drill for a 1.84 mm board (9.2:1, past the fab's 8:1) while the coil
+// vias beside it were correctly 0.23.
+const routeVia = { name: 'Via_route', dia: vSize, drill: viaDrill(vSize, g.thickness) };
 const coilKeepR = g.halfOut + g.trace / 2;
 // The centre hole is copper-free on every winding layer, so it is via-legal --
 // but only the part of it the coil's own inner crossovers leave free. Their

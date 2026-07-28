@@ -56,7 +56,11 @@ writeFileSync(new URL(`./${outKey}.contract.json`, import.meta.url), JSON.string
 // The rule files go beside the board under the same basename -- that is where
 // kicad-cli looks for them -- and they are generated from FAB, so what DRC
 // checks is what the geometry was sized from.
-const rules = fabRuleFiles({ trackWidth: pcbCoilGeometry(cfg).trace });
+// The thickness goes with the track width: the via rules are aspect-ratio
+// limits, so they are only right for the stack this board was actually pressed
+// at (see fabRuleFiles).
+const rg = pcbCoilGeometry(cfg);
+const rules = fabRuleFiles({ trackWidth: rg.trace, boardThickness: rg.thickness });
 writeFileSync(new URL(`./${outKey}.kicad_dru`, import.meta.url), rules.dru);
 writeFileSync(new URL(`./${outKey}.kicad_pro`, import.meta.url), rules.pro);
 console.log(`wrote ${out.pathname} (${(kc.text.length / 1e6).toFixed(1)} MB)`);
