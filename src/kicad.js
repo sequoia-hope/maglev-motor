@@ -606,6 +606,9 @@ export function buildDriverBackplane(stator, cfg) {
     // Same frame flip as backsideObstacles: plan y is file y, planning is y-up.
     discs: plan.termVias.map((v) => ({ x: v.p[0], y: -v.p[1], r: via / 2 })),
     rects: [], cellHalf, offsets: [],
+    // The backplane wears the same outline as the coil board, and its parts
+    // must stay inside it for the same tiling reason.
+    outline,
   };
   const CLR = 0.2;
   const placed = [];
@@ -672,16 +675,31 @@ export function buildDriverBackplane(stator, cfg) {
   }
 
   // Dead-man and header go in before the registers: the registers can move
-  // anywhere near their quads, the service strip cannot.
-  const dmT = [-(half - 9), -(half - 3)], hdT = [0, -(half - 3)];
-  const dmP = placeWorld(SERVICE_FPS.deadman, dmT, stator.coils, obsB, placed, CLR, cellHalf * 2, 0.25, [0]);
-  const dmAt = dmP.fits ? dmP.at : dmT;
-  placed.push(...partRects(SERVICE_FPS.deadman, dmAt[0], dmAt[1], 0));
-  emitDeadman(L, cx0 + dmAt[0], cy0 - dmAt[1], f, 'F', spine);
-  const hdP = placeWorld(SERVICE_FPS.header, hdT, stator.coils, obsB, placed, CLR, cellHalf * 2, 0.25, [0]);
-  const hdAt = hdP.fits ? hdP.at : hdT;
-  placed.push(...partRects(SERVICE_FPS.header, hdAt[0], hdAt[1], 0));
-  emitHeader(L, cx0 + hdAt[0], cy0 - hdAt[1], f, 'F', [
+  // anywhere near their quads, the service strip cannot. Targets hang off the
+  // outline's true south edge, not the max extent (which is the x-width on a
+  // wide castellated board), and the search radius escalates until the part
+  // seats -- a fallback stamped over other copper is the bug, not a policy.
+  // The service parts live on the BACK face: the front is fenced by every
+  // cell's output stubs (rendered and measured -- no strip-sized pocket
+  // survives anywhere), while the back carries only the GND pour and the
+  // mating via lands. It is also the outward face, where a cable connector
+  // belongs. They compete only with those vias and each other.
+  const yMinB = outline.reduce((a, p) => Math.min(a, p[1]), Infinity);
+  const placedB = [];
+  const settleB = (fp, target, rots = undefined) => {
+    let p = { fits: false };
+    for (const sh of [cellHalf * 3, cellHalf * 6, Math.max(half, cellHalf * 12)]) {
+      p = placeWorld(fp, target, stator.coils, obsB, placedB, CLR, sh, sh > cellHalf * 4 ? 0.5 : 0.25, rots);
+      if (p.fits) break;
+    }
+    const at = p.fits ? p.at : target;
+    placedB.push(...partRects(fp, at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
+    return { at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits };
+  };
+  const dm = settleB(SERVICE_FPS.deadman, [-(half - 9), yMinB + 3], [0]);
+  emitDeadman(L, cx0 + dm.at[0], cy0 - dm.at[1], f, 'B', spine);
+  const hd = settleB(SERVICE_FPS.header, [0, yMinB + 3]);
+  emitHeader(L, cx0 + hd.at[0], cy0 - hd.at[1], hd.rotDeg, f, 'B', [
     { num: netVBUS, name: 'VBUS' }, { num: netGND, name: 'GND' }, spine.vcc,
     dataNet(0), dataNet(M), spine.sclk, spine.rclk, spine.sync, spine.sda, spine.scl,
   ]);
@@ -736,6 +754,7 @@ export function buildDriverBackplane(stator, cfg) {
       driverTopology: 'H-bridge per coil (independent)',
       registers: M, chainBits: chain.bits, registersUnplaced: regsFallback,
       registerPackage: regPkg, decapsMoved, outSwapped,
+      serviceFallback: (dm.fits ? 0 : 1) + (hd.fits ? 0 : 1),
       nets: 2 + 4 * C + 8 + (M + 1),
     },
     // Firmware's contract with the copper: which frame bit reaches which coil
@@ -946,7 +965,7 @@ export function buildKiCad(stator, cfg, opts = {}) {
       });
     }
     emitDeadman(L, wx(elec.service.deadman.at[0]), wy(elec.service.deadman.at[1]), f, 'B', spine);
-    emitHeader(L, wx(elec.service.header.at[0]), wy(elec.service.header.at[1]), f, 'B', [
+    emitHeader(L, wx(elec.service.header.at[0]), wy(elec.service.header.at[1]), elec.service.header.rotDeg, f, 'B', [
       spine.vbus, spine.gnd, spine.vcc, dataNet(0), dataNet(M),
       spine.sclk, spine.rclk, spine.sync, nSensBus > 0 ? sdaNet(0) : spine.scl, spine.scl,
     ]);
@@ -1186,6 +1205,50 @@ function partRects(fp, cx, cy, ang) {
   return out;
 }
 
+// --- board-outline containment ----------------------------------------------
+// The board's edge is a hard placement constraint the search must know about,
+// and for a reason stronger than looks: everywhere OFF the board is free of
+// obstacles, so an unconstrained spiral search actively prefers it -- sensors
+// and registers near the rim drifted into the castellation notches and clean
+// off the board. And since tiled boards MATE at the outline, an overhanging
+// part is a collision with the neighbouring board, not an overhang.
+const OUTLINE_MARGIN = 0.25;   // mm a part keeps from the board edge
+
+function pointInPoly(x, y, poly) {
+  let odd = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) odd = !odd;
+  }
+  return odd;
+}
+function segsCross(p, q, a, b) {
+  const d = (o, u, v) => (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0]);
+  const d1 = d(a, b, p), d2 = d(a, b, q), d3 = d(p, q, a), d4 = d(p, q, b);
+  return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+}
+/** Fully inside, by margin: every (inflated) corner in the polygon and no
+ *  edge crossing -- corners alone can miss a castellation notch cutting
+ *  through the middle of a rectangle's side. */
+function rectInsidePoly(r, poly, margin = OUTLINE_MARGIN) {
+  const cs = rectCorners({ ...r, w: r.w + 2 * margin, h: r.h + 2 * margin });
+  for (const [x, y] of cs) if (!pointInPoly(x, y, poly)) return false;
+  for (let i = 0; i < 4; i++) {
+    const a = cs[i], b = cs[(i + 1) % 4];
+    for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
+      if (segsCross(a, b, poly[j], poly[k])) return false;
+    }
+  }
+  return true;
+}
+function distToPoly(x, y, poly) {
+  let best = Infinity;
+  for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
+    best = Math.min(best, segDist(poly[j], poly[k], [x, y]));
+  }
+  return best;
+}
+
 const coilsNear = (coils, x, y, radius) =>
   coils.filter((c) => Math.abs(c.x * 1000 - x) <= radius && Math.abs(c.y * 1000 - y) <= radius);
 
@@ -1194,8 +1257,12 @@ const coilsNear = (coils, x, y, radius) =>
  *  every previously placed part? `placed` is the accumulating world-frame
  *  obstacle list that makes later placements respect earlier ones -- the check
  *  whose absence let shift registers land on top of bridges. */
-function worldClear(rects, near, obs, placed, clearance) {
+function worldClear(rects, near, obs, placed, clearance, outline = null) {
   for (const r of rects) {
+    // The board edge blocks pads and bodies alike (a tiled neighbour's parts
+    // are right across it). Callers pass `outline` only for searches near the
+    // rim, so interior placements skip the polygon work entirely.
+    if (outline && !rectInsidePoly(r, outline)) return false;
     const cull = Math.hypot(r.w, r.h) / 2 + clearance;
     // Cell copper (via lands, terminal pads) blocks PADS only; a part's body
     // may span tented vias (placeInCell has always ruled this way).
@@ -1223,6 +1290,10 @@ function worldClear(rects, near, obs, placed, clearance) {
 function placeWorld(fp, target, coils, obs, placed, clearance, searchHalf, step = 0.25, rots = ROTS) {
   const diag = Math.max(...fp.pads.map(([px, py, w, h]) => Math.hypot(px, py) + Math.hypot(w, h) / 2), Math.hypot(...fp.body) / 2);
   const near = coilsNear(coils, target[0], target[1], searchHalf + diag + obs.cellHalf * 1.5);
+  // Containment only bites near the rim; one distance query decides.
+  const outline = obs.outline
+    && distToPoly(target[0], target[1], obs.outline) <= searchHalf + diag + OUTLINE_MARGIN + 0.5
+    ? obs.outline : null;
   const cand = [];
   for (let x = -searchHalf; x <= searchHalf + 1e-9; x += step) {
     for (let y = -searchHalf; y <= searchHalf + 1e-9; y += step) {
@@ -1234,7 +1305,7 @@ function placeWorld(fp, target, coils, obs, placed, clearance, searchHalf, step 
   cand.sort((a, b) => Math.hypot(a[0] - target[0], a[1] - target[1]) - Math.hypot(b[0] - target[0], b[1] - target[1]));
   for (const [cx, cy] of cand) {
     for (const ang of rots) {
-      if (worldClear(partRects(fp, cx, cy, ang), near, obs, placed, clearance)) {
+      if (worldClear(partRects(fp, cx, cy, ang), near, obs, placed, clearance, outline)) {
         return { fits: true, at: [cx, cy], rotDeg: (ang * 180) / Math.PI, offMm: Math.hypot(cx - target[0], cy - target[1]) };
       }
     }
@@ -1263,8 +1334,15 @@ const SERVICE_FPS = {
       .concat([[6.8 - 0.95, 1.0, 0.6, 0.7], [6.8 + 0.95, 1.0, 0.6, 0.7], [6.8, -1.0, 0.6, 0.7]]),
   },
   header: {
-    label: 'spine header', body: [19.6, 2.0],
-    pads: Array.from({ length: 10 }, (_, k) => [(k - 4.5) * 2, 0, 1.2, 1.8]),
+    // 2 x 5 at 1.27 mm pitch (SWD-cable style), row-major pad order. Measured
+    // fact, twice over: the old 1 x 10 strip needed a 20 mm clear corridor
+    // and the dense board's south band has none at any position or angle; a
+    // 2 mm-pitch 2 x 5 is 10.4 mm wide -- wider than a whole 8.5 mm cell --
+    // and fails everywhere too. At 1.27 mm the connector is smaller than a
+    // bridge, and what is bridge-sized places like a bridge.
+    label: 'spine header (2x5, 1.27 mm)', body: [7.0, 3.4],
+    pads: [0.635, -0.635].flatMap((y) =>
+      Array.from({ length: 5 }, (_, k) => [(k - 2) * 1.27, y, 0.74, 0.74])),
   },
 };
 
@@ -1338,6 +1416,9 @@ export function backsideFit(cfg, {
     const coils = stator.coils;
     const outline = cellOutline(stator, cfg);
     const halfB = outline.reduce((a, p) => Math.max(a, Math.abs(p[0]), Math.abs(p[1])), 0);
+    // Every search sees the board edge: off the board is obstacle-free, so an
+    // unconstrained search treats it as prime real estate.
+    obs.outline = outline;
     chain = chainPlan(stator, cfg);
 
     const planWith = (bridgeKey) => {
@@ -1345,16 +1426,28 @@ export function backsideFit(cfg, {
       const placed = [];
       const bfp = footprints[bridgeKey];
       const bStd = parts[bridgeKey]?.fits ? parts[bridgeKey] : null;
-      const settle = (fp, p, fallbackAt) => {
-        const at = p.fits ? p.at : fallbackAt;
+      // Service parts escalate their search radius until they seat: the
+      // target (near the south edge) is a preference, not a requirement, and
+      // emitting a fallback ON TOP of other parts is exactly the overlap bug
+      // this plan exists to prevent.
+      const settle = (fp, target, rots = ROTS) => {
+        let p = { fits: false };
+        for (const sh of [obs.cellHalf * 3, obs.cellHalf * 6, Math.max(halfB, obs.cellHalf * 12)]) {
+          p = placeWorld(fp, target, coils, obs, placed, clearance, sh, sh > obs.cellHalf * 4 ? 0.5 : 0.25, rots);
+          if (p.fits) break;
+        }
+        const at = p.fits ? p.at : target;
         if (!p.fits) st.serviceFallback++;
         placed.push(...partRects(fp, at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
         return { at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits };
       };
-      const hT = [0, -(halfB - 3)], dT = [-(halfB - 9), -(halfB - 3)];
+      // Targets hang off the outline's TRUE south edge -- halfB is the max
+      // extent over both axes, which on a wide castellated board is the
+      // x-width, several millimetres south of any actual board edge.
+      const yMin = outline.reduce((a, p) => Math.min(a, p[1]), Infinity);
       const svc = {
-        header: settle(SERVICE_FPS.header, placeWorld(SERVICE_FPS.header, hT, coils, obs, placed, clearance, obs.cellHalf, 0.25, [0]), hT),
-        deadman: settle(SERVICE_FPS.deadman, placeWorld(SERVICE_FPS.deadman, dT, coils, obs, placed, clearance, obs.cellHalf, 0.25, [0]), dT),
+        header: settle(SERVICE_FPS.header, [0, yMin + 3]),
+        deadman: settle(SERVICE_FPS.deadman, [-(halfB - 9), yMin + 3], [0]),
       };
 
       // Placement runs in order of decreasing rigidity, so the flexible parts
@@ -1367,12 +1460,17 @@ export function backsideFit(cfg, {
         const gridHalf = cfg.stator.statorSize / 2;
         const n = Math.floor((2 * gridHalf) / sensorSpacing) + 1;
         const list = [];
-        let failed = 0, worstNudge = 0;
+        const failedAt = [];
+        let failed = 0, offBoard = 0, worstNudge = 0;
         for (let i = 0; i < n; i++) {
           for (let j = 0; j < n; j++) {
             const swx = (-gridHalf + i * sensorSpacing) * 1000, swy = (-gridHalf + j * sensorSpacing) * 1000;
+            // The grid spans the square statorSize; the board is the cell
+            // union, which recedes inside it. A grid point off the board is
+            // not a failure -- it is simply not on this board.
+            if (!pointInPoly(swx, swy, outline)) { offBoard++; continue; }
             const r = placeWorld(footprints.sot23_6, [swx, swy], coils, obs, placed, clearance, nudgeMax);
-            if (!r.fits) { failed++; continue; }
+            if (!r.fits) { failed++; failedAt.push([swx, swy]); continue; }
             worstNudge = Math.max(worstNudge, r.offMm);
             placed.push(...partRects(footprints.sot23_6, r.at[0], r.at[1], (r.rotDeg * Math.PI) / 180));
             // Anchor by (cell, local offset): the fit is proven relative to
@@ -1389,7 +1487,7 @@ export function backsideFit(cfg, {
             });
           }
         }
-        sens = { wanted: n * n, placed: list.length, failed, worstNudgeMm: worstNudge, list };
+        sens = { wanted: n * n - offBoard, offBoard, placed: list.length, failed, failedAt, worstNudgeMm: worstNudge, list };
       }
       // Two passes over the bridges, so the service parts cannot start a
       // cascade: every cell whose standard (periodicity-proven) spot is
@@ -1404,7 +1502,10 @@ export function backsideFit(cfg, {
         brs = coils.map((c, ci) => {
           const at = stdOf(c);
           const rects = partRects(bfp, at[0], at[1], stdRad);
-          if (worldClear(rects, [], obs, placed, clearance)) {
+          // Edge cells also prove their standard spot against the outline: a
+          // spot proven to tile the INTERIOR lattice may still overhang the rim.
+          const rim = obs.outline && distToPoly(at[0], at[1], obs.outline) <= obs.cellHalf * 2 ? obs.outline : null;
+          if (worldClear(rects, [], obs, placed, clearance, rim)) {
             placed.push(...rects);
             return { coil: ci, at, rotDeg: bStd.rotDeg, moved: false };
           }
@@ -1598,17 +1699,10 @@ function emitDeadman(L, ox, oy, f, S, n) {
 }
 
 /** The command-spine header: everything a tile (or the full board) needs from
- *  the master, on ten 2 mm pads along the board's south edge. */
-function emitHeader(L, ox, oy, f, S, nets) {
-  const m = S === 'B' ? ' (justify mirror)' : '';
-  L.push(`  (footprint "maglev:HDR10" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
-  L.push('    (attr smd)');
-  L.push(`    (fp_text reference "J1" (at 0 -1.6) (layer "${S}.SilkS") (effects (font (size 0.4 0.4) (thickness 0.07))${m}))`);
-  L.push(`    (fp_text value "spine" (at 0 1.6) (layer "${S}.Fab") hide (effects (font (size 0.4 0.4) (thickness 0.07))${m}))`);
-  nets.forEach((net, k) => {
-    L.push(fpPad(k + 1, (k - (nets.length - 1) / 2) * 2, 0, 1.2, 1.8, net.num, net.name, S));
-  });
-  L.push('  )');
+ *  the master, as a 2 x 5 grid of 2 mm pads near the south edge. Pin k is the
+ *  k-th entry of `nets`, row-major across SERVICE_FPS.header's pad table. */
+function emitHeader(L, ox, oy, rot, f, S, nets) {
+  emitPart(L, { lib: 'HDR10', value: 'spine 2x5 1.27mm', ref: 'J1', S, at: [ox, oy], rotDeg: rot, fp: SERVICE_FPS.header, nets, f });
 }
 
 /** A TMAG5273-class 3-axis sensor on the SOT-23-6 envelope at (ox,oy) rot deg. */

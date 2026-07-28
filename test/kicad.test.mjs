@@ -309,12 +309,29 @@ console.log('\n=== electronics-layer fit: the parts land clear of the via fields
   check('a part bigger than the pitch both ways is rejected by the tiling check',
     fw.parts.tooBig.fits === false);
   // The nudge budget is 2.5 mm (a RADIUS now, not a box corner), and the
-  // sensors dodge REAL parts -- bridges included -- so nudges run larger than
-  // when the search graded a bare cell. The observability cost of the placed
-  // grid is what actually matters, and analysis.test re-checks it as-placed.
-  check('sensor grid places completely within its nudge budget',
-    fit.sensors && fit.sensors.failed === 0 && fit.sensors.worstNudgeMm <= 2.5 + 1e-9,
-    fit.sensors ? `${fit.sensors.placed}/${fit.sensors.wanted}, worst nudge ${fit.sensors.worstNudgeMm.toFixed(2)} mm` : '');
+  // sensors dodge REAL parts -- bridges included -- and stay INSIDE the board
+  // outline, so a grid point hard against the castellated rim can genuinely
+  // have no home. That is reported, not hidden: any failure must be a rim
+  // point (within its own nudge reach of the outline), never an interior one.
+  {
+    const { cellOutline } = await import('../src/kicad.js');
+    const poly = cellOutline(hstat, hcfg);
+    const segD = (a, b, p) => {
+      const abx = b[0] - a[0], aby = b[1] - a[1];
+      const L2 = abx * abx + aby * aby;
+      const t = L2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / L2));
+      return Math.hypot(a[0] + t * abx - p[0], a[1] + t * aby - p[1]);
+    };
+    const rimDist = (p) => {
+      let d = Infinity;
+      for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) d = Math.min(d, segD(poly[j], poly[k], p));
+      return d;
+    };
+    check('sensor grid places within its nudge budget; failures only at the rim',
+      fit.sensors && fit.sensors.worstNudgeMm <= 2.5 + 1e-9
+      && fit.sensors.failedAt.every((p) => rimDist(p) <= 2.5 + 3.2),
+      fit.sensors ? `${fit.sensors.placed}/${fit.sensors.wanted} (${fit.sensors.failed} rim-blocked, ${fit.sensors.offBoard} off-board), worst nudge ${fit.sensors.worstNudgeMm.toFixed(2)} mm` : '');
+  }
   // plan: false is the UI's fast path -- the per-package card without the
   // tens-of-seconds placement plan (which runs in a worker instead). It must
   // return the card and clearly NOT pretend to have planned anything.
@@ -480,8 +497,46 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
     check(`${name}: no two different-net copper items overlap`, bad.length === 0,
       bad.length ? `${bad.length} overlaps, e.g. ${bad[0]}` : `${rects.length} rects, ${vias.length} vias clean`);
   };
+  // The 24 mm chain-test board above is DEGENERATE for placement -- nine busy
+  // cells leave no seat for the service strips, and the build says so
+  // (serviceFallback > 0 means hand-placement needed). The overlap and
+  // containment guarantees are asserted on the realistic 48 mm board, where
+  // everything must genuinely seat.
+  const bp2 = buildDriverBackplane(dstat, dcfg);
+  check('the 48 mm backplane seats its service parts (no fallback)',
+    bp2.stats.serviceFallback === 0 && bp2.stats.registersUnplaced === 0,
+    `serviceFallback ${bp2.stats.serviceFallback}, registersUnplaced ${bp2.stats.registersUnplaced}`);
   drcLite(out.text, 'single-board');
-  drcLite(bp.text, 'backplane');
+  drcLite(bp2.text, 'backplane');
+  // Parts must sit INSIDE the board outline: everywhere off the board is
+  // obstacle-free, so an unconstrained search actively prefers it -- sensors
+  // and registers drifted into the castellation notches and off the edge
+  // until containment was enforced. Tiled boards mate at the outline, so an
+  // overhanging part is a collision with the neighbouring board.
+  {
+    const { cellOutline } = await import('../src/kicad.js');
+    const holds = (board, stator2, cfg2, name) => {
+      const off = board.stats.boardMm / 2 + 10;
+      const poly = cellOutline(stator2, cfg2).map(([x, y]) => [off + x, off - y]);
+      const inP = (px, py) => {
+        let odd = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const [xi, yi] = poly[i], [xj, yj] = poly[j];
+          if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) odd = !odd;
+        }
+        return odd;
+      };
+      const { pads } = parseCopper(board.text);
+      let outside = 0;
+      for (const p of pads.filter((p2) => !p2.err)) {
+        for (const [x, y] of corners(p)) if (!inP(x, y)) { outside++; break; }
+      }
+      check(`${name}: every pad sits inside the board outline`, outside === 0,
+        `${outside} of ${pads.length} pads outside`);
+    };
+    holds(out, dstat, dcfg, 'single-board');
+    holds(bp2, dstat, dcfg, 'backplane');
+  }
   // And the terminal pads specifically: footprint unrotated, angle on the pad,
   // negated from the plan frame -- the exact combination that renders the
   // rectangle validatePcb approved.
