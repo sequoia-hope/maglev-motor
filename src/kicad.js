@@ -28,7 +28,200 @@
 // test/kicad.test.mjs checks both: the sign of each layer's enclosed area, and
 // that every via spans the full stack (F.Cu..B.Cu).
 
-import { effectiveTrace, pcbTurnsPerLayer, makeStator, isPcbCoil } from './coils.js';
+import { effectiveTrace, pcbTurnsPerLayer, makeStator, isPcbCoil, pcbBoardThickness } from './coils.js';
+
+/** The fab, as numbers. Every limit below is transcribed from JLCPCB's published
+ *  capability table for FR-4 at 12 copper layers, 1 oz
+ *  (jlcpcb.com/capabilities/pcb-capabilities, read 2026-07-27) plus their
+ *  support answer on annular rings. `fabRuleFiles()` writes a .kicad_dru and a
+ *  .kicad_pro straight out of this object, so the numbers KiCad's DRC checks
+ *  are literally the numbers the geometry was sized from -- they cannot drift.
+ *
+ *  The via used to be `min(0.4, max(0.2, pitch*0.6))` -- a number with no fab
+ *  behind it, which came out 0.2 mm on a 0.103 mm trace and failed three
+ *  separate DRC rules at once (diameter, drill, annular ring). Sizing it here
+ *  instead is what makes the exported board orderable. */
+export const FAB = {
+  name: 'JLCPCB FR-4, 12 layer, 1 oz',
+  minTrace: 0.09,          // 1 oz, multilayer: 0.09/0.09 mm (3.5/3.5 mil)
+  minClearance: 0.09,
+  minViaDia: 0.25,         // "Min. Via hole size/diameter: 0.15mm / 0.25mm"
+  minDrill: 0.15,
+  minAnnular: 0.13,        // support answer 110: "minimum 0.13mm"
+  holeToHole: 0.2,         // "Via Hole-to-Hole Spacing: 0.2mm"
+  edgeClearance: 0.2,      // "Copper clearance from routed board edges"
+  holeToCopper: 0.2,       // "Inner layer via hole to copper"
+  maxAspect: 8,            // plated-hole aspect ratio, drill vs board thickness
+  // The via the boards are drawn with when there is room: the ring is 0.15 mm,
+  // past the 0.13 mm minimum, so a drill wander of a couple of mils still lands
+  // inside its own land, and 0.2 mm through 1.6 mm of board is an 8:1 hole.
+  viaDia: 0.5,
+  viaDrill: 0.2,
+};
+
+/** The smallest via this fab will actually drill and plate: big enough for the
+ *  minimum ring on the minimum drill, and never under the bare diameter floor. */
+export const FAB_MIN_VIA = Math.max(FAB.minViaDia, FAB.minDrill + 2 * FAB.minAnnular);
+
+/** The narrowest hole this fab will plate through a board `t` mm thick. Fabs
+ *  plate a hole, they do not conjure copper down an arbitrarily deep one, and
+ *  the limit is a RATIO -- so adding two layers can put a drill out of spec
+ *  without anything else changing. */
+export function minDrillFor(t) {
+  return Math.max(FAB.minDrill, t > 0 ? t / FAB.maxAspect : 0);
+}
+
+/** ...and the smallest via that hole can wear, ring included. */
+export function minViaFor(t) {
+  return Math.max(FAB.minViaDia, minDrillFor(t) + 2 * FAB.minAnnular);
+}
+
+/** The crossover/terminal via for a coil geometry -- ONE definition, so the
+ *  copper, the fit search, the preview and the validator cannot disagree about
+ *  how big a via is. Five call sites used to each recompute
+ *  `min(0.4, max(0.2, pitch*0.6))`, a formula with no fab behind it that landed
+ *  on a 0.2 mm via with a 0.1 mm drill: three DRC rules broken at once.
+ *
+ *  The real limit is the GUTTER, the band between a coil's copper and its own
+ *  cell boundary, because that is the only place an outward via can go. The via
+ *  has to clear this coil's winding by a copper clearance on the way in and the
+ *  board edge by an edge clearance on the way out, so the gutter must be at
+ *  least clearance + diameter + edge. Pass `cellHalf` and this returns the
+ *  largest via that band can hold, capped at the comfortable one; it never
+ *  returns less than the fab can drill, so a coil fill too greedy to host a
+ *  legal via reports as a DRC violation instead of quietly shipping a via no
+ *  fab will make. `gutterFits()` answers the same question in advance. */
+export function viaSize(g, cellHalf = Infinity) {
+  return Math.max(minViaFor(g.thickness ?? 0), Math.min(FAB.viaDia, gutterFits(g, cellHalf).room));
+}
+
+/** The drill for a via of diameter `d`: the comfortable one, narrowed if that
+ *  is what it takes to keep the annular ring legal, and never under the fab's
+ *  minimum drill. */
+export function viaDrill(d, thicknessMm = 0) {
+  const floor = minDrillFor(thicknessMm);
+  return Math.max(floor, Math.min(FAB.viaDrill, d - 2 * FAB.minAnnular));
+}
+
+/** The design-rule files that go beside an exported board: KiCad's custom-rule
+ *  file and a project carrying the same constraints as board setup. Generated
+ *  from FAB rather than kept as a copy, because a rule file that disagrees with
+ *  the geometry is worse than no rule file -- it certifies the wrong board.
+ *  Returns { dru, pro } as text; the caller writes them next to the .kicad_pcb
+ *  under the same basename, which is where kicad-cli looks for them. */
+export function fabRuleFiles({ trackWidth = 0.103 } = {}) {
+  const dru = `(version 1)
+
+# ${FAB.name}. Every number is transcribed from the fab's published capability
+# table; this file is GENERATED from FAB in src/kicad.js, so it and the copper
+# it checks come from one place.
+
+(rule "min via drill"
+\t(constraint hole_size (min ${FAB.minDrill}mm))
+\t(condition "A.Type == 'Via'"))
+
+(rule "min via diameter"
+\t(constraint via_diameter (min ${FAB.minViaDia}mm))
+\t(condition "A.Type == 'Via'"))
+
+(rule "min annular ring"
+\t(constraint annular_width (min ${FAB.minAnnular}mm)))
+
+(rule "via hole to hole"
+\t(constraint hole_to_hole (min ${FAB.holeToHole}mm)))
+
+(rule "min track width"
+\t(constraint track_width (min ${FAB.minTrace}mm)))
+
+(rule "min copper clearance"
+\t(constraint clearance (min ${FAB.minClearance}mm)))
+
+(rule "copper to board edge"
+\t(constraint edge_clearance (min ${FAB.edgeClearance}mm)))
+
+(rule "hole to copper"
+\t(constraint hole_clearance (min ${FAB.holeToCopper}mm)))
+`;
+  const pro = JSON.stringify({
+    board: {
+      design_settings: {
+        rules: {
+          max_error: 0.005,
+          min_clearance: FAB.minClearance,
+          min_connection: 0,
+          min_copper_edge_clearance: FAB.edgeClearance,
+          min_hole_clearance: FAB.holeToCopper,
+          min_hole_to_hole: FAB.holeToHole,
+          min_microvia_diameter: 0.2,
+          min_microvia_drill: 0.1,
+          min_resolved_spokes: 2,
+          min_silk_clearance: 0,
+          min_text_height: 0.8,
+          min_text_thickness: 0.08,
+          min_through_hole_diameter: FAB.minDrill,
+          min_track_width: FAB.minTrace,
+          min_via_annular_width: FAB.minAnnular,
+          min_via_diameter: FAB.minViaDia,
+          solder_mask_to_copper_clearance: 0,
+          use_height_for_length_calcs: true,
+        },
+        track_widths: [0, trackWidth, 0.2, 0.3, 0.5],
+        via_dimensions: [{ diameter: 0, drill: 0 }, { diameter: FAB.viaDia, drill: FAB.viaDrill }],
+        // The footprints are function-named envelopes emitted inline rather
+        // than links into a library, so KiCad's "footprint library not
+        // configured" note describes this machine's setup, not the board.
+        // (kicad-cli 9.0 reports it whatever this says -- read the DRC summary
+        // by SEVERITY: what decides whether a board is fabricable is the error
+        // count.) Silk over copper is likewise cosmetic; the fab clips it.
+        violation_severities: {
+          lib_footprint_issues: 'ignore',
+          lib_footprint_mismatch: 'ignore',
+          footprint_type_mismatch: 'ignore',
+          silk_over_copper: 'warning',
+          silk_overlap: 'warning',
+        },
+      },
+    },
+    net_settings: {
+      classes: [{
+        bus_width: 12,
+        clearance: FAB.minClearance,
+        diff_pair_gap: 0.25,
+        diff_pair_via_gap: 0.25,
+        diff_pair_width: 0.2,
+        line_style: 0,
+        microvia_diameter: 0.3,
+        microvia_drill: 0.1,
+        name: 'Default',
+        pcb_color: 'rgba(0, 0, 0, 0.000)',
+        priority: 2147483647,
+        schematic_color: 'rgba(0, 0, 0, 0.000)',
+        track_width: trackWidth,
+        via_diameter: FAB.viaDia,
+        via_drill: FAB.viaDrill,
+        wire_width: 6,
+      }],
+      meta: { version: 4 },
+      net_colors: null,
+      netclass_assignments: null,
+      netclass_patterns: [],
+    },
+    meta: { filename: 'board.kicad_pro', version: 3 },
+  }, null, 2) + '\n';
+  return { dru, pro };
+}
+
+/** Does the gutter left by this coil fill have room for a fab-legal via?
+ *  Returns the band width, what it needs to be, the diameter it can host, and
+ *  the slack. `halfOut` is the outermost turn's CENTRELINE, so the copper runs
+ *  half a trace further out than the apothem -- 0.05 mm that decides the
+ *  question on a board this tight, and that the first cut of this forgot. */
+export function gutterFits(g, cellHalf) {
+  const have = cellHalf - (g.halfOut + g.trace / 2);
+  const room = have - FAB.minClearance - FAB.edgeClearance;
+  const need = FAB.minClearance + minViaFor(g.thickness ?? 0) + FAB.edgeClearance;
+  return { have, need, room, slack: have - need, ok: have >= need - 1e-9 };
+}
 
 /** PCB coil geometry in millimetres, recomputed from cfg so it matches
  *  coils.js exactly (same perLayer formula, same effective trace) without
@@ -44,7 +237,12 @@ export function pcbCoilGeometry(cfg) {
   const windLayers = Math.max(1, pcbLayers - spare);
   const w = coilPitch * coilFill;
   const eff = effectiveTrace(pcbTraceWidth, pcbCopperThickness);
-  const perLayer = pcbTurnsPerLayer(w, eff);
+  // How much of the coil half-width is left clear at the centre. It is a knob
+  // because that hole is the ONLY place inside a cell where a plated through
+  // hole may be drilled -- everywhere else has winding under it on some layer.
+  // Widen it and the electronics get a via site directly under the part that
+  // needs one; the price is turns, one layer's worth at a time.
+  const perLayer = pcbTurnsPerLayer(w, eff, cfg.stator.pcbInnerFrac);
   const halfOut = (w / 2) * 1000;             // apothem (centre-to-flat) of the outermost turn
   const pitch = 2 * eff * 1000;               // trace + equal space
   const halfIn = halfOut - pitch * perLayer;  // small centre hole by construction
@@ -64,6 +262,10 @@ export function pcbCoilGeometry(cfg) {
     w: w * 1000, halfOut, halfIn, pitch, corner, sides, phase,
     turns: perLayer, layers: windLayers, physLayers: pcbLayers,
     trace: eff * 1000,
+    // Pressed thickness, in mm. The via cares: a plated hole is limited by its
+    // ASPECT RATIO, so the same drill that is comfortable on a 12-layer board
+    // is out of spec on a 14-layer one.
+    thickness: pcbBoardThickness(pcbLayers, pcbCopperThickness) * 1000,
   };
 }
 
@@ -185,27 +387,196 @@ const f = (x) => (Math.round(x * 1e6) / 1e6).toString();
  *  vias, and counts. */
 export function viaPlan(g, N, cellHalf, viaSize) {
   const off = viaSize * 1.05;                    // radial stub length off the winding
+  const clr = FAB.minClearance;
+  const vr = viaSize / 2;
   const segments = [];                           // [x0,y0,x1,y1, layer]
   const vias = [];                               // {p, layers} crossovers
   const terminals = [];                          // [x0,y0,x1,y1, layer]
   const termVias = [];                           // {p, layers} mating vias
+  const sides = g.sides ?? 4;
+  const flats = [0, 1, 2, 3, 4, 5].map((k) => (k * Math.PI) / 3);
 
   // Nudge a boundary point p radially: outward into the gutter, or inward into
   // the centre hole. Inner vias are pulled all the way inside the innermost turn
-  // (radius <= halfIn - off) so an endpoint that lands near a corner still ends up
+  // (radius <= rHole) so an endpoint that lands near a corner still ends up
   // in the clear hole, not crowded against the corner copper.
+  //
+  // rHole is the far edge of the centre hole minus a clearance and the via's own
+  // radius -- NOT `halfIn - viaSize*1.05`, which lets the land run right up to
+  // the innermost turn once the via is a size the fab will drill. And these vias
+  // must clear EACH OTHER, which no DRC will tell you: they are all on the coil
+  // net, so KiCad sees two touching lands as one net and says nothing, while the
+  // board they describe has the crossover between layers c and c+1 welded to the
+  // one between c+2 and c+3 -- two whole layers of winding shorted out.
+  const outR = g.halfOut + g.trace / 2;          // outermost turn's copper EDGE
+  const inR = g.halfIn - g.trace / 2;            // innermost turn's copper edge
+  const rHole = inR - clr - vr;
   const nudge = (p, outward) => {
     const r = Math.hypot(p[0], p[1]) || 1;
-    const rNew = outward ? r + off : Math.min(r - off, g.halfIn - off);
+    const rNew = outward ? r + off : Math.min(r - off, rHole);
     return [p[0] * (rNew / r), p[1] * (rNew / r)];
   };
 
+  // --- the flat gutter, for the honeycomb -------------------------------------
+  //
+  // Everything that leaves the winding OUTWARD -- the odd-numbered crossovers
+  // and the two terminals -- has to land in the band between this coil's copper
+  // (apothem halfOut) and its own cell boundary (apothem cellHalf). A plain
+  // radial nudge does not do that: a spiral's outer end sits at a hexagon
+  // CORNER, and pushing it further out along the same ray drives it at the cell
+  // VERTEX, where three cells meet and the room runs out (a 0.5 mm via landed
+  // 0.007 mm inside its own cell there). So work in the frame of the nearest
+  // FLAT instead -- `n` its outward normal, `t` along it -- and put the via at
+  // the middle of the band over that flat, which is the widest, straightest,
+  // least-contested part of the gutter.
+  //
+  // The band is set by the fab, not by taste: the via's copper clears this
+  // coil's winding by minClearance on the inside, and stays an EDGE clearance
+  // short of the cell boundary on the outside. Edge clearance, not copper
+  // clearance, because on a perimeter cell that boundary is the routed board
+  // edge -- and because the outline is the cell union, any flat can be the
+  // perimeter on some board. It doubles as the seam rule for abutted tiles.
+  const rIn = outR + clr + vr;
+  const rOut = cellHalf - vr - FAB.edgeClearance;
+  const rGut = (rIn + rOut) / 2;
+  /** Distance from a point outside a regular hexagon of apothem `a` (flats at
+   *  0,60,...) to its boundary. Over a flat that is just the normal overshoot;
+   *  past the flat's end the nearest copper is the VERTEX, and the two differ
+   *  by enough to matter -- a via sitting a comfortable 0.10 mm off the flat is
+   *  0.05 mm off the corner it has slid round to. */
+  const hexOutDist = (q, a) => {
+    const d = flats.map((fk) => q[0] * Math.cos(fk) + q[1] * Math.sin(fk) - a);
+    const over = d.map((x, k) => [x, k]).filter(([x]) => x > 0);
+    if (over.length <= 1) return over.length ? over[0][0] : Math.max(...d);
+    // Two adjacent flats overshot: nearest point is the vertex between them.
+    let best = Infinity;
+    for (const [, k] of over) {
+      for (const [, l] of over) {
+        if (l !== (k + 1) % 6) continue;
+        const R = a / Math.cos(Math.PI / 6);
+        const ang = (k * Math.PI) / 3 + Math.PI / 6;
+        best = Math.min(best, Math.hypot(q[0] - R * Math.cos(ang), q[1] - R * Math.sin(ang)));
+      }
+    }
+    return isFinite(best) ? best : Math.max(...d);
+  };
+  /** Smallest angle between two directions. atan2 of the difference, NOT
+   *  `((a - b + PI) % 2PI) - PI`: JS `%` is a remainder and keeps the sign, so
+   *  that expression returns garbage whenever the difference goes negative --
+   *  which is half the time. It picked the flat 83 degrees away from a winding
+   *  end at -113 degrees, and the 5 mm tab that produced is what shorted a
+   *  routed coil to VLOGIC. */
+  const angBetween = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+  /** How far along a flat a via may sit before the two ADJACENT flats cut it
+   *  off. Those flats are cell boundary too -- and so possibly board edge -- so
+   *  the setback is the edge clearance, the same as the radial one. Sliding a
+   *  via to the end of its flat and stopping a copper clearance short of the
+   *  next one is how the last four edge violations survived. */
+  const tLimit = (r) => (cellHalf - 0.5 * r - vr - FAB.edgeClearance) / (Math.sqrt(3) / 2);
+  const gutSpots = [];                           // every via already in the gutter
+  // How far a via may be slid from where its own winding ends. The tab from the
+  // winding to the via is drawn on that layer, in the gutter, and a long one
+  // sweeps TANGENTIALLY across the cell -- straight through the neighbouring
+  // coils' terminal pads. An unbounded slide produced a 5.2 mm tab on amzhex
+  // and shorted VLOGIC to coil_1 on two layers. Past this bound the via changes
+  // FLAT instead, which keeps the tab radial and short.
+  const SLIDE_MAX = 1.2;
+  /** Place a via in the gutter near where `p` leaves the winding: over the
+   *  nearest flat if it can, an adjacent one if it must, clear of this coil's
+   *  own copper (corners included) and of every via already in the gutter.
+   *  Returns the flat's frame too, because the terminal pads are drawn in it. */
+  const gutterPlace = (p) => {
+    const raw = Math.atan2(p[1], p[0]);
+    const order = [...flats].sort((a, b) => angBetween(raw, a) - angBetween(raw, b));
+    const tLim = tLimit(rGut);
+    const need = viaSize + clr;                  // centre-to-centre, copper to copper
+    let best = null;
+    for (const fa of order) {
+      const n = [Math.cos(fa), Math.sin(fa)], t = [-Math.sin(fa), Math.cos(fa)];
+      const tp = Math.max(-tLim, Math.min(tLim, p[0] * t[0] + p[1] * t[1]));
+      const at = (tv) => [n[0] * rGut + t[0] * tv, n[1] * rGut + t[1] * tv];
+      const clash = (tv) => {
+        const q = at(tv);
+        if (hexOutDist(q, outR) < vr + clr - 1e-9) return true;  // own winding, corners included
+        return gutSpots.some((s) => Math.hypot(s[0] - q[0], s[1] - q[1]) < need - 1e-9);
+      };
+      for (let step = 0; step <= SLIDE_MAX + 1e-9; step += need / 4) {
+        for (const tv of step === 0 ? [tp] : [tp + step, tp - step]) {
+          if (Math.abs(tv) > tLim || clash(tv)) continue;
+          const q = at(tv);
+          const stub = Math.hypot(q[0] - p[0], q[1] - p[1]);
+          if (!best || stub < best.stub) best = { p: q, fa, n, t, tVia: tv, tLim, stub };
+          break;
+        }
+        if (best) break;                         // first fit on this flat is its best
+      }
+      if (best) break;                           // nearest flat that works wins
+    }
+    if (!best) {
+      // Nothing cleared. Emit at the nearest flat's natural spot rather than
+      // silently moving it somewhere absurd; validatePcb reports the overlap.
+      const fa = order[0];
+      const n = [Math.cos(fa), Math.sin(fa)], t = [-Math.sin(fa), Math.cos(fa)];
+      const tp = Math.max(-tLim, Math.min(tLim, p[0] * t[0] + p[1] * t[1]));
+      best = {
+        p: [n[0] * rGut + t[0] * tp, n[1] * rGut + t[1] * tp],
+        fa, n, t, tVia: tp, tLim, stub: Infinity,
+      };
+    }
+    gutSpots.push(best.p);
+    return best;
+  };
+
   // Crossover c joins layer c and c+1 at their shared endpoint. c even = inner
-  // end (nudge into the centre hole), c odd = outer end (nudge into the gutter).
+  // end (nudge into the centre hole), c odd = outer end (out into the gutter).
+  const ends = [];
   for (let c = 0; c < N - 1; c++) {
-    const end = spiralVertices(g, c);
-    const p = end[end.length - 1];
-    const via = nudge(p, c % 2 === 1);           // outer crossover pushes out
+    const e = spiralVertices(g, c);
+    ends.push({ c, p: e[e.length - 1], outward: c % 2 === 1 });
+  }
+  // The inner crossovers share one small hole, so they get placed together:
+  // each at its own endpoint's angle if that leaves every pair a clearance
+  // apart, and otherwise spread evenly round the hole. The layer ends already
+  // fan out by 360/(N-1) degrees each (see edgeTurns), so the even spread is
+  // usually what the natural angles give anyway -- but a coil with few layers,
+  // or a hole made small by a greedy fill, needs the fallback.
+  const inners = ends.filter((e) => !e.outward);
+  const innerAt = new Map();
+  {
+    const place = (angles) => angles.map((a) => [rHole * Math.cos(a), rHole * Math.sin(a)]);
+    const natural = inners.map((e) => Math.atan2(e.p[1], e.p[0]));
+    let pts = place(natural);
+    const worst = (ps) => {
+      let m = Infinity;
+      for (let i = 0; i < ps.length; i++) {
+        for (let j = i + 1; j < ps.length; j++) m = Math.min(m, Math.hypot(ps[i][0] - ps[j][0], ps[i][1] - ps[j][1]));
+      }
+      return m;
+    };
+    const need = viaSize + clr;
+    if (inners.length > 1 && worst(pts) < need - 1e-9) {
+      const even = natural.map((_, i) => natural[0] + (i * 2 * Math.PI) / inners.length);
+      if (worst(place(even)) > worst(pts)) pts = place(even);
+    }
+    inners.forEach((e, i) => innerAt.set(e.c, pts[i]));
+  }
+  // A square cell has no gutter search, so its outward vias are a plain radial
+  // nudge -- which, now that a via is the size a fab will drill rather than
+  // 0.2 mm, walks straight out of the cell and into the neighbour. Clamp it.
+  // (The square presets run at 0.94 fill and have only ~0.24 mm of gutter, far
+  // less than a legal via needs; gutterFits() reports that shortfall. Clamping
+  // does not create room that is not there -- it keeps the failure inside the
+  // cell where validatePcb and DRC can see it, instead of silently drilling
+  // into the coil next door.)
+  const cellCap = cellHalf - vr - FAB.edgeClearance;
+  const clampSquare = (q) => [
+    Math.max(-cellCap, Math.min(cellCap, q[0])),
+    Math.max(-cellCap, Math.min(cellCap, q[1])),
+  ];
+  for (const { c, p, outward } of ends) {
+    const via = outward
+      ? (sides === 6 ? gutterPlace(p).p : clampSquare(nudge(p, true)))
+      : (innerAt.get(c) ?? nudge(p, false));
     for (const layer of [c, c + 1]) segments.push([p[0], p[1], via[0], via[1], layer]);
     vias.push({ p: via, layers: [c, c + 1] });
   }
@@ -225,49 +596,33 @@ export function viaPlan(g, N, cellHalf, viaSize) {
   const termPads = [];                           // {p, layer, w, h, a}
   const s0 = spiralVertices(g, 0)[0];
   const eN = spiralVertices(g, N - 1); const pN = eN[eN.length - 1];
-  const sides = g.sides ?? 4;
   if (sides === 6) {
     // Honeycomb: the square-cell trick below pushes the pad onto a boundary that
     // is NOT where the neighbouring hexes are, so the pad can land inside a
-    // neighbour. Instead centre each pad on its mating via -- a short radial nudge
-    // off the winding end -- align it to the nearest hex edge (its long axis runs
-    // ALONG that flat), and shrink it until it sits entirely inside THIS coil's own
-    // honeycomb cell (apothem = cellHalf, flats at 0,60,...deg). A pad inside its
-    // own cell cannot reach a neighbour, because the cells tile without overlap.
-    const flats = [0, 1, 2, 3, 4, 5].map((k) => (k * Math.PI) / 3);
-    const off = viaSize * 1.05, margin = viaSize / 2 + g.trace;
+    // neighbour. Instead put the mating via in the flat gutter (gutterPlace,
+    // above -- the same routine and the same clash list the outer crossovers
+    // use, so a terminal can never be drilled on top of a crossover), align the
+    // pad to that flat, and size it to the band the fab clearances leave.
     for (const [p, layer] of [[s0, 0], [pN, N - 1]]) {
-      // Work in the frame of the nearest hex EDGE: `n` is that flat's outward
-      // normal, `t` runs along the edge. The outer winding ends sit near the coil
-      // vertices, so a plain radial nudge overshoots the cell; instead push out
-      // along `n` just past the winding but capped inside the cell, and clamp the
-      // along-edge position so the pad sits within the wedge the two adjacent
-      // flats leave -- entirely inside this coil's own cell.
-      const raw = Math.atan2(p[1], p[0]);
-      const fa = flats.reduce((best, fk) =>
-        (Math.abs(((raw - fk + Math.PI) % (2 * Math.PI)) - Math.PI)
-          < Math.abs(((raw - best + Math.PI) % (2 * Math.PI)) - Math.PI) ? fk : best), flats[0]);
-      const n = [Math.cos(fa), Math.sin(fa)], t = [-Math.sin(fa), Math.cos(fa)];
-      const pt = p[0] * t[0] + p[1] * t[1];
-      // Sit the via in the middle of the flat gutter: outside the winding flat
-      // (at apothem halfOut) and inside the cell flat (at cellHalf).
-      const mid = (g.halfOut + cellHalf) / 2;
-      const rVia = Math.min(cellHalf - margin, Math.max(g.halfOut + off, mid));
-      // Stay over the FLAT, clear of the vertex bulge: cap the along-edge offset
-      // by both the winding flat's half-length and the cell's width here.
-      const tWind = g.halfOut * Math.tan(Math.PI / 6);
-      const tCell = (cellHalf - 0.5 * rVia) / (Math.sqrt(3) / 2);
-      const tLim = Math.min(tWind, tCell) - margin;
-      const tVia = Math.max(-tLim, Math.min(tLim, pt));
-      const via = [n[0] * rVia + t[0] * tVia, n[1] * rVia + t[1] * tVia];
-      // Size: radial half-width limited by the gutter it must not cross into the
-      // winding, tangential by the flat; then shrink so every corner is in-cell.
-      let w = Math.min(0.4, 2 * (rVia - g.halfOut - margin));
-      let h = Math.min(0.8, 2 * (tLim - Math.abs(tVia)) + 0.4);
+      const spot = gutterPlace(p);
+      const { n, t, fa, tVia, tLim } = spot;
+      const via = spot.p;
+      // Radially the pad may fill the gutter band: from a clearance off this
+      // coil's own winding out to the cell boundary. Along the flat it may run
+      // to the vertex cut-off. It is never smaller than the via it lands on --
+      // a pad narrower than its own drill land is not a pad, it is decoration,
+      // and that is what the old `min(0.4, ...)` degenerated to as soon as the
+      // via grew to a size the fab would actually drill.
+      let w = Math.min(0.6, 2 * Math.min(rGut - (g.halfOut + clr),
+        cellHalf - FAB.edgeClearance - rGut));
+      let h = Math.min(0.9, 2 * (tLim - Math.abs(tVia)));
+      w = Math.max(w, viaSize); h = Math.max(h, viaSize);
+      // Final containment: shrink until every corner is inside this coil's own
+      // cell, which is what keeps a pad off its neighbours (the cells tile).
       let s = 1;
       for (const fk of flats) {
         const m = [Math.cos(fk), Math.sin(fk)];
-        const slack = cellHalf - (via[0] * m[0] + via[1] * m[1]);
+        const slack = cellHalf - FAB.edgeClearance - (via[0] * m[0] + via[1] * m[1]);
         const need = (w / 2) * Math.abs(n[0] * m[0] + n[1] * m[1])
           + (h / 2) * Math.abs(t[0] * m[0] + t[1] * m[1]);
         if (need > 1e-9) s = Math.min(s, Math.max(0, slack) / need);
@@ -288,7 +643,10 @@ export function viaPlan(g, N, cellHalf, viaSize) {
     const wRad = Math.max(0.2, Math.min(0.5, 2 * Math.min(...terms.map((t) => t.gut)) - viaSize - g.trace));
     const hTan = Math.min(0.7, 1.9 * g.corner);    // along the boundary; corner room is the limit
     for (const t of terms) {
-      const padC = [t.p[0] * t.cb / t.r, t.p[1] * t.cb / t.r];
+      // Pulled back off the boundary by the via's own radius and an edge
+      // clearance: a 0.5 mm land centred ON the cell edge is half in the
+      // neighbour, and on a perimeter cell half off the board.
+      const padC = clampSquare([t.p[0] * t.cb / t.r, t.p[1] * t.cb / t.r]);
       terminals.push([t.p[0], t.p[1], padC[0], padC[1], t.layer]);
       termVias.push({ p: padC, layers: [t.layer] });
       termPads.push({ p: padC, layer: t.layer, w: wRad, h: hTan, a: t.a });
@@ -310,8 +668,8 @@ export function viaPlan(g, N, cellHalf, viaSize) {
 export function coilPreviewSVG(cfg) {
   const g = pcbCoilGeometry(cfg);
   const N = g.layers;   // winding layers only -- a spare electronics layer has no spiral to draw
-  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const via = viaSize(g, cellHalf);
   const plan = viaPlan(g, N, cellHalf, via);
   const contacts = validatePcb(g, N, cellHalf, via);
   const badKey = new Set(contacts.map((c) => c.via.map((n) => n.toFixed(3)).join(',')));
@@ -394,12 +752,82 @@ export function validatePcb(g, N, cellHalf, viaSize) {
     if (isFinite(x1) && (x0 !== x1 || y0 !== y1)) feat[layer].push([[x0, y0], [x1, y1]]);
 
   const contacts = [];
+
+  // Via land against via land. This one is invisible to a PCB DRC and fatal on
+  // the bench: every crossover and terminal via in a coil carries that coil's
+  // net, so a design-rule checker sees two overlapping lands as one net and
+  // passes them -- but each is a plated THROUGH hole with copper on all twelve
+  // layers, so two lands that touch weld the crossover between layers c/c+1 to
+  // the one between c+2/c+3 and short two whole layers of winding out of the
+  // series stack. The coil still looks continuous; it just makes less field
+  // than the physics was run with. Nothing else in this file or in KiCad checks
+  // it, so it is checked here, at a full fab clearance.
+  const allVias = [...plan.vias, ...plan.termVias];
+  for (let i = 0; i < allVias.length; i++) {
+    for (let j = i + 1; j < allVias.length; j++) {
+      const d = Math.hypot(allVias[i].p[0] - allVias[j].p[0], allVias[i].p[1] - allVias[j].p[1]);
+      if (d < viaSize + FAB.minClearance - 1e-9) {
+        contacts.push({
+          via: allVias[i].p, other: allVias[j].p, clearance: d - viaSize,
+          viaToVia: true, shorted: d < viaSize - 1e-9,
+        });
+      }
+    }
+  }
+
   for (const v of [...plan.vias, ...plan.termVias]) {
     for (let m = 0; m < N; m++) {
       if (v.layers.includes(m)) continue;
       let dmin = Infinity;
       for (const [a, b] of feat[m]) { const d = segDist(a, b, v.p); if (d < dmin) dmin = d; }
       if (dmin < contact - 1e-6) contacts.push({ via: v.p, layer: m, clearance: dmin });
+    }
+  }
+
+  // Terminal tab against the winding it leaves. A coil's two leads are layer
+  // 0's START and layer N-1's END, and the spiral alternates: layer 0 starts
+  // OUTSIDE, layer 1 starts inside, and so on. With an EVEN number of winding
+  // layers the last one ends outside too and both leads are already in the
+  // gutter -- but with an ODD number the last layer ends in the CENTRE HOLE,
+  // and the tab that carries it out to its I/O pad has to cross every turn of
+  // its own layer on the way. That is a dead short across the whole layer, and
+  // it is invisible to a PCB DRC for the usual reason: tab and winding are the
+  // same net. The spare-electronics-layer knob is what makes the count odd, so
+  // this is exactly the case that ships broken.
+  for (const [x0, y0, x1, y1, layer] of plan.terminals) {
+    if (!isFinite(x1) || (x0 === x1 && y0 === y1)) continue;
+    const spiral = [];
+    for (const pr of spiralPath(g, layer)) {
+      if (pr.t === 'arc') { spiral.push([pr.a, pr.m]); spiral.push([pr.m, pr.b]); }
+      else spiral.push([pr.a, pr.b]);
+    }
+    // A tab necessarily starts ON the winding -- that is where its lead is. What
+    // it must not do is stay in the winding: measure how much of its length runs
+    // INSIDE the outermost turn, more than one trace width from its own start.
+    const sides = g.sides ?? 4, phase = g.phase ?? -Math.PI / 2;
+    const apothem = (q) => {
+      let m = -Infinity;
+      for (let k = 0; k < sides; k++) {
+        const a = phase + (k * 2 * Math.PI) / sides;
+        m = Math.max(m, q[0] * Math.cos(a) + q[1] * Math.sin(a));
+      }
+      return m;
+    };
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    let insideLen = 0, dmin = Infinity;
+    const steps = 60;
+    for (let i = 0; i <= steps; i++) {
+      const s = i / steps;
+      const q = [x0 + (x1 - x0) * s, y0 + (y1 - y0) * s];
+      if (s * len < 1.5 * g.trace) continue;                 // still leaving its own turn
+      if (apothem(q) < g.halfOut + g.trace / 2) insideLen += len / steps;
+      for (const [a, b] of spiral) { const d = segDist(a, b, q); if (d < dmin) dmin = d; }
+    }
+    if (insideLen > 1.5 * g.trace) {
+      contacts.push({
+        via: [x1, y1], layer, clearance: dmin, terminalTab: true,
+        insideLenMm: insideLen, shorted: true,
+      });
     }
   }
 
@@ -531,9 +959,9 @@ export function buildDriverBackplane(stator, cfg) {
   if (!isPcbCoil(cfg.stator.coilType)) return null;
   const g = pcbCoilGeometry(cfg);
   const N = g.layers;   // terminal-via positions come from the winding plan
-  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
-  const drill = via * 0.5;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const via = viaSize(g, cellHalf);
+  const drill = viaDrill(via, g.thickness);
   // The backplane wears the same self-tileable cell-union outline as the coil
   // board it mates to, so a tiled stator's backplanes tile with it.
   const outline = cellOutline(stator, cfg);
@@ -715,7 +1143,13 @@ export function buildDriverBackplane(stator, cfg) {
     const out = [];
     let fails = 0;
     for (const reg of chain.registers) {
-      const p = placeWorld(FOOTPRINTS[pkg], [reg.x, reg.y], stator.coils, obsB, placed, CLR, cellHalf * 2, 0.5);
+      // Escalating search, as on the coil board: near the quad is a preference,
+      // landing on another part is not.
+      let p = { fits: false };
+      for (const sh of [cellHalf * 2, cellHalf * 5, cellHalf * 10]) {
+        p = placeWorld(FOOTPRINTS[pkg], [reg.x, reg.y], stator.coils, obsB, placed, CLR, sh, sh > cellHalf * 3 ? 0.5 : 0.25);
+        if (p.fits) break;
+      }
       if (!p.fits && ++fails >= 3 && pkg !== 'qfn16') break;
       const at = p.fits ? p.at : [reg.x, reg.y];
       placed.addAll(partRects(FOOTPRINTS[pkg], at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
@@ -778,9 +1212,9 @@ export function buildKiCad(stator, cfg, opts = {}) {
     ? backsideFit(cfg, { stator, sensorSpacing: opts.sensorSpacing ?? null })
     : null;
   const chain = elec?.available ? elec.chain : null;
-  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
-  const drill = via * 0.5;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const via = viaSize(g, cellHalf);
+  const drill = viaDrill(via, g.thickness);
   // Self-tileable outline: the union boundary of the coil cells. Everything
   // conductive lives inside its own cell (validatePcb), so cutting along cell
   // boundaries loses nothing -- and abutted copies of the board continue the
@@ -904,7 +1338,11 @@ export function buildKiCad(stator, cfg, opts = {}) {
       const deg = (-(pad.a || 0) * 180) / Math.PI;
       L.push(`  (footprint "maglev:Term" (layer "B.Cu") (at ${tx(pad.p[0])} ${ty(pad.p[1])})`);
       L.push('    (attr smd)');
-      L.push(`    (fp_text reference "J${ci}.${k === 0 ? 'IN' : 'OUT'}" (at 0 -${f(pad.h / 2 + 0.3)}) (layer "B.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
+      // On B.Fab, not B.SilkS: a coil terminal is a drilled land in a gutter
+      // 0.8 mm wide, not a part anyone places by eye. Silkscreening it put ink
+      // straight onto the neighbouring copper and over the board edge, and the
+      // legend it produced would be masked away in fab anyway.
+      L.push(`    (fp_text reference "J${ci}.${k === 0 ? 'IN' : 'OUT'}" (at 0 -${f(pad.h / 2 + 0.3)}) (layer "B.Fab") (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
       L.push(`    (fp_text value "term" (at 0 0) (layer "B.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
       L.push(`    (pad "1" smd rect (at 0 0 ${f(deg)}) (size ${f(pad.w)} ${f(pad.h)}) (layers "B.Cu" "B.Paste" "B.Mask") (net ${net} "coil_${ci}"))`);
       L.push('  )');
@@ -926,8 +1364,29 @@ export function buildKiCad(stator, cfg, opts = {}) {
     const wx = (x) => cx0 + x, wy = (y) => cy0 - y;
     const bridgePkg = elec.planStats?.bridgePackage ?? 'sop8';
     for (const b of elec.bridges ?? []) {
-      emitBridge8(L, `U${b.coil}`, wx(b.at[0]), wy(b.at[1]), b.rotDeg, f, 'B', {
+      const emitBridge = bridgePkg === 'sot23hb' ? emitBridge6 : emitBridge8;
+      emitBridge(L, `U${b.coil}`, wx(b.at[0]), wy(b.at[1]), b.rotDeg, f, 'B', {
         in1: pwmA(b.coil), in2: pwmB(b.coil), vbus: spine.vbus, gnd: spine.gnd,
+        // Both bridge outputs carry the coil's ONE net, and they have to: the
+        // winding is a continuous piece of copper joining its two terminals, so
+        // any connectivity engine that reads copper -- KiCad's included -- sees
+        // one net, and giving the ends different names would report the coil
+        // itself as a short.
+        //
+        // That is right for the BOARD and wrong for a ROUTER, which reads the
+        // netlist and not the physics: told that four pads are one net, it
+        // helpfully ran a wire straight from OUTA to OUTB, shorting the bridge
+        // and bypassing the coil. The router therefore has to be given the coil
+        // as a two-terminal COMPONENT instead (route/route.mjs splits it into
+        // coil_i_A / coil_i_B), and the pairing is fixed here so it is a
+        // convention and not a coincidence:
+        //
+        //     OUTA (pad 8) -> J{i}.IN   = layer 0's start
+        //     OUTB (pad 6) -> J{i}.OUT  = the last layer's end
+        //
+        // so IN1 high drives current IN -> OUT, the winding's positive sense,
+        // which is the direction the physics integrates. Swap it per coil and
+        // the commutation signs stop meaning the same thing on every cell.
         outa: { num: b.coil + 1, name: `coil_${b.coil}` }, outb: { num: b.coil + 1, name: `coil_${b.coil}` },
       }, bridgePkg);
       if (b.cap) {
@@ -971,6 +1430,14 @@ export function buildKiCad(stator, cfg, opts = {}) {
     ]);
     contract = {
       chainBits: chain.bits, shiftOrder: 'bit 0 is clocked out first',
+      // Which bridge output lands on which coil lead. Both are the coil's one
+      // net on the board, so this is the only record of the polarity.
+      coilPolarity: {
+        package: elec.planStats?.bridgePackage ?? null,
+        pads: BRIDGE_OUT_PADS[bridgeLib(elec.planStats?.bridgePackage)] ?? null,
+        outaTerminal: 'IN', outbTerminal: 'OUT',
+        note: 'IN1 high drives current from J.IN through the winding to J.OUT',
+      },
       bitMap: chain.bitMap, sensors: sensorContract,
       note: nSensBus > 1 ? `SDA_1..SDA_${nSensBus - 1} route to the master section; the tile header carries SDA_0 only.` : undefined,
     };
@@ -999,6 +1466,18 @@ export function buildKiCad(stator, cfg, opts = {}) {
       bridgesColliding: elec?.planStats?.bridgeFallback ?? 0,
       serviceFallback: elec?.planStats?.serviceFallback ?? 0,
       tile: tileability(stator, cfg),
+      // The two shorts a PCB DRC structurally cannot report, because both
+      // halves are the coil's own net: a terminal tab crossing its winding
+      // (odd winding-layer count) and two via lands touching. Reported here so
+      // an export that is electrically dead cannot look clean.
+      sameNetShorts: validatePcb(g, NC, cellHalf, via).filter((c) => c.shorted).length,
+      oddWindingLayers: NC % 2 === 1,
+      // Plated-hole aspect ratio: board thickness over drill. Fabs plate a
+      // hole, they do not magic copper down an arbitrarily deep one, and the
+      // limit is a ratio rather than a diameter -- so a via that is legal on a
+      // 1.6 mm board is not on a 3 mm one.
+      holeAspect: +(stator.thickness * 1000 / drill).toFixed(1),
+      holeAspectOK: stator.thickness * 1000 / drill <= FAB.maxAspect,
     },
     contract,
     // The placement plan the board was emitted from -- sensors with their
@@ -1070,12 +1549,36 @@ export const FOOTPRINTS = {
     // it must clear the via field -- which is exactly the constraint that
     // decides whether this package can sit over a cell's centre crossovers.
     label: '2x2 DFN bridge (DRV8837, WSON-8-EP)', body: [2.2, 2.2],
+    // The die pad is an ISLAND on this board: 0.1 mm to all eight perimeter
+    // pads, which no legal trace fits through, and it sits over winding copper
+    // so a via in the pad would short the coil. A bridge whose GND cannot be
+    // connected is not a bridge, so this package is a last resort even when it
+    // is the one that fits best -- see the misses penalty in backsideFit.
+    padIsland: true,
     pads: [-0.75, -0.25, 0.25, 0.75].flatMap((y) =>
       [[-0.85, y, 0.6, 0.3, 0.09], [0.85, y, 0.6, 0.3, 0.09]])
       .concat([[0, 0, 0.9, 1.6, 0.09]]),
   },
   sot23_6: {
     label: 'SOT-23-6 sensor (TMAG5273)', body: [2.9, 1.6],
+    pads: [-0.95, 0, 0.95].flatMap((y) =>
+      [[-1.1, y, 0.9, 0.6], [1.1, y, 0.9, 0.6]]),
+  },
+  sot23hb: {
+    // The same land pattern as a bridge, and the reason it exists: a bridge in
+    // a leadless package has an EXPOSED PAD, and on this board that pad cannot
+    // be connected to anything. It is an island -- 0.1 mm to all eight
+    // perimeter pads, which no legal trace fits through -- and the usual escape,
+    // a via in the pad, is not available either because the part sits over
+    // winding copper, where a plated through hole would short the coil. Every
+    // routed tile came back with the bridge's own GND pads unconnected to each
+    // other and to the die pad.
+    //
+    // Six perimeter pins is exactly an H-bridge's pin count (VBUS, GND, two
+    // inputs, two outputs), the 0.95 mm pitch leaves 0.35 mm between adjacent
+    // pads -- enough for a 0.1 mm trace with clearance either side -- and every
+    // pin is reachable from outside the part. TC118S / L9110-class silicon.
+    label: 'SOT-23-6 bridge (TC118S-class)', body: [2.9, 1.6],
     pads: [-0.95, 0, 0.95].flatMap((y) =>
       [[-1.1, y, 0.9, 0.6], [1.1, y, 0.9, 0.6]]),
   },
@@ -1142,8 +1645,8 @@ function rectHitsCircle(r, cx, cy, rad) {
  *  copper actually emitted, not a redescription of it. */
 export function backsideObstacles(cfg) {
   const g = pcbCoilGeometry(cfg);
-  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+  const via = viaSize(g, cellHalf);
   const plan = viaPlan(g, g.layers, cellHalf, via);
   // The via plan's frame is the BOARD's: emission writes plan y straight into
   // file y (down-screen). Part placement runs in the world frame (y up), so
@@ -1435,7 +1938,7 @@ export function backsideFit(cfg, {
   // see its pads and body too, so their verdicts stop describing a board where
   // the bridges were never placed.
   const parts = {};
-  for (const key of ['sop8', 'dfn8']) {
+  for (const key of ['sop8', 'sot23hb', 'dfn8']) {
     if (footprints[key]) parts[key] = { label: footprints[key].label, ...placeInCell(footprints[key], obs, clearance) };
   }
   const std = parts.sop8?.fits ? parts.sop8 : null;
@@ -1572,7 +2075,15 @@ export function backsideFit(cfg, {
         });
         for (const ci of blocked) {
           const c = coils[ci];
-          const p = placeWorld(bfp, [c.x * 1000, c.y * 1000], coils, obs, placed, clearance, obs.cellHalf);
+          // Escalate like the registers and the service parts: a bridge belongs
+          // in its own cell, but "in its own cell" is a preference and landing
+          // on another part is not. One cell on the full board could not seat
+          // its bridge inside a single-cell search and was emitted overlapping.
+          let p = { fits: false };
+          for (const sh of [obs.cellHalf, obs.cellHalf * 2, obs.cellHalf * 4]) {
+            p = placeWorld(bfp, [c.x * 1000, c.y * 1000], coils, obs, placed, clearance, sh);
+            if (p.fits) break;
+          }
           let out;
           if (p.fits) { st.bridgesMoved++; out = { coil: ci, at: p.at, rotDeg: p.rotDeg, moved: true }; }
           else { st.bridgeFallback++; out = { coil: ci, at: stdOf(c), rotDeg: bStd.rotDeg, moved: false, collides: true }; }
@@ -1608,7 +2119,17 @@ export function backsideFit(cfg, {
         let fails = 0;
         let aborted = false;
         for (const reg of chain.registers) {
-          const p = placeWorld(footprints[pkg], [reg.x, reg.y], coils, obs, placed, clearance, obs.cellHalf * 2, 0.5);
+          // Escalate the search the way settle() does for the service parts. A
+          // register belongs NEAR its quad, but "near" is a preference and
+          // overlapping is not: the two-cell search used to give up and emit
+          // the part on its target anyway, which on the full board put SR40's
+          // pads straight through U162's -- six shorted nets that DRC found
+          // and no amount of autorouting could have fixed.
+          let p = { fits: false };
+          for (const sh of [obs.cellHalf * 2, obs.cellHalf * 5, obs.cellHalf * 10]) {
+            p = placeWorld(footprints[pkg], [reg.x, reg.y], coils, obs, placed, clearance, sh, sh > obs.cellHalf * 3 ? 0.5 : 0.25);
+            if (p.fits) break;
+          }
           if (!p.fits) {
             fails++;
             if (fails >= 3 && pkg !== regPkgs[regPkgs.length - 1]) { aborted = true; break; }
@@ -1636,13 +2157,22 @@ export function backsideFit(cfg, {
 
       // No completed register pass means this bridge package starved the
       // chain: report it as unplaceable so the selection moves on.
+      // A package whose pads cannot all be reached loses to one that fits worse
+      // but can be wired: the penalty is large enough to outrank any plausible
+      // number of nudged registers, and finite so that a board where NOTHING
+      // else fits still gets a bridge (and reports why).
       const misses = regs
         ? st.regFallback + st.bridgeFallback + (sensors ? sensors.failed : 0)
+          + (footprints[bridgeKey]?.padIsland ? 1e4 : 0)
         : Infinity;
       return { brs, regs, st, misses };
     };
 
-    const bridgeKeys = ['sop8', 'dfn8'].filter((k) => footprints[k] && parts[k]?.fits);
+    // Escalation order is roomiest-first, but a package with an EXPOSED PAD
+    // goes last: on this board that pad is an unroutable island (see the
+    // sot23hb note in FOOTPRINTS), so a six-pin part that fits beats an
+    // eight-pin one that fits and cannot be wired.
+    const bridgeKeys = ['sop8', 'sot23hb', 'dfn8'].filter((k) => footprints[k] && parts[k]?.fits);
     let plan = null;
     bridgeKeys.forEach((bk, i) => {
       if (plan && plan.misses === 0) return;      // nothing starves: taken
@@ -1684,21 +2214,59 @@ export function chainPlan(stator, cfg) {
   const p = cfg.stator.coilPitch * 1000;
   const hex = cfg.stator.coilType === 'pcbhex';
   const rowH = hex ? p * Math.sqrt(3) / 2 : p;
-  // Serpentine: rows bottom-to-top, alternate rows right-to-left, so quad
-  // members and consecutive registers are physical neighbours.
-  const order = stator.coils
-    .map((c, i) => ({ i, x: c.x * 1000, y: c.y * 1000, row: Math.round((c.y * 1000) / rowH) }))
-    .sort((a, b) => (a.row - b.row) || ((a.row % 2 === 0 ? 1 : -1) * (a.x - b.x)));
-  const registers = [];
-  for (let k = 0; k < order.length; k += 4) {
-    const quad = order.slice(k, k + 4);
-    registers.push({
-      ref: `SR${registers.length}`,
-      x: quad.reduce((a, c) => a + c.x, 0) / quad.length,
-      y: quad.reduce((a, c) => a + c.y, 0) / quad.length,
-      coils: quad.map((c) => c.i),
-    });
+  // A register drives FOUR coils, and how those four are chosen decides how far
+  // its eight PWM traces have to travel. Taking them four-in-a-row along the
+  // serpentine -- which is what this did -- makes a quad a strip four pitches
+  // long: 34 mm on the amzhex lattice, with the outer two coils 12.7 mm from
+  // the register and their traces obliged to cross two other cells' bridges,
+  // decaps, terminal pads and via rings on the way. Six of one register's eight
+  // PWM nets came back unrouted for exactly that reason.
+  //
+  // So a quad is a 2x2 BLOCK instead: two neighbouring coils from one row and
+  // the two above them. That is one pitch by one row height across, every coil
+  // within about a pitch of its register, and it costs nothing else -- the
+  // blocks are still walked in a serpentine, so consecutive registers stay
+  // physical neighbours and the DATA chain still links adjacent parts.
+  // Row index by RANKING the distinct y values, not by dividing and rounding.
+  // The honeycomb's rows sit at half-integer multiples of the row height, and
+  // Math.round breaks ties toward +infinity -- so -1.5 and -0.505 both land on
+  // -1 and two physical rows merge into one. That is invisible when the index
+  // is only a sort key (as it was) and wrong when it decides which coils share
+  // a register: it produced quads holding coils 29 mm apart.
+  const yKey = (c) => +(c.y * 1000).toFixed(3);
+  const ys = [...new Set(stator.coils.map(yKey))].sort((a, b) => a - b);
+  const rowOf = new Map(ys.map((y, k) => [y, k]));
+  const rows = new Map();
+  stator.coils.forEach((c, i) => {
+    const r = rowOf.get(yKey(c));
+    if (!rows.has(r)) rows.set(r, []);
+    rows.get(r).push({ i, x: c.x * 1000, y: c.y * 1000, row: r });
+  });
+  const rowKeys = [...rows.keys()].sort((a, b) => a - b);
+  for (const k of rowKeys) rows.get(k).sort((a, b) => a.x - b.x);
+  const quads = [];
+  for (let ri = 0; ri < rowKeys.length; ri += 2) {
+    const dir = (ri / 2) % 2 === 0 ? 1 : -1;      // serpentine over row PAIRS
+    const lo = rows.get(rowKeys[ri]) ?? [];
+    const hi = rows.get(rowKeys[ri + 1]) ?? [];
+    const L = dir > 0 ? lo : [...lo].reverse();
+    const H = dir > 0 ? hi : [...hi].reverse();
+    let a = 0, b = 0;
+    while (a < L.length || b < H.length) {
+      const q = [];
+      for (let k = 0; k < 2 && a < L.length; k++) q.push(L[a++]);
+      for (let k = 0; k < 2 && b < H.length; k++) q.push(H[b++]);
+      while (q.length < 4 && a < L.length) q.push(L[a++]);   // ragged row end
+      while (q.length < 4 && b < H.length) q.push(H[b++]);
+      if (q.length) quads.push(q);
+    }
   }
+  const registers = quads.map((quad, k) => ({
+    ref: `SR${k}`,
+    x: quad.reduce((s2, c) => s2 + c.x, 0) / quad.length,
+    y: quad.reduce((s2, c) => s2 + c.y, 0) / quad.length,
+    coils: quad.map((c) => c.i),
+  }));
   const M = registers.length;
   const bitMap = [];
   for (let r = 0; r < M; r++) {
@@ -1739,10 +2307,16 @@ function emitShift595(L, ref, ox, oy, rot, f, S, n, pkg = 'tssop16') {
   });
 }
 
-/** The /OE dead-man: SYNC strobes keep C1 charged through R1, holding Q1 on and
- *  /OE low (outputs enabled); strobes stop -> C1 decays -> Q1 releases -> R2
- *  pulls /OE high and every 595 tri-states, every bridge input floats to brake.
- *  Envelope parts, function-labelled. */
+/** The /OE dead-man: SYNC strobes keep CDM1 charged through RDM1, holding QDM1
+ *  on and /OE low (outputs enabled); strobes stop -> CDM1 decays -> QDM1
+ *  releases -> RDM2 pulls /OE high and every 595 tri-states, every bridge input
+ *  floats to brake. Envelope parts, function-labelled.
+ *
+ *  The refs carry a DM prefix deliberately. The per-coil decaps are C{coil} and
+ *  the bridges U{coil}, so a plain "C1" here collided with coil 1's cap -- and a
+ *  duplicate reference designator is not cosmetic: KiCad's Specctra (DSN)
+ *  exporter keys its component list by reference and refuses to write the file
+ *  at all, which is what stopped this board reaching an autorouter. */
 function emitDeadman(L, ox, oy, f, S, n) {
   const two = (ref, val, x, a, b) => {
     const m = S === 'B' ? ' (justify mirror)' : '';
@@ -1754,13 +2328,13 @@ function emitDeadman(L, ox, oy, f, S, n) {
     L.push(fpPad(2, 0.5, 0, 0.4, 0.5, b.num, b.name, S));
     L.push('  )');
   };
-  two('R1', 'retrigger', 0, n.sync, n.ng);
-  two('C1', 'hold', 2.2, n.ng, n.gnd);
-  two('R2', 'pull-up', 4.4, n.oen, n.vcc);
+  two('RDM1', 'retrigger', 0, n.sync, n.ng);
+  two('CDM1', 'hold', 2.2, n.ng, n.gnd);
+  two('RDM2', 'pull-up', 4.4, n.oen, n.vcc);
   const m = S === 'B' ? ' (justify mirror)' : '';
   L.push(`  (footprint "maglev:SOT23" (layer "${S}.Cu") (at ${f(ox + 6.8)} ${f(oy)})`);
   L.push('    (attr smd)');
-  L.push(`    (fp_text reference "Q1" (at 0 -1.6) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+  L.push(`    (fp_text reference "QDM1" (at 0 -1.6) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
   L.push(`    (fp_text value "dead-man" (at 0 1.6) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
   // Pads mirror SERVICE_FPS.deadman's world-frame table: world +y is file -y.
   L.push(fpPad(1, -0.95, -1.0, 0.6, 0.7, n.ng.num, n.ng.name, S));  // gate
@@ -1773,7 +2347,9 @@ function emitDeadman(L, ox, oy, f, S, n) {
  *  the master, as a 2 x 5 grid of 2 mm pads near the south edge. Pin k is the
  *  k-th entry of `nets`, row-major across SERVICE_FPS.header's pad table. */
 function emitHeader(L, ox, oy, rot, f, S, nets) {
-  emitPart(L, { lib: 'HDR10', value: 'spine 2x5 1.27mm', ref: 'J1', S, at: [ox, oy], rotDeg: rot, fp: SERVICE_FPS.header, nets, f });
+  // JSPINE, not J1: the coil I/O pads are J{coil}.IN/.OUT, so a bare J1 reads as
+  // part of that series. Refs must be unique board-wide (see emitDeadman).
+  emitPart(L, { lib: 'HDR10', value: 'spine 2x5 1.27mm', ref: 'JSPINE', S, at: [ox, oy], rotDeg: rot, fp: SERVICE_FPS.header, nets, f });
 }
 
 /** A TMAG5273-class 3-axis sensor on the SOT-23-6 envelope at (ox,oy) rot deg. */
@@ -1790,6 +2366,34 @@ function emitSensor(L, ref, ox, oy, rot, f, S, n) {
  *  pinout -- MX1508-class per the BOM. Includes the bundled 100n decap's two
  *  pads (last two entries of the sop8 table), so what is emitted is exactly
  *  what backsideFit proved to fit. */
+/** A six-pin bridge (SOT-23-6). Pad order follows the footprint table: left
+ *  column bottom-to-top is IN1, GND, IN2; right column is OUT1, VBUS, OUT2 --
+ *  so the two outputs sit at opposite corners of one side and can fan out to
+ *  the coil's two gutter terminals without crossing, and every pin is on the
+ *  perimeter where a trace can reach it. */
+/** Footprint library name for a bridge package key. */
+export function bridgeLib(pkg) {
+  return pkg === 'sot23hb' ? 'SOT23HB' : pkg === 'dfn8' ? 'DFN8HB' : 'SOP8HB';
+}
+
+/** Which pad of each bridge package is OUTA and which is OUTB. The board gives
+ *  both the coil's single net (it has to -- the winding joins them), so this is
+ *  the only machine-readable record of the pairing, and route/route.mjs needs
+ *  it to hand the router the coil as a two-terminal component. */
+export const BRIDGE_OUT_PADS = {
+  SOP8HB: { a: 8, b: 6 },
+  DFN8HB: { a: 8, b: 6 },
+  SOT23HB: { a: 2, b: 6 },
+};
+
+function emitBridge6(L, ref, ox, oy, rot, f, S, n) {
+  const nets = [n.in1, n.outa, n.gnd, n.vbus, n.in2, n.outb];
+  emitPart(L, {
+    lib: 'SOT23HB', value: 'TC118S-class', ref, S,
+    at: [ox, oy], rotDeg: rot, fp: FOOTPRINTS.sot23hb, nets, f,
+  });
+}
+
 function emitBridge8(L, ref, ox, oy, rot, f, S, n, pkg = 'sop8') {
   // Pad order is rows bottom to top (world), [left, right] -- left column
   // top->bottom is in1,in2,vbus,gnd; right is outa,outb,gnd,vbus. The SOP-8
@@ -1898,8 +2502,8 @@ export function tileability(stator, cfg) {
   // the binding items are the terminal pads and outer vias nearest a flat.
   // Flat normals: k*60 deg for the pointy-top hex cell, k*90 deg for the square.
   const g = pcbCoilGeometry(cfg);
-  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const cellHalf = p / 2;
+  const via = viaSize(g, cellHalf);
   const plan = viaPlan(g, g.layers, cellHalf, via);
   const sides = hex ? 6 : 4;
   let clear = Infinity;

@@ -1,0 +1,16 @@
+import { readFileSync } from 'fs';
+import { pcbCoilGeometry, viaPlan, viaSize } from '../src/kicad.js';
+const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const b = src.slice(src.indexOf('const PRESETS = {') + 'const PRESETS = '.length);
+const P = eval('(' + b.slice(0, b.indexOf('\n};') + 2) + ')');
+const cfg = JSON.parse(JSON.stringify(P.amzhex.cfg));
+if (process.env.SPARE) cfg.stator.pcbSpareLayers = +process.env.SPARE;
+const g = pcbCoilGeometry(cfg);
+const ch = cfg.stator.coilPitch*1000/2;
+const v = viaSize(g, ch);
+const plan = viaPlan(g, g.layers, ch, v);
+const L = (s) => Math.hypot(s[2]-s[0], s[3]-s[1]);
+const segs = plan.segments.map(L), terms = plan.terminals.map(L);
+console.log('crossover stub lengths:', segs.map(x=>x.toFixed(2)).join(' '));
+console.log('terminal  stub lengths:', terms.map(x=>x.toFixed(2)).join(' '));
+console.log('max stub', Math.max(...segs, ...terms).toFixed(3));

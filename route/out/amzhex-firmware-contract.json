@@ -1,0 +1,2723 @@
+{
+  "chainBits": 336,
+  "shiftOrder": "bit 0 is clocked out first",
+  "coilPolarity": {
+    "package": "sot23hb",
+    "pads": {
+      "a": 2,
+      "b": 6
+    },
+    "outaTerminal": "IN",
+    "outbTerminal": "OUT",
+    "note": "IN1 high drives current from J.IN through the winding to J.OUT"
+  },
+  "bitMap": [
+    {
+      "bit": 0,
+      "ref": "SR41",
+      "q": "Q7",
+      "coil": 167,
+      "input": "IN2"
+    },
+    {
+      "bit": 1,
+      "ref": "SR41",
+      "q": "Q6",
+      "coil": 167,
+      "input": "IN1"
+    },
+    {
+      "bit": 2,
+      "ref": "SR41",
+      "q": "Q5",
+      "coil": 166,
+      "input": "IN2"
+    },
+    {
+      "bit": 3,
+      "ref": "SR41",
+      "q": "Q4",
+      "coil": 166,
+      "input": "IN1"
+    },
+    {
+      "bit": 4,
+      "ref": "SR41",
+      "q": "Q3",
+      "coil": 155,
+      "input": "IN2"
+    },
+    {
+      "bit": 5,
+      "ref": "SR41",
+      "q": "Q2",
+      "coil": 155,
+      "input": "IN1"
+    },
+    {
+      "bit": 6,
+      "ref": "SR41",
+      "q": "Q1",
+      "coil": 154,
+      "input": "IN2"
+    },
+    {
+      "bit": 7,
+      "ref": "SR41",
+      "q": "Q0",
+      "coil": 154,
+      "input": "IN1"
+    },
+    {
+      "bit": 8,
+      "ref": "SR40",
+      "q": "Q7",
+      "coil": 165,
+      "input": "IN2"
+    },
+    {
+      "bit": 9,
+      "ref": "SR40",
+      "q": "Q6",
+      "coil": 165,
+      "input": "IN1"
+    },
+    {
+      "bit": 10,
+      "ref": "SR40",
+      "q": "Q5",
+      "coil": 164,
+      "input": "IN2"
+    },
+    {
+      "bit": 11,
+      "ref": "SR40",
+      "q": "Q4",
+      "coil": 164,
+      "input": "IN1"
+    },
+    {
+      "bit": 12,
+      "ref": "SR40",
+      "q": "Q3",
+      "coil": 153,
+      "input": "IN2"
+    },
+    {
+      "bit": 13,
+      "ref": "SR40",
+      "q": "Q2",
+      "coil": 153,
+      "input": "IN1"
+    },
+    {
+      "bit": 14,
+      "ref": "SR40",
+      "q": "Q1",
+      "coil": 152,
+      "input": "IN2"
+    },
+    {
+      "bit": 15,
+      "ref": "SR40",
+      "q": "Q0",
+      "coil": 152,
+      "input": "IN1"
+    },
+    {
+      "bit": 16,
+      "ref": "SR39",
+      "q": "Q7",
+      "coil": 163,
+      "input": "IN2"
+    },
+    {
+      "bit": 17,
+      "ref": "SR39",
+      "q": "Q6",
+      "coil": 163,
+      "input": "IN1"
+    },
+    {
+      "bit": 18,
+      "ref": "SR39",
+      "q": "Q5",
+      "coil": 162,
+      "input": "IN2"
+    },
+    {
+      "bit": 19,
+      "ref": "SR39",
+      "q": "Q4",
+      "coil": 162,
+      "input": "IN1"
+    },
+    {
+      "bit": 20,
+      "ref": "SR39",
+      "q": "Q3",
+      "coil": 151,
+      "input": "IN2"
+    },
+    {
+      "bit": 21,
+      "ref": "SR39",
+      "q": "Q2",
+      "coil": 151,
+      "input": "IN1"
+    },
+    {
+      "bit": 22,
+      "ref": "SR39",
+      "q": "Q1",
+      "coil": 150,
+      "input": "IN2"
+    },
+    {
+      "bit": 23,
+      "ref": "SR39",
+      "q": "Q0",
+      "coil": 150,
+      "input": "IN1"
+    },
+    {
+      "bit": 24,
+      "ref": "SR38",
+      "q": "Q7",
+      "coil": 161,
+      "input": "IN2"
+    },
+    {
+      "bit": 25,
+      "ref": "SR38",
+      "q": "Q6",
+      "coil": 161,
+      "input": "IN1"
+    },
+    {
+      "bit": 26,
+      "ref": "SR38",
+      "q": "Q5",
+      "coil": 160,
+      "input": "IN2"
+    },
+    {
+      "bit": 27,
+      "ref": "SR38",
+      "q": "Q4",
+      "coil": 160,
+      "input": "IN1"
+    },
+    {
+      "bit": 28,
+      "ref": "SR38",
+      "q": "Q3",
+      "coil": 149,
+      "input": "IN2"
+    },
+    {
+      "bit": 29,
+      "ref": "SR38",
+      "q": "Q2",
+      "coil": 149,
+      "input": "IN1"
+    },
+    {
+      "bit": 30,
+      "ref": "SR38",
+      "q": "Q1",
+      "coil": 148,
+      "input": "IN2"
+    },
+    {
+      "bit": 31,
+      "ref": "SR38",
+      "q": "Q0",
+      "coil": 148,
+      "input": "IN1"
+    },
+    {
+      "bit": 32,
+      "ref": "SR37",
+      "q": "Q7",
+      "coil": 159,
+      "input": "IN2"
+    },
+    {
+      "bit": 33,
+      "ref": "SR37",
+      "q": "Q6",
+      "coil": 159,
+      "input": "IN1"
+    },
+    {
+      "bit": 34,
+      "ref": "SR37",
+      "q": "Q5",
+      "coil": 158,
+      "input": "IN2"
+    },
+    {
+      "bit": 35,
+      "ref": "SR37",
+      "q": "Q4",
+      "coil": 158,
+      "input": "IN1"
+    },
+    {
+      "bit": 36,
+      "ref": "SR37",
+      "q": "Q3",
+      "coil": 147,
+      "input": "IN2"
+    },
+    {
+      "bit": 37,
+      "ref": "SR37",
+      "q": "Q2",
+      "coil": 147,
+      "input": "IN1"
+    },
+    {
+      "bit": 38,
+      "ref": "SR37",
+      "q": "Q1",
+      "coil": 146,
+      "input": "IN2"
+    },
+    {
+      "bit": 39,
+      "ref": "SR37",
+      "q": "Q0",
+      "coil": 146,
+      "input": "IN1"
+    },
+    {
+      "bit": 40,
+      "ref": "SR36",
+      "q": "Q7",
+      "coil": 157,
+      "input": "IN2"
+    },
+    {
+      "bit": 41,
+      "ref": "SR36",
+      "q": "Q6",
+      "coil": 157,
+      "input": "IN1"
+    },
+    {
+      "bit": 42,
+      "ref": "SR36",
+      "q": "Q5",
+      "coil": 156,
+      "input": "IN2"
+    },
+    {
+      "bit": 43,
+      "ref": "SR36",
+      "q": "Q4",
+      "coil": 156,
+      "input": "IN1"
+    },
+    {
+      "bit": 44,
+      "ref": "SR36",
+      "q": "Q3",
+      "coil": 145,
+      "input": "IN2"
+    },
+    {
+      "bit": 45,
+      "ref": "SR36",
+      "q": "Q2",
+      "coil": 145,
+      "input": "IN1"
+    },
+    {
+      "bit": 46,
+      "ref": "SR36",
+      "q": "Q1",
+      "coil": 144,
+      "input": "IN2"
+    },
+    {
+      "bit": 47,
+      "ref": "SR36",
+      "q": "Q0",
+      "coil": 144,
+      "input": "IN1"
+    },
+    {
+      "bit": 48,
+      "ref": "SR35",
+      "q": "Q7",
+      "coil": 132,
+      "input": "IN2"
+    },
+    {
+      "bit": 49,
+      "ref": "SR35",
+      "q": "Q6",
+      "coil": 132,
+      "input": "IN1"
+    },
+    {
+      "bit": 50,
+      "ref": "SR35",
+      "q": "Q5",
+      "coil": 133,
+      "input": "IN2"
+    },
+    {
+      "bit": 51,
+      "ref": "SR35",
+      "q": "Q4",
+      "coil": 133,
+      "input": "IN1"
+    },
+    {
+      "bit": 52,
+      "ref": "SR35",
+      "q": "Q3",
+      "coil": 120,
+      "input": "IN2"
+    },
+    {
+      "bit": 53,
+      "ref": "SR35",
+      "q": "Q2",
+      "coil": 120,
+      "input": "IN1"
+    },
+    {
+      "bit": 54,
+      "ref": "SR35",
+      "q": "Q1",
+      "coil": 121,
+      "input": "IN2"
+    },
+    {
+      "bit": 55,
+      "ref": "SR35",
+      "q": "Q0",
+      "coil": 121,
+      "input": "IN1"
+    },
+    {
+      "bit": 56,
+      "ref": "SR34",
+      "q": "Q7",
+      "coil": 134,
+      "input": "IN2"
+    },
+    {
+      "bit": 57,
+      "ref": "SR34",
+      "q": "Q6",
+      "coil": 134,
+      "input": "IN1"
+    },
+    {
+      "bit": 58,
+      "ref": "SR34",
+      "q": "Q5",
+      "coil": 135,
+      "input": "IN2"
+    },
+    {
+      "bit": 59,
+      "ref": "SR34",
+      "q": "Q4",
+      "coil": 135,
+      "input": "IN1"
+    },
+    {
+      "bit": 60,
+      "ref": "SR34",
+      "q": "Q3",
+      "coil": 122,
+      "input": "IN2"
+    },
+    {
+      "bit": 61,
+      "ref": "SR34",
+      "q": "Q2",
+      "coil": 122,
+      "input": "IN1"
+    },
+    {
+      "bit": 62,
+      "ref": "SR34",
+      "q": "Q1",
+      "coil": 123,
+      "input": "IN2"
+    },
+    {
+      "bit": 63,
+      "ref": "SR34",
+      "q": "Q0",
+      "coil": 123,
+      "input": "IN1"
+    },
+    {
+      "bit": 64,
+      "ref": "SR33",
+      "q": "Q7",
+      "coil": 136,
+      "input": "IN2"
+    },
+    {
+      "bit": 65,
+      "ref": "SR33",
+      "q": "Q6",
+      "coil": 136,
+      "input": "IN1"
+    },
+    {
+      "bit": 66,
+      "ref": "SR33",
+      "q": "Q5",
+      "coil": 137,
+      "input": "IN2"
+    },
+    {
+      "bit": 67,
+      "ref": "SR33",
+      "q": "Q4",
+      "coil": 137,
+      "input": "IN1"
+    },
+    {
+      "bit": 68,
+      "ref": "SR33",
+      "q": "Q3",
+      "coil": 124,
+      "input": "IN2"
+    },
+    {
+      "bit": 69,
+      "ref": "SR33",
+      "q": "Q2",
+      "coil": 124,
+      "input": "IN1"
+    },
+    {
+      "bit": 70,
+      "ref": "SR33",
+      "q": "Q1",
+      "coil": 125,
+      "input": "IN2"
+    },
+    {
+      "bit": 71,
+      "ref": "SR33",
+      "q": "Q0",
+      "coil": 125,
+      "input": "IN1"
+    },
+    {
+      "bit": 72,
+      "ref": "SR32",
+      "q": "Q7",
+      "coil": 138,
+      "input": "IN2"
+    },
+    {
+      "bit": 73,
+      "ref": "SR32",
+      "q": "Q6",
+      "coil": 138,
+      "input": "IN1"
+    },
+    {
+      "bit": 74,
+      "ref": "SR32",
+      "q": "Q5",
+      "coil": 139,
+      "input": "IN2"
+    },
+    {
+      "bit": 75,
+      "ref": "SR32",
+      "q": "Q4",
+      "coil": 139,
+      "input": "IN1"
+    },
+    {
+      "bit": 76,
+      "ref": "SR32",
+      "q": "Q3",
+      "coil": 126,
+      "input": "IN2"
+    },
+    {
+      "bit": 77,
+      "ref": "SR32",
+      "q": "Q2",
+      "coil": 126,
+      "input": "IN1"
+    },
+    {
+      "bit": 78,
+      "ref": "SR32",
+      "q": "Q1",
+      "coil": 127,
+      "input": "IN2"
+    },
+    {
+      "bit": 79,
+      "ref": "SR32",
+      "q": "Q0",
+      "coil": 127,
+      "input": "IN1"
+    },
+    {
+      "bit": 80,
+      "ref": "SR31",
+      "q": "Q7",
+      "coil": 140,
+      "input": "IN2"
+    },
+    {
+      "bit": 81,
+      "ref": "SR31",
+      "q": "Q6",
+      "coil": 140,
+      "input": "IN1"
+    },
+    {
+      "bit": 82,
+      "ref": "SR31",
+      "q": "Q5",
+      "coil": 141,
+      "input": "IN2"
+    },
+    {
+      "bit": 83,
+      "ref": "SR31",
+      "q": "Q4",
+      "coil": 141,
+      "input": "IN1"
+    },
+    {
+      "bit": 84,
+      "ref": "SR31",
+      "q": "Q3",
+      "coil": 128,
+      "input": "IN2"
+    },
+    {
+      "bit": 85,
+      "ref": "SR31",
+      "q": "Q2",
+      "coil": 128,
+      "input": "IN1"
+    },
+    {
+      "bit": 86,
+      "ref": "SR31",
+      "q": "Q1",
+      "coil": 129,
+      "input": "IN2"
+    },
+    {
+      "bit": 87,
+      "ref": "SR31",
+      "q": "Q0",
+      "coil": 129,
+      "input": "IN1"
+    },
+    {
+      "bit": 88,
+      "ref": "SR30",
+      "q": "Q7",
+      "coil": 142,
+      "input": "IN2"
+    },
+    {
+      "bit": 89,
+      "ref": "SR30",
+      "q": "Q6",
+      "coil": 142,
+      "input": "IN1"
+    },
+    {
+      "bit": 90,
+      "ref": "SR30",
+      "q": "Q5",
+      "coil": 143,
+      "input": "IN2"
+    },
+    {
+      "bit": 91,
+      "ref": "SR30",
+      "q": "Q4",
+      "coil": 143,
+      "input": "IN1"
+    },
+    {
+      "bit": 92,
+      "ref": "SR30",
+      "q": "Q3",
+      "coil": 130,
+      "input": "IN2"
+    },
+    {
+      "bit": 93,
+      "ref": "SR30",
+      "q": "Q2",
+      "coil": 130,
+      "input": "IN1"
+    },
+    {
+      "bit": 94,
+      "ref": "SR30",
+      "q": "Q1",
+      "coil": 131,
+      "input": "IN2"
+    },
+    {
+      "bit": 95,
+      "ref": "SR30",
+      "q": "Q0",
+      "coil": 131,
+      "input": "IN1"
+    },
+    {
+      "bit": 96,
+      "ref": "SR29",
+      "q": "Q7",
+      "coil": 119,
+      "input": "IN2"
+    },
+    {
+      "bit": 97,
+      "ref": "SR29",
+      "q": "Q6",
+      "coil": 119,
+      "input": "IN1"
+    },
+    {
+      "bit": 98,
+      "ref": "SR29",
+      "q": "Q5",
+      "coil": 118,
+      "input": "IN2"
+    },
+    {
+      "bit": 99,
+      "ref": "SR29",
+      "q": "Q4",
+      "coil": 118,
+      "input": "IN1"
+    },
+    {
+      "bit": 100,
+      "ref": "SR29",
+      "q": "Q3",
+      "coil": 107,
+      "input": "IN2"
+    },
+    {
+      "bit": 101,
+      "ref": "SR29",
+      "q": "Q2",
+      "coil": 107,
+      "input": "IN1"
+    },
+    {
+      "bit": 102,
+      "ref": "SR29",
+      "q": "Q1",
+      "coil": 106,
+      "input": "IN2"
+    },
+    {
+      "bit": 103,
+      "ref": "SR29",
+      "q": "Q0",
+      "coil": 106,
+      "input": "IN1"
+    },
+    {
+      "bit": 104,
+      "ref": "SR28",
+      "q": "Q7",
+      "coil": 117,
+      "input": "IN2"
+    },
+    {
+      "bit": 105,
+      "ref": "SR28",
+      "q": "Q6",
+      "coil": 117,
+      "input": "IN1"
+    },
+    {
+      "bit": 106,
+      "ref": "SR28",
+      "q": "Q5",
+      "coil": 116,
+      "input": "IN2"
+    },
+    {
+      "bit": 107,
+      "ref": "SR28",
+      "q": "Q4",
+      "coil": 116,
+      "input": "IN1"
+    },
+    {
+      "bit": 108,
+      "ref": "SR28",
+      "q": "Q3",
+      "coil": 105,
+      "input": "IN2"
+    },
+    {
+      "bit": 109,
+      "ref": "SR28",
+      "q": "Q2",
+      "coil": 105,
+      "input": "IN1"
+    },
+    {
+      "bit": 110,
+      "ref": "SR28",
+      "q": "Q1",
+      "coil": 104,
+      "input": "IN2"
+    },
+    {
+      "bit": 111,
+      "ref": "SR28",
+      "q": "Q0",
+      "coil": 104,
+      "input": "IN1"
+    },
+    {
+      "bit": 112,
+      "ref": "SR27",
+      "q": "Q7",
+      "coil": 115,
+      "input": "IN2"
+    },
+    {
+      "bit": 113,
+      "ref": "SR27",
+      "q": "Q6",
+      "coil": 115,
+      "input": "IN1"
+    },
+    {
+      "bit": 114,
+      "ref": "SR27",
+      "q": "Q5",
+      "coil": 114,
+      "input": "IN2"
+    },
+    {
+      "bit": 115,
+      "ref": "SR27",
+      "q": "Q4",
+      "coil": 114,
+      "input": "IN1"
+    },
+    {
+      "bit": 116,
+      "ref": "SR27",
+      "q": "Q3",
+      "coil": 103,
+      "input": "IN2"
+    },
+    {
+      "bit": 117,
+      "ref": "SR27",
+      "q": "Q2",
+      "coil": 103,
+      "input": "IN1"
+    },
+    {
+      "bit": 118,
+      "ref": "SR27",
+      "q": "Q1",
+      "coil": 102,
+      "input": "IN2"
+    },
+    {
+      "bit": 119,
+      "ref": "SR27",
+      "q": "Q0",
+      "coil": 102,
+      "input": "IN1"
+    },
+    {
+      "bit": 120,
+      "ref": "SR26",
+      "q": "Q7",
+      "coil": 113,
+      "input": "IN2"
+    },
+    {
+      "bit": 121,
+      "ref": "SR26",
+      "q": "Q6",
+      "coil": 113,
+      "input": "IN1"
+    },
+    {
+      "bit": 122,
+      "ref": "SR26",
+      "q": "Q5",
+      "coil": 112,
+      "input": "IN2"
+    },
+    {
+      "bit": 123,
+      "ref": "SR26",
+      "q": "Q4",
+      "coil": 112,
+      "input": "IN1"
+    },
+    {
+      "bit": 124,
+      "ref": "SR26",
+      "q": "Q3",
+      "coil": 101,
+      "input": "IN2"
+    },
+    {
+      "bit": 125,
+      "ref": "SR26",
+      "q": "Q2",
+      "coil": 101,
+      "input": "IN1"
+    },
+    {
+      "bit": 126,
+      "ref": "SR26",
+      "q": "Q1",
+      "coil": 100,
+      "input": "IN2"
+    },
+    {
+      "bit": 127,
+      "ref": "SR26",
+      "q": "Q0",
+      "coil": 100,
+      "input": "IN1"
+    },
+    {
+      "bit": 128,
+      "ref": "SR25",
+      "q": "Q7",
+      "coil": 111,
+      "input": "IN2"
+    },
+    {
+      "bit": 129,
+      "ref": "SR25",
+      "q": "Q6",
+      "coil": 111,
+      "input": "IN1"
+    },
+    {
+      "bit": 130,
+      "ref": "SR25",
+      "q": "Q5",
+      "coil": 110,
+      "input": "IN2"
+    },
+    {
+      "bit": 131,
+      "ref": "SR25",
+      "q": "Q4",
+      "coil": 110,
+      "input": "IN1"
+    },
+    {
+      "bit": 132,
+      "ref": "SR25",
+      "q": "Q3",
+      "coil": 99,
+      "input": "IN2"
+    },
+    {
+      "bit": 133,
+      "ref": "SR25",
+      "q": "Q2",
+      "coil": 99,
+      "input": "IN1"
+    },
+    {
+      "bit": 134,
+      "ref": "SR25",
+      "q": "Q1",
+      "coil": 98,
+      "input": "IN2"
+    },
+    {
+      "bit": 135,
+      "ref": "SR25",
+      "q": "Q0",
+      "coil": 98,
+      "input": "IN1"
+    },
+    {
+      "bit": 136,
+      "ref": "SR24",
+      "q": "Q7",
+      "coil": 109,
+      "input": "IN2"
+    },
+    {
+      "bit": 137,
+      "ref": "SR24",
+      "q": "Q6",
+      "coil": 109,
+      "input": "IN1"
+    },
+    {
+      "bit": 138,
+      "ref": "SR24",
+      "q": "Q5",
+      "coil": 108,
+      "input": "IN2"
+    },
+    {
+      "bit": 139,
+      "ref": "SR24",
+      "q": "Q4",
+      "coil": 108,
+      "input": "IN1"
+    },
+    {
+      "bit": 140,
+      "ref": "SR24",
+      "q": "Q3",
+      "coil": 97,
+      "input": "IN2"
+    },
+    {
+      "bit": 141,
+      "ref": "SR24",
+      "q": "Q2",
+      "coil": 97,
+      "input": "IN1"
+    },
+    {
+      "bit": 142,
+      "ref": "SR24",
+      "q": "Q1",
+      "coil": 96,
+      "input": "IN2"
+    },
+    {
+      "bit": 143,
+      "ref": "SR24",
+      "q": "Q0",
+      "coil": 96,
+      "input": "IN1"
+    },
+    {
+      "bit": 144,
+      "ref": "SR23",
+      "q": "Q7",
+      "coil": 84,
+      "input": "IN2"
+    },
+    {
+      "bit": 145,
+      "ref": "SR23",
+      "q": "Q6",
+      "coil": 84,
+      "input": "IN1"
+    },
+    {
+      "bit": 146,
+      "ref": "SR23",
+      "q": "Q5",
+      "coil": 85,
+      "input": "IN2"
+    },
+    {
+      "bit": 147,
+      "ref": "SR23",
+      "q": "Q4",
+      "coil": 85,
+      "input": "IN1"
+    },
+    {
+      "bit": 148,
+      "ref": "SR23",
+      "q": "Q3",
+      "coil": 72,
+      "input": "IN2"
+    },
+    {
+      "bit": 149,
+      "ref": "SR23",
+      "q": "Q2",
+      "coil": 72,
+      "input": "IN1"
+    },
+    {
+      "bit": 150,
+      "ref": "SR23",
+      "q": "Q1",
+      "coil": 73,
+      "input": "IN2"
+    },
+    {
+      "bit": 151,
+      "ref": "SR23",
+      "q": "Q0",
+      "coil": 73,
+      "input": "IN1"
+    },
+    {
+      "bit": 152,
+      "ref": "SR22",
+      "q": "Q7",
+      "coil": 86,
+      "input": "IN2"
+    },
+    {
+      "bit": 153,
+      "ref": "SR22",
+      "q": "Q6",
+      "coil": 86,
+      "input": "IN1"
+    },
+    {
+      "bit": 154,
+      "ref": "SR22",
+      "q": "Q5",
+      "coil": 87,
+      "input": "IN2"
+    },
+    {
+      "bit": 155,
+      "ref": "SR22",
+      "q": "Q4",
+      "coil": 87,
+      "input": "IN1"
+    },
+    {
+      "bit": 156,
+      "ref": "SR22",
+      "q": "Q3",
+      "coil": 74,
+      "input": "IN2"
+    },
+    {
+      "bit": 157,
+      "ref": "SR22",
+      "q": "Q2",
+      "coil": 74,
+      "input": "IN1"
+    },
+    {
+      "bit": 158,
+      "ref": "SR22",
+      "q": "Q1",
+      "coil": 75,
+      "input": "IN2"
+    },
+    {
+      "bit": 159,
+      "ref": "SR22",
+      "q": "Q0",
+      "coil": 75,
+      "input": "IN1"
+    },
+    {
+      "bit": 160,
+      "ref": "SR21",
+      "q": "Q7",
+      "coil": 88,
+      "input": "IN2"
+    },
+    {
+      "bit": 161,
+      "ref": "SR21",
+      "q": "Q6",
+      "coil": 88,
+      "input": "IN1"
+    },
+    {
+      "bit": 162,
+      "ref": "SR21",
+      "q": "Q5",
+      "coil": 89,
+      "input": "IN2"
+    },
+    {
+      "bit": 163,
+      "ref": "SR21",
+      "q": "Q4",
+      "coil": 89,
+      "input": "IN1"
+    },
+    {
+      "bit": 164,
+      "ref": "SR21",
+      "q": "Q3",
+      "coil": 76,
+      "input": "IN2"
+    },
+    {
+      "bit": 165,
+      "ref": "SR21",
+      "q": "Q2",
+      "coil": 76,
+      "input": "IN1"
+    },
+    {
+      "bit": 166,
+      "ref": "SR21",
+      "q": "Q1",
+      "coil": 77,
+      "input": "IN2"
+    },
+    {
+      "bit": 167,
+      "ref": "SR21",
+      "q": "Q0",
+      "coil": 77,
+      "input": "IN1"
+    },
+    {
+      "bit": 168,
+      "ref": "SR20",
+      "q": "Q7",
+      "coil": 90,
+      "input": "IN2"
+    },
+    {
+      "bit": 169,
+      "ref": "SR20",
+      "q": "Q6",
+      "coil": 90,
+      "input": "IN1"
+    },
+    {
+      "bit": 170,
+      "ref": "SR20",
+      "q": "Q5",
+      "coil": 91,
+      "input": "IN2"
+    },
+    {
+      "bit": 171,
+      "ref": "SR20",
+      "q": "Q4",
+      "coil": 91,
+      "input": "IN1"
+    },
+    {
+      "bit": 172,
+      "ref": "SR20",
+      "q": "Q3",
+      "coil": 78,
+      "input": "IN2"
+    },
+    {
+      "bit": 173,
+      "ref": "SR20",
+      "q": "Q2",
+      "coil": 78,
+      "input": "IN1"
+    },
+    {
+      "bit": 174,
+      "ref": "SR20",
+      "q": "Q1",
+      "coil": 79,
+      "input": "IN2"
+    },
+    {
+      "bit": 175,
+      "ref": "SR20",
+      "q": "Q0",
+      "coil": 79,
+      "input": "IN1"
+    },
+    {
+      "bit": 176,
+      "ref": "SR19",
+      "q": "Q7",
+      "coil": 92,
+      "input": "IN2"
+    },
+    {
+      "bit": 177,
+      "ref": "SR19",
+      "q": "Q6",
+      "coil": 92,
+      "input": "IN1"
+    },
+    {
+      "bit": 178,
+      "ref": "SR19",
+      "q": "Q5",
+      "coil": 93,
+      "input": "IN2"
+    },
+    {
+      "bit": 179,
+      "ref": "SR19",
+      "q": "Q4",
+      "coil": 93,
+      "input": "IN1"
+    },
+    {
+      "bit": 180,
+      "ref": "SR19",
+      "q": "Q3",
+      "coil": 80,
+      "input": "IN2"
+    },
+    {
+      "bit": 181,
+      "ref": "SR19",
+      "q": "Q2",
+      "coil": 80,
+      "input": "IN1"
+    },
+    {
+      "bit": 182,
+      "ref": "SR19",
+      "q": "Q1",
+      "coil": 81,
+      "input": "IN2"
+    },
+    {
+      "bit": 183,
+      "ref": "SR19",
+      "q": "Q0",
+      "coil": 81,
+      "input": "IN1"
+    },
+    {
+      "bit": 184,
+      "ref": "SR18",
+      "q": "Q7",
+      "coil": 94,
+      "input": "IN2"
+    },
+    {
+      "bit": 185,
+      "ref": "SR18",
+      "q": "Q6",
+      "coil": 94,
+      "input": "IN1"
+    },
+    {
+      "bit": 186,
+      "ref": "SR18",
+      "q": "Q5",
+      "coil": 95,
+      "input": "IN2"
+    },
+    {
+      "bit": 187,
+      "ref": "SR18",
+      "q": "Q4",
+      "coil": 95,
+      "input": "IN1"
+    },
+    {
+      "bit": 188,
+      "ref": "SR18",
+      "q": "Q3",
+      "coil": 82,
+      "input": "IN2"
+    },
+    {
+      "bit": 189,
+      "ref": "SR18",
+      "q": "Q2",
+      "coil": 82,
+      "input": "IN1"
+    },
+    {
+      "bit": 190,
+      "ref": "SR18",
+      "q": "Q1",
+      "coil": 83,
+      "input": "IN2"
+    },
+    {
+      "bit": 191,
+      "ref": "SR18",
+      "q": "Q0",
+      "coil": 83,
+      "input": "IN1"
+    },
+    {
+      "bit": 192,
+      "ref": "SR17",
+      "q": "Q7",
+      "coil": 71,
+      "input": "IN2"
+    },
+    {
+      "bit": 193,
+      "ref": "SR17",
+      "q": "Q6",
+      "coil": 71,
+      "input": "IN1"
+    },
+    {
+      "bit": 194,
+      "ref": "SR17",
+      "q": "Q5",
+      "coil": 70,
+      "input": "IN2"
+    },
+    {
+      "bit": 195,
+      "ref": "SR17",
+      "q": "Q4",
+      "coil": 70,
+      "input": "IN1"
+    },
+    {
+      "bit": 196,
+      "ref": "SR17",
+      "q": "Q3",
+      "coil": 59,
+      "input": "IN2"
+    },
+    {
+      "bit": 197,
+      "ref": "SR17",
+      "q": "Q2",
+      "coil": 59,
+      "input": "IN1"
+    },
+    {
+      "bit": 198,
+      "ref": "SR17",
+      "q": "Q1",
+      "coil": 58,
+      "input": "IN2"
+    },
+    {
+      "bit": 199,
+      "ref": "SR17",
+      "q": "Q0",
+      "coil": 58,
+      "input": "IN1"
+    },
+    {
+      "bit": 200,
+      "ref": "SR16",
+      "q": "Q7",
+      "coil": 69,
+      "input": "IN2"
+    },
+    {
+      "bit": 201,
+      "ref": "SR16",
+      "q": "Q6",
+      "coil": 69,
+      "input": "IN1"
+    },
+    {
+      "bit": 202,
+      "ref": "SR16",
+      "q": "Q5",
+      "coil": 68,
+      "input": "IN2"
+    },
+    {
+      "bit": 203,
+      "ref": "SR16",
+      "q": "Q4",
+      "coil": 68,
+      "input": "IN1"
+    },
+    {
+      "bit": 204,
+      "ref": "SR16",
+      "q": "Q3",
+      "coil": 57,
+      "input": "IN2"
+    },
+    {
+      "bit": 205,
+      "ref": "SR16",
+      "q": "Q2",
+      "coil": 57,
+      "input": "IN1"
+    },
+    {
+      "bit": 206,
+      "ref": "SR16",
+      "q": "Q1",
+      "coil": 56,
+      "input": "IN2"
+    },
+    {
+      "bit": 207,
+      "ref": "SR16",
+      "q": "Q0",
+      "coil": 56,
+      "input": "IN1"
+    },
+    {
+      "bit": 208,
+      "ref": "SR15",
+      "q": "Q7",
+      "coil": 67,
+      "input": "IN2"
+    },
+    {
+      "bit": 209,
+      "ref": "SR15",
+      "q": "Q6",
+      "coil": 67,
+      "input": "IN1"
+    },
+    {
+      "bit": 210,
+      "ref": "SR15",
+      "q": "Q5",
+      "coil": 66,
+      "input": "IN2"
+    },
+    {
+      "bit": 211,
+      "ref": "SR15",
+      "q": "Q4",
+      "coil": 66,
+      "input": "IN1"
+    },
+    {
+      "bit": 212,
+      "ref": "SR15",
+      "q": "Q3",
+      "coil": 55,
+      "input": "IN2"
+    },
+    {
+      "bit": 213,
+      "ref": "SR15",
+      "q": "Q2",
+      "coil": 55,
+      "input": "IN1"
+    },
+    {
+      "bit": 214,
+      "ref": "SR15",
+      "q": "Q1",
+      "coil": 54,
+      "input": "IN2"
+    },
+    {
+      "bit": 215,
+      "ref": "SR15",
+      "q": "Q0",
+      "coil": 54,
+      "input": "IN1"
+    },
+    {
+      "bit": 216,
+      "ref": "SR14",
+      "q": "Q7",
+      "coil": 65,
+      "input": "IN2"
+    },
+    {
+      "bit": 217,
+      "ref": "SR14",
+      "q": "Q6",
+      "coil": 65,
+      "input": "IN1"
+    },
+    {
+      "bit": 218,
+      "ref": "SR14",
+      "q": "Q5",
+      "coil": 64,
+      "input": "IN2"
+    },
+    {
+      "bit": 219,
+      "ref": "SR14",
+      "q": "Q4",
+      "coil": 64,
+      "input": "IN1"
+    },
+    {
+      "bit": 220,
+      "ref": "SR14",
+      "q": "Q3",
+      "coil": 53,
+      "input": "IN2"
+    },
+    {
+      "bit": 221,
+      "ref": "SR14",
+      "q": "Q2",
+      "coil": 53,
+      "input": "IN1"
+    },
+    {
+      "bit": 222,
+      "ref": "SR14",
+      "q": "Q1",
+      "coil": 52,
+      "input": "IN2"
+    },
+    {
+      "bit": 223,
+      "ref": "SR14",
+      "q": "Q0",
+      "coil": 52,
+      "input": "IN1"
+    },
+    {
+      "bit": 224,
+      "ref": "SR13",
+      "q": "Q7",
+      "coil": 63,
+      "input": "IN2"
+    },
+    {
+      "bit": 225,
+      "ref": "SR13",
+      "q": "Q6",
+      "coil": 63,
+      "input": "IN1"
+    },
+    {
+      "bit": 226,
+      "ref": "SR13",
+      "q": "Q5",
+      "coil": 62,
+      "input": "IN2"
+    },
+    {
+      "bit": 227,
+      "ref": "SR13",
+      "q": "Q4",
+      "coil": 62,
+      "input": "IN1"
+    },
+    {
+      "bit": 228,
+      "ref": "SR13",
+      "q": "Q3",
+      "coil": 51,
+      "input": "IN2"
+    },
+    {
+      "bit": 229,
+      "ref": "SR13",
+      "q": "Q2",
+      "coil": 51,
+      "input": "IN1"
+    },
+    {
+      "bit": 230,
+      "ref": "SR13",
+      "q": "Q1",
+      "coil": 50,
+      "input": "IN2"
+    },
+    {
+      "bit": 231,
+      "ref": "SR13",
+      "q": "Q0",
+      "coil": 50,
+      "input": "IN1"
+    },
+    {
+      "bit": 232,
+      "ref": "SR12",
+      "q": "Q7",
+      "coil": 61,
+      "input": "IN2"
+    },
+    {
+      "bit": 233,
+      "ref": "SR12",
+      "q": "Q6",
+      "coil": 61,
+      "input": "IN1"
+    },
+    {
+      "bit": 234,
+      "ref": "SR12",
+      "q": "Q5",
+      "coil": 60,
+      "input": "IN2"
+    },
+    {
+      "bit": 235,
+      "ref": "SR12",
+      "q": "Q4",
+      "coil": 60,
+      "input": "IN1"
+    },
+    {
+      "bit": 236,
+      "ref": "SR12",
+      "q": "Q3",
+      "coil": 49,
+      "input": "IN2"
+    },
+    {
+      "bit": 237,
+      "ref": "SR12",
+      "q": "Q2",
+      "coil": 49,
+      "input": "IN1"
+    },
+    {
+      "bit": 238,
+      "ref": "SR12",
+      "q": "Q1",
+      "coil": 48,
+      "input": "IN2"
+    },
+    {
+      "bit": 239,
+      "ref": "SR12",
+      "q": "Q0",
+      "coil": 48,
+      "input": "IN1"
+    },
+    {
+      "bit": 240,
+      "ref": "SR11",
+      "q": "Q7",
+      "coil": 36,
+      "input": "IN2"
+    },
+    {
+      "bit": 241,
+      "ref": "SR11",
+      "q": "Q6",
+      "coil": 36,
+      "input": "IN1"
+    },
+    {
+      "bit": 242,
+      "ref": "SR11",
+      "q": "Q5",
+      "coil": 37,
+      "input": "IN2"
+    },
+    {
+      "bit": 243,
+      "ref": "SR11",
+      "q": "Q4",
+      "coil": 37,
+      "input": "IN1"
+    },
+    {
+      "bit": 244,
+      "ref": "SR11",
+      "q": "Q3",
+      "coil": 24,
+      "input": "IN2"
+    },
+    {
+      "bit": 245,
+      "ref": "SR11",
+      "q": "Q2",
+      "coil": 24,
+      "input": "IN1"
+    },
+    {
+      "bit": 246,
+      "ref": "SR11",
+      "q": "Q1",
+      "coil": 25,
+      "input": "IN2"
+    },
+    {
+      "bit": 247,
+      "ref": "SR11",
+      "q": "Q0",
+      "coil": 25,
+      "input": "IN1"
+    },
+    {
+      "bit": 248,
+      "ref": "SR10",
+      "q": "Q7",
+      "coil": 38,
+      "input": "IN2"
+    },
+    {
+      "bit": 249,
+      "ref": "SR10",
+      "q": "Q6",
+      "coil": 38,
+      "input": "IN1"
+    },
+    {
+      "bit": 250,
+      "ref": "SR10",
+      "q": "Q5",
+      "coil": 39,
+      "input": "IN2"
+    },
+    {
+      "bit": 251,
+      "ref": "SR10",
+      "q": "Q4",
+      "coil": 39,
+      "input": "IN1"
+    },
+    {
+      "bit": 252,
+      "ref": "SR10",
+      "q": "Q3",
+      "coil": 26,
+      "input": "IN2"
+    },
+    {
+      "bit": 253,
+      "ref": "SR10",
+      "q": "Q2",
+      "coil": 26,
+      "input": "IN1"
+    },
+    {
+      "bit": 254,
+      "ref": "SR10",
+      "q": "Q1",
+      "coil": 27,
+      "input": "IN2"
+    },
+    {
+      "bit": 255,
+      "ref": "SR10",
+      "q": "Q0",
+      "coil": 27,
+      "input": "IN1"
+    },
+    {
+      "bit": 256,
+      "ref": "SR9",
+      "q": "Q7",
+      "coil": 40,
+      "input": "IN2"
+    },
+    {
+      "bit": 257,
+      "ref": "SR9",
+      "q": "Q6",
+      "coil": 40,
+      "input": "IN1"
+    },
+    {
+      "bit": 258,
+      "ref": "SR9",
+      "q": "Q5",
+      "coil": 41,
+      "input": "IN2"
+    },
+    {
+      "bit": 259,
+      "ref": "SR9",
+      "q": "Q4",
+      "coil": 41,
+      "input": "IN1"
+    },
+    {
+      "bit": 260,
+      "ref": "SR9",
+      "q": "Q3",
+      "coil": 28,
+      "input": "IN2"
+    },
+    {
+      "bit": 261,
+      "ref": "SR9",
+      "q": "Q2",
+      "coil": 28,
+      "input": "IN1"
+    },
+    {
+      "bit": 262,
+      "ref": "SR9",
+      "q": "Q1",
+      "coil": 29,
+      "input": "IN2"
+    },
+    {
+      "bit": 263,
+      "ref": "SR9",
+      "q": "Q0",
+      "coil": 29,
+      "input": "IN1"
+    },
+    {
+      "bit": 264,
+      "ref": "SR8",
+      "q": "Q7",
+      "coil": 42,
+      "input": "IN2"
+    },
+    {
+      "bit": 265,
+      "ref": "SR8",
+      "q": "Q6",
+      "coil": 42,
+      "input": "IN1"
+    },
+    {
+      "bit": 266,
+      "ref": "SR8",
+      "q": "Q5",
+      "coil": 43,
+      "input": "IN2"
+    },
+    {
+      "bit": 267,
+      "ref": "SR8",
+      "q": "Q4",
+      "coil": 43,
+      "input": "IN1"
+    },
+    {
+      "bit": 268,
+      "ref": "SR8",
+      "q": "Q3",
+      "coil": 30,
+      "input": "IN2"
+    },
+    {
+      "bit": 269,
+      "ref": "SR8",
+      "q": "Q2",
+      "coil": 30,
+      "input": "IN1"
+    },
+    {
+      "bit": 270,
+      "ref": "SR8",
+      "q": "Q1",
+      "coil": 31,
+      "input": "IN2"
+    },
+    {
+      "bit": 271,
+      "ref": "SR8",
+      "q": "Q0",
+      "coil": 31,
+      "input": "IN1"
+    },
+    {
+      "bit": 272,
+      "ref": "SR7",
+      "q": "Q7",
+      "coil": 44,
+      "input": "IN2"
+    },
+    {
+      "bit": 273,
+      "ref": "SR7",
+      "q": "Q6",
+      "coil": 44,
+      "input": "IN1"
+    },
+    {
+      "bit": 274,
+      "ref": "SR7",
+      "q": "Q5",
+      "coil": 45,
+      "input": "IN2"
+    },
+    {
+      "bit": 275,
+      "ref": "SR7",
+      "q": "Q4",
+      "coil": 45,
+      "input": "IN1"
+    },
+    {
+      "bit": 276,
+      "ref": "SR7",
+      "q": "Q3",
+      "coil": 32,
+      "input": "IN2"
+    },
+    {
+      "bit": 277,
+      "ref": "SR7",
+      "q": "Q2",
+      "coil": 32,
+      "input": "IN1"
+    },
+    {
+      "bit": 278,
+      "ref": "SR7",
+      "q": "Q1",
+      "coil": 33,
+      "input": "IN2"
+    },
+    {
+      "bit": 279,
+      "ref": "SR7",
+      "q": "Q0",
+      "coil": 33,
+      "input": "IN1"
+    },
+    {
+      "bit": 280,
+      "ref": "SR6",
+      "q": "Q7",
+      "coil": 46,
+      "input": "IN2"
+    },
+    {
+      "bit": 281,
+      "ref": "SR6",
+      "q": "Q6",
+      "coil": 46,
+      "input": "IN1"
+    },
+    {
+      "bit": 282,
+      "ref": "SR6",
+      "q": "Q5",
+      "coil": 47,
+      "input": "IN2"
+    },
+    {
+      "bit": 283,
+      "ref": "SR6",
+      "q": "Q4",
+      "coil": 47,
+      "input": "IN1"
+    },
+    {
+      "bit": 284,
+      "ref": "SR6",
+      "q": "Q3",
+      "coil": 34,
+      "input": "IN2"
+    },
+    {
+      "bit": 285,
+      "ref": "SR6",
+      "q": "Q2",
+      "coil": 34,
+      "input": "IN1"
+    },
+    {
+      "bit": 286,
+      "ref": "SR6",
+      "q": "Q1",
+      "coil": 35,
+      "input": "IN2"
+    },
+    {
+      "bit": 287,
+      "ref": "SR6",
+      "q": "Q0",
+      "coil": 35,
+      "input": "IN1"
+    },
+    {
+      "bit": 288,
+      "ref": "SR5",
+      "q": "Q7",
+      "coil": 23,
+      "input": "IN2"
+    },
+    {
+      "bit": 289,
+      "ref": "SR5",
+      "q": "Q6",
+      "coil": 23,
+      "input": "IN1"
+    },
+    {
+      "bit": 290,
+      "ref": "SR5",
+      "q": "Q5",
+      "coil": 22,
+      "input": "IN2"
+    },
+    {
+      "bit": 291,
+      "ref": "SR5",
+      "q": "Q4",
+      "coil": 22,
+      "input": "IN1"
+    },
+    {
+      "bit": 292,
+      "ref": "SR5",
+      "q": "Q3",
+      "coil": 11,
+      "input": "IN2"
+    },
+    {
+      "bit": 293,
+      "ref": "SR5",
+      "q": "Q2",
+      "coil": 11,
+      "input": "IN1"
+    },
+    {
+      "bit": 294,
+      "ref": "SR5",
+      "q": "Q1",
+      "coil": 10,
+      "input": "IN2"
+    },
+    {
+      "bit": 295,
+      "ref": "SR5",
+      "q": "Q0",
+      "coil": 10,
+      "input": "IN1"
+    },
+    {
+      "bit": 296,
+      "ref": "SR4",
+      "q": "Q7",
+      "coil": 21,
+      "input": "IN2"
+    },
+    {
+      "bit": 297,
+      "ref": "SR4",
+      "q": "Q6",
+      "coil": 21,
+      "input": "IN1"
+    },
+    {
+      "bit": 298,
+      "ref": "SR4",
+      "q": "Q5",
+      "coil": 20,
+      "input": "IN2"
+    },
+    {
+      "bit": 299,
+      "ref": "SR4",
+      "q": "Q4",
+      "coil": 20,
+      "input": "IN1"
+    },
+    {
+      "bit": 300,
+      "ref": "SR4",
+      "q": "Q3",
+      "coil": 9,
+      "input": "IN2"
+    },
+    {
+      "bit": 301,
+      "ref": "SR4",
+      "q": "Q2",
+      "coil": 9,
+      "input": "IN1"
+    },
+    {
+      "bit": 302,
+      "ref": "SR4",
+      "q": "Q1",
+      "coil": 8,
+      "input": "IN2"
+    },
+    {
+      "bit": 303,
+      "ref": "SR4",
+      "q": "Q0",
+      "coil": 8,
+      "input": "IN1"
+    },
+    {
+      "bit": 304,
+      "ref": "SR3",
+      "q": "Q7",
+      "coil": 19,
+      "input": "IN2"
+    },
+    {
+      "bit": 305,
+      "ref": "SR3",
+      "q": "Q6",
+      "coil": 19,
+      "input": "IN1"
+    },
+    {
+      "bit": 306,
+      "ref": "SR3",
+      "q": "Q5",
+      "coil": 18,
+      "input": "IN2"
+    },
+    {
+      "bit": 307,
+      "ref": "SR3",
+      "q": "Q4",
+      "coil": 18,
+      "input": "IN1"
+    },
+    {
+      "bit": 308,
+      "ref": "SR3",
+      "q": "Q3",
+      "coil": 7,
+      "input": "IN2"
+    },
+    {
+      "bit": 309,
+      "ref": "SR3",
+      "q": "Q2",
+      "coil": 7,
+      "input": "IN1"
+    },
+    {
+      "bit": 310,
+      "ref": "SR3",
+      "q": "Q1",
+      "coil": 6,
+      "input": "IN2"
+    },
+    {
+      "bit": 311,
+      "ref": "SR3",
+      "q": "Q0",
+      "coil": 6,
+      "input": "IN1"
+    },
+    {
+      "bit": 312,
+      "ref": "SR2",
+      "q": "Q7",
+      "coil": 17,
+      "input": "IN2"
+    },
+    {
+      "bit": 313,
+      "ref": "SR2",
+      "q": "Q6",
+      "coil": 17,
+      "input": "IN1"
+    },
+    {
+      "bit": 314,
+      "ref": "SR2",
+      "q": "Q5",
+      "coil": 16,
+      "input": "IN2"
+    },
+    {
+      "bit": 315,
+      "ref": "SR2",
+      "q": "Q4",
+      "coil": 16,
+      "input": "IN1"
+    },
+    {
+      "bit": 316,
+      "ref": "SR2",
+      "q": "Q3",
+      "coil": 5,
+      "input": "IN2"
+    },
+    {
+      "bit": 317,
+      "ref": "SR2",
+      "q": "Q2",
+      "coil": 5,
+      "input": "IN1"
+    },
+    {
+      "bit": 318,
+      "ref": "SR2",
+      "q": "Q1",
+      "coil": 4,
+      "input": "IN2"
+    },
+    {
+      "bit": 319,
+      "ref": "SR2",
+      "q": "Q0",
+      "coil": 4,
+      "input": "IN1"
+    },
+    {
+      "bit": 320,
+      "ref": "SR1",
+      "q": "Q7",
+      "coil": 15,
+      "input": "IN2"
+    },
+    {
+      "bit": 321,
+      "ref": "SR1",
+      "q": "Q6",
+      "coil": 15,
+      "input": "IN1"
+    },
+    {
+      "bit": 322,
+      "ref": "SR1",
+      "q": "Q5",
+      "coil": 14,
+      "input": "IN2"
+    },
+    {
+      "bit": 323,
+      "ref": "SR1",
+      "q": "Q4",
+      "coil": 14,
+      "input": "IN1"
+    },
+    {
+      "bit": 324,
+      "ref": "SR1",
+      "q": "Q3",
+      "coil": 3,
+      "input": "IN2"
+    },
+    {
+      "bit": 325,
+      "ref": "SR1",
+      "q": "Q2",
+      "coil": 3,
+      "input": "IN1"
+    },
+    {
+      "bit": 326,
+      "ref": "SR1",
+      "q": "Q1",
+      "coil": 2,
+      "input": "IN2"
+    },
+    {
+      "bit": 327,
+      "ref": "SR1",
+      "q": "Q0",
+      "coil": 2,
+      "input": "IN1"
+    },
+    {
+      "bit": 328,
+      "ref": "SR0",
+      "q": "Q7",
+      "coil": 13,
+      "input": "IN2"
+    },
+    {
+      "bit": 329,
+      "ref": "SR0",
+      "q": "Q6",
+      "coil": 13,
+      "input": "IN1"
+    },
+    {
+      "bit": 330,
+      "ref": "SR0",
+      "q": "Q5",
+      "coil": 12,
+      "input": "IN2"
+    },
+    {
+      "bit": 331,
+      "ref": "SR0",
+      "q": "Q4",
+      "coil": 12,
+      "input": "IN1"
+    },
+    {
+      "bit": 332,
+      "ref": "SR0",
+      "q": "Q3",
+      "coil": 1,
+      "input": "IN2"
+    },
+    {
+      "bit": 333,
+      "ref": "SR0",
+      "q": "Q2",
+      "coil": 1,
+      "input": "IN1"
+    },
+    {
+      "bit": 334,
+      "ref": "SR0",
+      "q": "Q1",
+      "coil": 0,
+      "input": "IN2"
+    },
+    {
+      "bit": 335,
+      "ref": "SR0",
+      "q": "Q0",
+      "coil": 0,
+      "input": "IN1"
+    }
+  ],
+  "sensors": [
+    {
+      "ref": "MS0",
+      "bus": 0,
+      "addrVariant": 0,
+      "atMm": [
+        -50.5,
+        -49.75
+      ],
+      "nudgeMm": 1.3462912017836262,
+      "rotDeg": 150.00000000000003
+    },
+    {
+      "ref": "MS1",
+      "bus": 0,
+      "addrVariant": 1,
+      "atMm": [
+        -51,
+        -32.2
+      ],
+      "nudgeMm": 0.25000000000000355,
+      "rotDeg": 90
+    },
+    {
+      "ref": "MS2",
+      "bus": 0,
+      "addrVariant": 2,
+      "atMm": [
+        -50.75,
+        25.449999999999992
+      ],
+      "nudgeMm": 0.3535533905932738,
+      "rotDeg": 90
+    },
+    {
+      "ref": "MS3",
+      "bus": 0,
+      "addrVariant": 3,
+      "atMm": [
+        -32.7,
+        -49.5
+      ],
+      "nudgeMm": 1.6770509831248437,
+      "rotDeg": 150.00000000000003
+    },
+    {
+      "ref": "MS4",
+      "bus": 1,
+      "addrVariant": 0,
+      "atMm": [
+        -32.7,
+        -31.2
+      ],
+      "nudgeMm": 1.0606601717798236,
+      "rotDeg": 29.999999999999996
+    },
+    {
+      "ref": "MS5",
+      "bus": 1,
+      "addrVariant": 1,
+      "atMm": [
+        -32.95,
+        -13.400000000000002
+      ],
+      "nudgeMm": 1.118033988749898,
+      "rotDeg": 119.99999999999999
+    },
+    {
+      "ref": "MS6",
+      "bus": 1,
+      "addrVariant": 2,
+      "atMm": [
+        -32.2,
+        6.149999999999996
+      ],
+      "nudgeMm": 0.25000000000000355,
+      "rotDeg": 0
+    },
+    {
+      "ref": "MS7",
+      "bus": 1,
+      "addrVariant": 3,
+      "atMm": [
+        -32.7,
+        23.949999999999992
+      ],
+      "nudgeMm": 1.457737973711327,
+      "rotDeg": 150.00000000000003
+    },
+    {
+      "ref": "MS8",
+      "bus": 2,
+      "addrVariant": 0,
+      "atMm": [
+        -31.95,
+        43.49999999999999
+      ],
+      "nudgeMm": 0.75,
+      "rotDeg": 90
+    },
+    {
+      "ref": "MS9",
+      "bus": 2,
+      "addrVariant": 1,
+      "atMm": [
+        -13.900000000000002,
+        -49.5
+      ],
+      "nudgeMm": 1.8027756377319948,
+      "rotDeg": 29.999999999999996
+    },
+    {
+      "ref": "MS10",
+      "bus": 2,
+      "addrVariant": 2,
+      "atMm": [
+        -12.650000000000002,
+        -31.7
+      ],
+      "nudgeMm": 0.3535533905932738,
+      "rotDeg": 29.999999999999996
+    },
+    {
+      "ref": "MS11",
+      "bus": 2,
+      "addrVariant": 3,
+      "atMm": [
+        -12.650000000000002,
+        -12.900000000000002
+      ],
+      "nudgeMm": 0.25,
+      "rotDeg": 59.99999999999999
+    },
+    {
+      "ref": "MS12",
+      "bus": 3,
+      "addrVariant": 0,
+      "atMm": [
+        -13.150000000000002,
+        6.149999999999996
+      ],
+      "nudgeMm": 0.25,
+      "rotDeg": 0
+    },
+    {
+      "ref": "MS13",
+      "bus": 3,
+      "addrVariant": 1,
+      "atMm": [
+        -12.900000000000002,
+        25.699999999999992
+      ],
+      "nudgeMm": 0.5,
+      "rotDeg": 90
+    },
+    {
+      "ref": "MS14",
+      "bus": 3,
+      "addrVariant": 2,
+      "atMm": [
+        -13.150000000000002,
+        44.24999999999999
+      ],
+      "nudgeMm": 0.25,
+      "rotDeg": 150.00000000000003
+    },
+    {
+      "ref": "MS15",
+      "bus": 3,
+      "addrVariant": 3,
+      "atMm": [
+        5.899999999999996,
+        -31.95
+      ],
+      "nudgeMm": 0.25,
+      "rotDeg": 0
+    },
+    {
+      "ref": "MS16",
+      "bus": 4,
+      "addrVariant": 0,
+      "atMm": [
+        5.649999999999996,
+        -13.400000000000002
+      ],
+      "nudgeMm": 0.7071067811865476,
+      "rotDeg": 0
+    },
+    {
+      "ref": "MS17",
+      "bus": 4,
+      "addrVariant": 1,
+      "atMm": [
+        5.899999999999996,
+        6.149999999999996
+      ],
+      "nudgeMm": 0.25,
+      "rotDeg": 90
+    },
+    {
+      "ref": "MS18",
+      "bus": 4,
+      "addrVariant": 2,
+      "atMm": [
+        5.899999999999996,
+        25.949999999999992
+      ],
+      "nudgeMm": 0.7905694150420949,
+      "rotDeg": 29.999999999999996
+    },
+    {
+      "ref": "MS19",
+      "bus": 4,
+      "addrVariant": 3,
+      "atMm": [
+        5.649999999999996,
+        44.24999999999999
+      ],
+      "nudgeMm": 0.5,
+      "rotDeg": 0
+    },
+    {
+      "ref": "MS20",
+      "bus": 5,
+      "addrVariant": 0,
+      "atMm": [
+        25.699999999999992,
+        -49.75
+      ],
+      "nudgeMm": 1.3462912017836262,
+      "rotDeg": 150.00000000000003
+    },
+    {
+      "ref": "MS21",
+      "bus": 5,
+      "addrVariant": 1,
+      "atMm": [
+        24.949999999999992,
+        -31.95
+      ],
+      "nudgeMm": 0.25,
+      "rotDeg": 0
+    },
+    {
+      "ref": "MS22",
+      "bus": 5,
+      "addrVariant": 2,
+      "atMm": [
+        24.449999999999992,
+        -12.650000000000002
+      ],
+      "nudgeMm": 0.7905694150420949,
+      "rotDeg": 29.999999999999996
+    },
+    {
+      "ref": "MS23",
+      "bus": 5,
+      "addrVariant": 3,
+      "atMm": [
+        24.949999999999992,
+        6.399999999999996
+      ],
+      "nudgeMm": 0.3535533905932738,
+      "rotDeg": 29.999999999999996
+    },
+    {
+      "ref": "MS24",
+      "bus": 6,
+      "addrVariant": 0,
+      "atMm": [
+        25.199999999999992,
+        25.199999999999992
+      ],
+      "nudgeMm": 0,
+      "rotDeg": 119.99999999999999
+    },
+    {
+      "ref": "MS25",
+      "bus": 6,
+      "addrVariant": 1,
+      "atMm": [
+        24.949999999999992,
+        42.74999999999999
+      ],
+      "nudgeMm": 1.5206906325745546,
+      "rotDeg": 0
+    },
+    {
+      "ref": "MS26",
+      "bus": 6,
+      "addrVariant": 2,
+      "atMm": [
+        43.49999999999999,
+        -49.5
+      ],
+      "nudgeMm": 1.6770509831248424,
+      "rotDeg": 150.00000000000003
+    },
+    {
+      "ref": "MS27",
+      "bus": 6,
+      "addrVariant": 3,
+      "atMm": [
+        43.49999999999999,
+        -31.2
+      ],
+      "nudgeMm": 1.0606601717798214,
+      "rotDeg": 29.999999999999996
+    },
+    {
+      "ref": "MS28",
+      "bus": 7,
+      "addrVariant": 0,
+      "atMm": [
+        43.24999999999999,
+        -13.400000000000002
+      ],
+      "nudgeMm": 1.118033988749895,
+      "rotDeg": 119.99999999999999
+    },
+    {
+      "ref": "MS29",
+      "bus": 7,
+      "addrVariant": 1,
+      "atMm": [
+        43.99999999999999,
+        6.149999999999996
+      ],
+      "nudgeMm": 0.25,
+      "rotDeg": 0
+    },
+    {
+      "ref": "MS30",
+      "bus": 7,
+      "addrVariant": 2,
+      "atMm": [
+        43.49999999999999,
+        23.949999999999992
+      ],
+      "nudgeMm": 1.457737973711325,
+      "rotDeg": 150.00000000000003
+    },
+    {
+      "ref": "MS31",
+      "bus": 7,
+      "addrVariant": 3,
+      "atMm": [
+        44.24999999999999,
+        43.49999999999999
+      ],
+      "nudgeMm": 0.75,
+      "rotDeg": 90
+    }
+  ],
+  "note": "SDA_1..SDA_7 route to the master section; the tile header carries SDA_0 only."
+}

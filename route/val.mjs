@@ -1,0 +1,18 @@
+import { readFileSync } from 'fs';
+import { pcbCoilGeometry, viaPlan, viaSize, viaDrill, validatePcb, gutterFits } from '../src/kicad.js';
+const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const body = src.slice(src.indexOf('const PRESETS = {') + 'const PRESETS = '.length);
+const P = eval('(' + body.slice(0, body.indexOf('\n};') + 2) + ')');
+const cfg = P[process.argv[2] || 'amzhex'].cfg;
+const g = pcbCoilGeometry(cfg);
+const cellHalf = cfg.stator.coilPitch * 1000 / 2;
+const v = viaSize(g, cellHalf);
+console.log('via', v.toFixed(3), 'drill', viaDrill(v).toFixed(3), 'gutter', JSON.stringify(gutterFits(g, cellHalf)));
+const plan = viaPlan(g, g.layers, cellHalf, v);
+const inner = plan.vias.filter((_, i) => i % 2 === 0);
+console.log('inner r', inner.map((x) => Math.hypot(...x.p).toFixed(3)).join(' '));
+let m = 1e9; const A = [...plan.vias, ...plan.termVias];
+for (let i = 0; i < A.length; i++) for (let j = i + 1; j < A.length; j++) m = Math.min(m, Math.hypot(A[i].p[0] - A[j].p[0], A[i].p[1] - A[j].p[1]));
+console.log('min via-via centre', m.toFixed(3), 'copper gap', (m - v).toFixed(3));
+const c = validatePcb(g, g.layers, cellHalf, v);
+console.log('validatePcb contacts:', c.length, JSON.stringify(c.slice(0, 4)));

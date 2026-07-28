@@ -1,0 +1,15 @@
+DRC        : 0 errors, 48 warnings
+   warning     44  lib_footprint_issues
+   warning      4  silk_over_copper
+Unrouted   : 52 connections
+               10  GND
+                8  coil_*
+                8  PWMB_*
+                6  PWMA_*
+                5  VBUS
+                4  VLOGIC
+                3  RCLK
+                3  OE_N
+                3  DATA_*
+                1  SCLK
+                1  DEADMAN_G

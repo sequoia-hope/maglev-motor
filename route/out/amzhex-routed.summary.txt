@@ -1,0 +1,12 @@
+DRC        : 0 errors, 241 warnings
+   warning    199  lib_footprint_issues
+   warning     39  silk_over_copper
+   warning      2  silk_edge_clearance
+   warning      1  track_dangling
+Unrouted   : 698 connections  (report lists 499)
+              102  GND
+               94  coil_*
+               94  VBUS
+               90  PWMA_*
+               82  PWMB_*
+               37  VLOGIC

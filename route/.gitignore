@@ -1,0 +1,18 @@
+# Generated artefacts. The board is 30 MB of copper and the router jar is 58 MB;
+# both are reproducible from the scripts beside this file (see README.md).
+*.kicad_pcb
+*.kicad_pro
+*.kicad_dru
+*.dsn
+*.ses
+*.jar
+*.log
+*.drc*.json
+*.contract.json
+*.svg
+*.png
+*.lck
+frjar/
+
+# ...except the finished result, which is the point of the exercise.
+!out/

@@ -5,7 +5,7 @@
 // instead of cancelling.
 
 import { makeStator } from '../src/coils.js';
-import { buildKiCad, buildTile, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb, viaPlan } from '../src/kicad.js';
+import { buildKiCad, buildTile, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb, viaPlan, viaSize, gutterFits, FAB } from '../src/kicad.js';
 
 let fails = 0;
 const check = (n, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`); if (!c) fails++; };
@@ -72,9 +72,23 @@ check('two SMT terminal pads per coil, on B.Cu',
   (out.text.match(/\(footprint "maglev:Term" \(layer "B.Cu"\)/g) || []).length === stator.coils.length * 2
   && out.stats.termPads === stator.coils.length * 2,
   `${out.stats.termPads} pads`);
+// Checked at a fill whose gutter can actually host the via the fab will drill.
+// `cfg` is the shipped 0.94-fill square preset, and 0.94 CANNOT: see the gutter
+// check below. The old form of this test passed only because it measured a
+// 0.2 mm via, which is under JLCPCB's floor on diameter, drill and ring at once.
+const cellHalfSq = cfg.stator.coilPitch * 1000 / 2;
+const fabCfg = { stator: { ...cfg.stator, coilFill: 0.80 } };
+const gFab = pcbCoilGeometry(fabCfg);
+// Reference designators must be unique board-wide (see the backplane check).
+{
+  const refs = [...out.text.matchAll(/fp_text reference "([^"]*)"/g)].map((m) => m[1]);
+  const seen = new Set(), dup = new Set();
+  for (const r of refs) (seen.has(r) ? dup : seen).add(r);
+  check('coil board reference designators are unique', dup.size === 0, [...dup].join(','));
+}
 check('the I/O pads clear the winding and neighbours (validatePcb)',
-  validatePcb(g, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2,
-    Math.min(0.4, Math.max(0.2, g.pitch * 0.6))).filter((c) => c.pad).length === 0);
+  validatePcb(gFab, fabCfg.stator.pcbLayers, cellHalfSq,
+    viaSize(gFab, cellHalfSq)).filter((c) => c.pad).length === 0);
 check('every net is a coil net (no power rails on the coil board)',
   !/^  \(net \d+ "(VBUS|GND|PWMA_)/m.test(out.text));
 
@@ -106,15 +120,28 @@ console.log('\n=== no plated through-hole contacts a layer it must not ===');
 // layer's copper. validatePcb checks every via against every non-participating
 // layer. This design (and the shipped fill) must come back clean.
 {
-  const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
-  const bad = validatePcb(g, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2, via);
+  const via = viaSize(gFab, cellHalfSq);
+  const bad = validatePcb(gFab, fabCfg.stator.pcbLayers, cellHalfSq, via);
   check('every through-hole clears the layers it does not stitch', bad.length === 0,
     `${bad.length} wrong-layer contacts`);
+  // The gutter is what decides whether a fab-legal via fits at all, and it is
+  // the coil FILL that sets the gutter. Both numbers below are load-bearing:
+  // the shipped square presets are dialled to 0.94, which leaves 0.24 mm --
+  // not enough for the smallest via JLCPCB will plate (0.41 mm for a 0.13 mm
+  // ring on a 0.15 mm drill) plus a copper clearance in and an edge clearance
+  // out. They still export; their vias are simply pinned against the winding,
+  // and validatePcb says so rather than the board arriving shorted.
+  check('the shipped 0.94 square fill CANNOT host a fab-legal via (known)',
+    gutterFits(g, cellHalfSq).ok === false,
+    `gutter ${gutterFits(g, cellHalfSq).have.toFixed(3)} mm, needs ${gutterFits(g, cellHalfSq).need.toFixed(3)} mm`);
+  check('0.80 fill can, and keeps the via off the winding',
+    gutterFits(gFab, cellHalfSq).ok === true && via >= FAB.minViaDia,
+    `via ${via.toFixed(3)} mm, ring ${((via - 0.2) / 2).toFixed(3)} mm`);
   // And it must actually FIRE when a via cannot clear -- a validator that never
   // fails is worthless. (The distributed-ends routing is clean at any fill, so
   // density no longer breaks it; an oversized via does.)
   check('the check catches vias that cannot clear (oversized)',
-    validatePcb(g, cfg.stator.pcbLayers, cfg.stator.coilPitch * 1000 / 2, g.pitch * 3).length > 0);
+    validatePcb(gFab, fabCfg.stator.pcbLayers, cellHalfSq, gFab.pitch * 3).length > 0);
 }
 
 console.log('\n=== the crossovers wire every layer into one series chain ===');
@@ -165,6 +192,9 @@ check('starts with a kicad_pcb node', /^\(kicad_pcb /.test(out.text));
 console.log('\n=== tracks stay inside their coils ===');
 const half = cfg.stator.coilPitch * 1000 / 2 + 1e-6;
 let overflow = 0;
+// `cfg` is the SQUARE coil, so an axis-aligned cell bound is the right test
+// here; the honeycomb's containment is hexagonal and viaPlan enforces it
+// directly (see the gutter checks below).
 const segRe = /\(segment \(start ([\d.]+) ([\d.]+)\) \(end ([\d.]+) ([\d.]+)\).*?net (\d+)\)/g;
 const centres = stator.coils.map((c) => [c.x * 1000 + (cfg.stator.statorSize * 1000 / 2 + 10), -c.y * 1000 + (cfg.stator.statorSize * 1000 / 2 + 10)]);
 let mm;
@@ -262,10 +292,22 @@ console.log('\n=== spare electronics layers: wind less, press the same board ===
     (k1.text.match(/\(via .*/g) || []).every((v) => /\(layers "F.Cu" "B.Cu"\)/.test(v)));
   check('I/O pads still land on the back (electronics) face',
     /\(pad "1" smd rect .*\(layers "B.Cu" "B.Paste" "B.Mask"\)/.test(k1.text));
+  // Winding-layer PARITY, which is what the spare-layer knob really controls.
+  // A spiral alternates: layer 0 starts outside, layer 1 starts inside, and so
+  // on -- so an EVEN winding count ends outside and both coil leads are already
+  // in the gutter, while an ODD one leaves the last lead in the CENTRE HOLE and
+  // its tab has to cross every turn of its own layer to reach the I/O pad. That
+  // is a dead short of the layer, and no PCB DRC can see it: the tab and the
+  // winding are the same net. validatePcb is the only thing that checks it.
   const cellHalf = base.stator.coilPitch * 1000 / 2;
-  const hvia = Math.min(0.4, Math.max(0.2, g1.pitch * 0.6));
-  check('spare=1 winding validates clean (validatePcb over the coil layers)',
-    validatePcb(g1, g1.layers, cellHalf, hvia).length === 0);
+  const tabShorts = (g) => validatePcb(g, g.layers, cellHalf, viaSize(g, cellHalf))
+    .filter((c) => c.terminalTab).length;
+  check('an ODD winding-layer count strands the second lead in the centre hole',
+    g1.layers % 2 === 1 && tabShorts(g1) > 0, `${g1.layers} layers, ${tabShorts(g1)} tab short(s)`);
+  const drv2 = { stator: { ...base.stator, pcbSpareLayers: 2 } };
+  const g2 = pcbCoilGeometry(drv2);
+  check('an EVEN winding-layer count brings both leads out to the gutter',
+    g2.layers % 2 === 0 && tabShorts(g2) === 0, `${g2.layers} layers`);
 }
 
 // The electronics-layer fit check: the single-board driver-per-coil build only
@@ -280,10 +322,20 @@ console.log('\n=== electronics-layer fit: the parts land clear of the via fields
   const fit = backsideFit(hcfg, { stator: hstat, sensorSpacing: 0.0216 });
   check('fit check runs on the hex electronics layer', fit.available === true,
     `${fit.obstaclesPerCell} keepouts/cell`);
-  check('a per-cell SOP-8 bridge fits (the single-board build is viable)',
-    fit.parts.sop8.fits === true,
-    fit.parts.sop8.fits ? `at (${fit.parts.sop8.at.map((v) => v.toFixed(2))}) rot ${fit.parts.sop8.rotDeg}°` : '');
-  check('the DFN fallback fits too', fit.parts.dfn8.fits === true);
+  // The SOP-8 was the original bridge and it no longer fits a dense cell: the
+  // via that replaced the old 0.2 mm one is the size a fab will really drill,
+  // and its lands eat the room the wide package needed. What matters is that
+  // SOMETHING fits and the plan escalates to it rather than stacking parts.
+  check('a per-cell bridge fits, escalating package if it must',
+    fit.parts.dfn8.fits === true || fit.parts.sot23hb.fits === true,
+    `sop8 ${fit.parts.sop8.fits ? 'Y' : 'n'} sot23hb ${fit.parts.sot23hb.fits ? 'Y' : 'n'} dfn8 ${fit.parts.dfn8.fits ? 'Y' : 'n'}`);
+  // An exposed-pad package must be the LAST choice, not the first that fits:
+  // on this board the die pad is an island (0.1 mm to every perimeter pad, and
+  // over winding copper so no via can reach it), and a bridge whose GND cannot
+  // be connected is not a bridge. Six perimeter pins beat eight plus an island.
+  check('an exposed-pad bridge ranks below a perimeter-pin one',
+    ['sop8', 'sot23hb', 'dfn8'].indexOf('dfn8')
+    > ['sop8', 'sot23hb', 'dfn8'].indexOf('sot23hb'));
   // The register and sensor verdicts are now judged BESIDE the chosen bridge
   // (obs2), and at 0.84 fill the honest answer is that nothing else tiles
   // per-cell next to a SOP-8 -- the cell is full. That discovery is the whole
@@ -365,6 +417,39 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
   check('every coil appears in exactly one register quad',
     seen.size === C && plan.registers.reduce((a, r) => a + r.coils.length, 0) === C,
     `${C} coils across ${plan.registers.length} registers`);
+  // A register's four coils must be a COMPACT block, not four in a row. Its
+  // eight PWM traces are as long as this number, and when the quads were
+  // strips four pitches long (34 mm on the amzhex lattice) six of one
+  // register's eight PWM nets came back unrouted. The full board is the case
+  // that matters -- a three-row test board has no room to get this wrong.
+  {
+    const big = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.80, statorSize: 0.102, coilPitch: 0.0084667 } };
+    const bst = makeStator({ ...big.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+    const bp2 = chainPlan(bst, big);
+    let worst = 0;
+    for (const r of bp2.registers) {
+      for (const ci of r.coils) {
+        worst = Math.max(worst, Math.hypot(bst.coils[ci].x * 1000 - r.x, bst.coils[ci].y * 1000 - r.y));
+      }
+    }
+    const pitch = big.stator.coilPitch * 1000;
+    check('a register quad is a compact block, not a strip',
+      worst < 1.2 * pitch, `worst coil-to-register ${worst.toFixed(1)} mm on a ${pitch.toFixed(1)} mm pitch`);
+  }
+  // Rows must be keyed exactly. The honeycomb's rows sit at HALF-integer
+  // multiples of the row height and Math.round breaks ties toward +infinity,
+  // so dividing and rounding merges two physical rows into one -- harmless
+  // while the index is only a sort key, and wrong once it decides which coils
+  // share a register (it produced quads holding coils 29 mm apart).
+  {
+    const big = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.80, statorSize: 0.102, coilPitch: 0.0084667 } };
+    const bst = makeStator({ ...big.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
+    const ys = new Set(bst.coils.map((c) => +(c.y * 1000).toFixed(3)));
+    const rowH = big.stator.coilPitch * 1000 * Math.sqrt(3) / 2;
+    const rounded = new Set(bst.coils.map((c) => Math.round((c.y * 1000) / rowH)));
+    check('rows are keyed exactly, not by dividing and rounding',
+      ys.size > rounded.size, `${ys.size} real rows, ${rounded.size} after Math.round`);
+  }
   const bits = plan.bitMap.map((b) => b.bit);
   check('frame bits are a permutation of 0..bits-1',
     new Set(bits).size === plan.bits && Math.min(...bits) === 0 && Math.max(...bits) === plan.bits - 1);
@@ -387,7 +472,19 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
   }
   check('every chain link (and both chain ends) lands on exactly two pads', dataOK);
   check('the dead-man and the spine header are on the board',
-    /reference "Q1"/.test(bp.text) && /reference "J1"/.test(bp.text));
+    /reference "QDM1"/.test(bp.text) && /reference "JSPINE"/.test(bp.text));
+  // Reference designators must be unique board-wide. They were not -- the
+  // dead-man's hold cap was "C1", the same as coil 1's decap -- and a duplicate
+  // ref is not cosmetic: KiCad's Specctra exporter keys its component list by
+  // reference and refuses to write the file at all, so the board could not
+  // reach an autorouter.
+  const refsOf = (t) => [...t.matchAll(/fp_text reference "([^"]*)"/g)].map((m) => m[1]);
+  const dupes = (t) => {
+    const seen = new Set(), dup = new Set();
+    for (const r of refsOf(t)) (seen.has(r) ? dup : seen).add(r);
+    return [...dup];
+  };
+  check('backplane reference designators are unique', dupes(bp.text).length === 0, dupes(bp.text).join(','));
   check('the backplane ships a contract', bp.contract && bp.contract.bitMap.length === bp.stats.chainBits);
 
   // The single-board build: electronics on B.Cu of the coil board itself, at
@@ -398,8 +495,8 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
   check('single-board export is balanced', (out.text.match(/\(/g) || []).length === (out.text.match(/\)/g) || []).length);
   check('one bridge per coil on the electronics layer (in the chosen package)',
     out.stats.drivers === dstat.coils.length
-    && (out.text.match(/maglev:(SOP8HB|DFN8HB)/g) || []).length === dstat.coils.length
-    && ['sop8', 'dfn8'].includes(out.stats.bridgePackage),
+    && (out.text.match(/maglev:(SOP8HB|SOT23HB|DFN8HB)/g) || []).length === dstat.coils.length
+    && ['sop8', 'sot23hb', 'dfn8'].includes(out.stats.bridgePackage),
     `${out.stats.drivers} bridges as ${out.stats.bridgePackage}`);
   check('registers and sensors emitted match the stats',
     (out.text.match(/maglev:SR595/g) || []).length === out.stats.registers
@@ -609,15 +706,18 @@ console.log('\n=== the full board tiles with itself ===');
   check('an odd-row honeycomb is reported vertically untileable',
     ot.nRows % 2 === 1 && ot.latticeY === false && ot.tileable === false, `${ot.nRows} rows`);
 
-  // The square grid keeps its plain rectangle -- and is HONESTLY reported as
-  // non-tiling, because its I/O pads straddle the cell boundary at high fill.
+  // The square grid keeps its plain rectangle. Its I/O pads used to be centred
+  // ON the cell boundary, which made abutted boards collide pad-on-pad; they
+  // are now pulled back by the via's radius and an edge clearance (the same
+  // clamp that stops a fab-sized via walking into the neighbouring cell), so
+  // the seam has a real gap and the verdict follows the geometry either way.
   const sqs = makeStator({ ...cfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
   const so = cellOutline(sqs, cfg);
   check('the square grid outline stays a plain rectangle', so.length === 4);
   const st2 = tileability(sqs, cfg);
-  check('the square grid is honestly reported as not self-tiling (pads on the boundary)',
-    st2.latticeX && st2.latticeY && st2.copperOK === false && st2.tileable === false,
-    `seam ${st2.seamGapMm.toFixed(2)} mm`);
+  check('the square grid tiles iff its rim copper clears the seam',
+    st2.latticeX && st2.latticeY && st2.tileable === st2.copperOK,
+    `seam ${st2.seamGapMm.toFixed(2)} mm, copper ${st2.copperOK ? 'clears' : 'collides'}`);
 
   // The export carries the verdict, and the hex board file has the castellated
   // edge, not a rectangle.

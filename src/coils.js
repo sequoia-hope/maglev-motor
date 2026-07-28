@@ -44,8 +44,8 @@ export function effectiveTrace(traceWidth, copperThickness) {
 const PCB_INNER_FRAC = 0.13;
 /** Turns per layer for a PCB spiral of half-width w/2 at effective trace `eff`.
  *  Shared by coils.js (physics) and kicad.js (copper) so they cannot diverge. */
-export function pcbTurnsPerLayer(w, eff) {
-  return Math.max(1, Math.floor((w * (0.5 - PCB_INNER_FRAC)) / (eff * 2)));
+export function pcbTurnsPerLayer(w, eff, innerFrac = PCB_INNER_FRAC) {
+  return Math.max(1, Math.floor((w * (0.5 - innerFrac)) / (eff * 2)));
 }
 
 /** Pressed thickness of an N-layer board: the one stackup formula, shared so
