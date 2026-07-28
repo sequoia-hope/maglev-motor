@@ -6,7 +6,7 @@ import {
   applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES, arraySymmetry, imperialName,
 } from './halbach.js';
 import { COIL_TYPES, makeStator, isPcbCoil } from './coils.js';
-import { buildKiCad, buildDriverBackplane, coilPreviewSVG, buildTile, backsideFit, BOM } from './kicad.js';
+import { coilPreviewSVG, backsideFit, BOM } from './kicad.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
 import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
@@ -408,26 +408,14 @@ function rebuild(resetSim = false) {
         { gap: app.cfg.sim.gap, maxTilt: app.cfg.sim.maxTilt });
       app._layoutKey = lkey;
     }
-    // Can the electronics layer physically host the parts? Depends on the coil
-    // geometry and the recommended sensor spacing (for the grid placement).
+    // Can the electronics layer physically host the parts? The per-package
+    // CARD is milliseconds; the full collision-checked placement plan (which
+    // also yields the as-placed sensor grid) is tens of seconds on a 168-cell
+    // board, so it runs in the board worker and this card fills in when the
+    // plan lands -- selecting a preset must never freeze the tab.
     const fkey = [...geom, app.sensorLayout?.spacing ?? 0].join('|');
     if (fkey !== app._fitKey) {
-      app.fitCheck = backsideFit(app.cfg, {
-        stator: app.stator,
-        sensorSpacing: app.sensorLayout?.available ? app.sensorLayout.spacing : null,
-      });
-      // Close the loop: the manufacturability nudges moved the sensors off
-      // their ideal grid, so re-run the full-stroke observability sweep at the
-      // positions ACTUALLY placed. The recommendation card promised a grid;
-      // this verifies the grid we can build.
-      if (app.fitCheck?.available && app.fitCheck.sensors?.placed >= 3) {
-        const placed = app.fitCheck.sensors.list.map((s) => [s.atMm[0] / 1000, s.atMm[1] / 1000]);
-        app.fitCheck.asPlaced = poseObservability(app.tr, {
-          sensors: placed, zBot: -app.stator.thickness, gap: app.cfg.sim.gap,
-          travelHalf: Math.max(0, (app.cfg.stator.statorSize - app.cfg.translator.platenSize) / 2),
-          tiltMax: app.cfg.sim.maxTilt, axis: 'all',
-        });
-      }
+      app.fitCheck = backsideFit(app.cfg, { stator: app.stator, plan: false });
       app._fitKey = fkey;
     }
   }
@@ -856,6 +844,66 @@ function setupBuildCharts() {
 
 /** Bill of materials, magnet order list, and an explicit list of what the
  *  drawing does not know. */
+// ------------------------------------------------------------ board worker ---
+// The .kicad_pcb exports run the full collision-checked electronics placement
+// plan -- tens of seconds for a driver-per-coil honeycomb -- so they build in
+// a module worker while the page stays live. The UI holds only the STATS; the
+// board text itself (tens of MB) stays in the worker until a download button
+// asks for it. Results are keyed, so a stale build for a design the user has
+// already moved past is simply dropped.
+function downloadText(text, name) {
+  const blob = new Blob([text], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function boardWorker() {
+  if (app._bw) return app._bw;
+  app._bw = new Worker(new URL('./boardworker.js', import.meta.url), { type: 'module' });
+  app._bw.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'built') {
+      app._bwInFlight = null;
+      // A newer design was requested while this one built: chase it.
+      if (app._bwNext) { const nx = app._bwNext; app._bwNext = null; app._bwInFlight = nx.key; app._bw.postMessage(nx); }
+      if (m.key !== app._boardKey) return;                    // stale result
+      app._board = m;
+      // Close the observability loop now the sensors have real positions:
+      // re-run the full-stroke sweep at the spots the plan actually placed.
+      if (app.fitCheck?.available && m.elec?.sensors?.placed >= 3) {
+        app.fitCheck.sensors = m.elec.sensors;
+        app.fitCheck.planStats = m.elec.planStats;
+        const placed = m.elec.sensors.list.map((s) => [s.atMm[0] / 1000, s.atMm[1] / 1000]);
+        app.fitCheck.asPlaced = poseObservability(app.tr, {
+          sensors: placed, zBot: -app.stator.thickness, gap: app.cfg.sim.gap,
+          travelHalf: Math.max(0, (app.cfg.stator.statorSize - app.cfg.translator.platenSize) / 2),
+          tiltMax: app.cfg.sim.maxTilt, axis: 'all',
+        });
+      }
+      renderFitCheck();
+      renderBuild();
+    } else if (m.type === 'text') {
+      const name = app._dlPending?.[m.which];
+      if (m.text && name) downloadText(m.text, name);
+      else if (m.error) console.warn('board worker:', m.error, 'for', m.which);
+    }
+  };
+  app._bw.onerror = (err) => { console.error('board worker failed:', err.message ?? err); };
+  return app._bw;
+}
+
+/** Ask the worker for the board matching `key`; coalesces requests so a drag
+ *  across a slider queues at most one follow-up build. */
+function requestBoard(key, payload) {
+  const msg = { type: 'build', key, ...payload };
+  if (app._bwInFlight) { app._bwNext = msg; return; }
+  app._bwInFlight = key;
+  boardWorker().postMessage(msg);
+}
+
 function renderBuild() {
   const A = app.assembly, st = app.stack;
   const g = (kg) => `${sig(kg * 1000, 3)} g`;
@@ -891,23 +939,40 @@ function renderBuild() {
   // stator has no copper to fabricate.
   const pcbCard = document.getElementById('pcbExportCard');
   if (isPcbCoil(app.cfg.stator.coilType)) {
-    // The exports now run a full collision-checked placement plan (bridges,
-    // registers, sensors, service parts), which is seconds of work -- cache on
-    // the geometry, like the fit check above.
-    const bkey = [JSON.stringify(app.cfg.stator), app.sensorLayout?.available ? app.sensorLayout.spacing : 0].join('|');
+    // The exports run the full collision-checked placement plan -- tens of
+    // seconds for a driver-per-coil honeycomb -- in the board WORKER. This
+    // render never blocks: it shows what is cheap immediately and fills in
+    // the plan-dependent parts when the worker posts them back.
+    const bq = QUALITY[app.cfg.sim.quality];
+    const sensorSpacing = app.cfg.stator.pcbSpareLayers > 0 && app.sensorLayout?.available ? app.sensorLayout.spacing : null;
+    const bkey = [JSON.stringify(app.cfg.stator), sensorSpacing ?? 0, bq.ringsPerCoil, bq.segmentsPerSide].join('|');
     if (bkey !== app._boardKey) {
-      app._kc = buildKiCad(app.stator, app.cfg, {
-        sensorSpacing: app.cfg.stator.pcbSpareLayers > 0 && app.sensorLayout?.available ? app.sensorLayout.spacing : null,
-      });
-      app._bp = buildDriverBackplane(app.stator, app.cfg);
       app._boardKey = bkey;
+      app._board = null;
+      requestBoard(bkey, {
+        cfg: JSON.parse(JSON.stringify({ stator: app.cfg.stator })),
+        quality: { ringsPerCoil: bq.ringsPerCoil, segmentsPerSide: bq.segmentsPerSide },
+        sensorSpacing,
+      });
     }
-    const kc = app._kc;
-    const s = kc.stats;
-    const bp = app._bp.stats;
+    const B = app._board;
     const pv = coilPreviewSVG(app.cfg);
     const hex = app.cfg.stator.coilType === 'pcbhex';
     pcbCard.style.display = '';
+    if (!B) {
+      pcbCard.innerHTML = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">PCB stator export</h4>
+        <div style="display:flex;gap:12px;align-items:flex-start;margin:0 0 10px">
+          <div style="flex:0 0 200px;max-width:200px">${pv.svg}</div>
+          <div style="font-size:12px;color:var(--ink-2)">
+            <b>Building the boards in the background…</b> The export runs the full collision-checked
+            electronics placement (bridges, registers, sensors, service strip — each part cleared against
+            everything placed before it), which takes a minute or two for a ${app.stator.coils.length}-coil board.
+            The page stays live; this card fills in when the plan lands.
+          </div>
+        </div>`;
+    } else {
+    const s = B.stats;
+    const bp = B.bpStats;
     pcbCard.innerHTML = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">PCB stator export</h4>
       <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">Two mating boards as <b>.kicad_pcb</b> files. The <b>coil board</b> is passive and dense —
       ${s.coils} ${hex ? 'hexagonal spirals on a honeycomb lattice' : 'square coils on a grid'}, ${s.layers} copper layers, ${s.turnsPerLayer} turns each per layer, series-stacked so every layer's field adds.
@@ -973,30 +1038,28 @@ function renderBuild() {
       })()}
       ${s.segments > 120000 ? `<p style="font-size:12px;color:var(--warn);margin:8px 0 0">The full coil board is dense (${(s.segments / 1000).toFixed(0)}k features, ~${Math.round(s.segments * 0.11 / 1000)} MB) — KiCad will take a while to open it; the 3×3 tile opens instantly.</p>` : ''}
       <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Carl Bugeja's method: plated through-holes only (a standard 12-layer stackup a fab can press), corners rounded so the crossover vias sit in copper-free pockets clear of the winding, and the centre wound deep for turns instead of dead space. The drivers moved off the all-copper coil board onto the backplane, which has the free layers for VBUS/GND planes and PWM fanout (the PWM routing to a controller is left to place-and-route). The export writes the board the physics ran.</p>`;
-    const dl = (text, name) => {
-      const blob = new Blob([text], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    };
+    // The board text lives in the worker (tens of MB) -- a download button
+    // asks for it by name and the file lands when the worker answers.
     const key = app.presetKey ?? 'design';
-    document.getElementById('btnKicad').onclick = () =>
-      dl(app._kc.text, `maglev-coils-${key}-${s.layers}L.kicad_pcb`);
-    document.getElementById('btnBackplane').onclick = () =>
-      dl(app._bp.text, `maglev-backplane-${key}.kicad_pcb`);
-    document.getElementById('btnTile').onclick = () =>
-      dl(buildTile(app.cfg, 3).text, `maglev-tile3x3-${key}-${s.layers}L.kicad_pcb`);
-    document.getElementById('btnTileBp').onclick = () =>
-      dl(buildTile(app.cfg, 3, true).text, `maglev-tile3x3-backplane-${key}.kicad_pcb`);
+    app._dlPending = {
+      coil: `maglev-coils-${key}-${s.layers}L.kicad_pcb`,
+      backplane: `maglev-backplane-${key}.kicad_pcb`,
+      tile: `maglev-tile3x3-${key}-${s.layers}L.kicad_pcb`,
+      tileBp: `maglev-tile3x3-backplane-${key}.kicad_pcb`,
+    };
+    const req = (which) => boardWorker().postMessage({ type: 'text', key: app._boardKey, which });
+    document.getElementById('btnKicad').onclick = () => req('coil');
+    document.getElementById('btnBackplane').onclick = () => req('backplane');
+    document.getElementById('btnTile').onclick = () => req('tile');
+    document.getElementById('btnTileBp').onclick = () => req('tileBp');
     // Firmware's contract with the copper: which shift-frame bit reaches which
     // coil pin, and each sensor's bus/address. Generated by the same code that
     // placed the parts, so it cannot go stale against the board.
     document.getElementById('btnFwMap').onclick = () => {
-      const contract = app._kc.contract ?? app._bp.contract;
-      dl(JSON.stringify(contract, null, 2), `maglev-fwmap-${key}.json`);
+      const contract = B.contract ?? B.bpContract;
+      downloadText(JSON.stringify(contract, null, 2), `maglev-fwmap-${key}.json`);
     };
+    }
   } else {
     pcbCard.style.display = 'none';
     pcbCard.innerHTML = '';
@@ -1216,7 +1279,9 @@ function renderFitCheck() {
     : '';
   const sens = r.sensors
     ? `Sensor grid: <b>${r.sensors.placed}/${r.sensors.wanted}</b> TMAG positions clear${r.sensors.failed ? ` (<span class="bad">${r.sensors.failed} blocked</span>)` : ''}, worst nudge ${r.sensors.worstNudgeMm.toFixed(1)} mm. ${apTxt} `
-    : '';
+    : !app._board
+      ? '<span style="color:var(--muted)">Collision-checked placement plan building in the background — the sensor-grid and as-placed verdicts land when it does.</span> '
+      : '';
   const summary = bridge
     ? `The single-board build is geometrically viable: one <b>${bridge}</b> bridge per cell, pads landing on the bare-mask winding annulus between the centre-hole and gutter via fields.`
     : `<span class="bad">No bridge package tiles the cells — this board wants the separate driver backplane.</span>`;

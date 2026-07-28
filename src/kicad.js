@@ -982,6 +982,10 @@ export function buildKiCad(stator, cfg, opts = {}) {
       tile: tileability(stator, cfg),
     },
     contract,
+    // The placement plan the board was emitted from -- sensors with their
+    // as-placed positions, the plan stats, the fit card. Plain data, so a
+    // worker can post it back to the UI thread without re-running the plan.
+    elec,
   };
 }
 
@@ -1291,6 +1295,10 @@ function placeInCell(fp, obs, clearance, searchHalf = null, centre = [0, 0], ste
  *  positions back through poseObservability before trusting them. */
 export function backsideFit(cfg, {
   stator = null, sensorSpacing = null, clearance = 0.2, nudgeMax = 2.5, footprints = FOOTPRINTS,
+  // The per-package card is milliseconds; the full collision-checked plan is
+  // tens of seconds on a 168-cell board. `plan: false` returns just the card,
+  // so a UI can render instantly and run the plan in a worker.
+  plan = true,
 } = {}) {
   if (!isPcbCoil(cfg.stator.coilType)) return { available: false, reason: 'notpcb' };
   if (!(cfg.stator.pcbSpareLayers > 0)) return { available: false, reason: 'nolayer' };
@@ -1326,7 +1334,7 @@ export function backsideFit(cfg, {
   // separate 0402 decap -- smaller silicon buys the room the chain needs.
   let service = null, bridges = null, registers = null, sensors = null, chain = null;
   let stats = null;
-  if (stator) {
+  if (stator && plan) {
     const coils = stator.coils;
     const outline = cellOutline(stator, cfg);
     const halfB = outline.reduce((a, p) => Math.max(a, Math.abs(p[0]), Math.abs(p[1])), 0);

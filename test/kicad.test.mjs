@@ -315,6 +315,13 @@ console.log('\n=== electronics-layer fit: the parts land clear of the via fields
   check('sensor grid places completely within its nudge budget',
     fit.sensors && fit.sensors.failed === 0 && fit.sensors.worstNudgeMm <= 2.5 + 1e-9,
     fit.sensors ? `${fit.sensors.placed}/${fit.sensors.wanted}, worst nudge ${fit.sensors.worstNudgeMm.toFixed(2)} mm` : '');
+  // plan: false is the UI's fast path -- the per-package card without the
+  // tens-of-seconds placement plan (which runs in a worker instead). It must
+  // return the card and clearly NOT pretend to have planned anything.
+  const cardOnly = backsideFit(hcfg, { stator: hstat, sensorSpacing: 0.0216, plan: false });
+  check('plan: false returns the card only (no registers, no sensors, no service)',
+    cardOnly.available === true && !!cardOnly.parts.sop8
+    && !cardOnly.registers && !cardOnly.sensors && !cardOnly.service);
   check('no electronics layer -> no single-board fit to report',
     backsideFit({ stator: { ...cfg.stator, coilType: 'pcbhex' } }).available === false);
   check('non-PCB stators are refused',
@@ -389,6 +396,11 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
   check('the contract lists every sensor with its bus and address variant',
     out.contract.sensors.length === out.stats.sensors
     && out.contract.sensors.every((s, k) => s.bus === (k >> 2) && s.addrVariant === k % 4));
+  // The export hands its plan back out (the worker posts it to the UI so the
+  // as-placed observability check does not have to re-run the whole thing).
+  check('buildKiCad returns the placement plan it emitted from',
+    out.elec?.sensors?.list?.length === out.stats.sensors
+    && out.elec.planStats.bridgePackage === out.stats.bridgePackage);
   // A passive board (no spare layer) must be unchanged in spirit: no parts.
   const pcfg = { stator: { ...scfg.stator, statorSize: 0.048 } };
   const pstat = makeStator({ ...pcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
