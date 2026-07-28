@@ -6,7 +6,7 @@ import {
   applyMagnetDrive, nearestStockMagnet, STOCK_MAGNET_SIZES, arraySymmetry, imperialName,
 } from './halbach.js';
 import { COIL_TYPES, makeStator, isPcbCoil } from './coils.js';
-import { buildKiCad, buildDriverBackplane, coilPreviewSVG, buildTile, backsideFit } from './kicad.js';
+import { buildKiCad, buildDriverBackplane, coilPreviewSVG, buildTile, backsideFit, BOM } from './kicad.js';
 import { analysePose, buildWrench, groupWrench, allocatePrioritised, copperLoss, makeState, step } from './physics.js';
 import { GROUPINGS, buildGrouping } from './grouping.js';
 import { makeController, control, TRAJECTORIES, makeDisturbance, applyDisturbance, kick } from './control.js';
@@ -125,7 +125,7 @@ const PRESETS = {
         driveByMagnet: true, cubicMagnets: false, magnetSize: 0.00635,
         pitch: 0.0254, magnetThickness: 0.003175, Br: 1.45, segments: 4,
         platenSize: 0.04445, platenMass: 0, maxOrder: 3 },
-      stator: { coilType: 'pcbhex', coilPitch: 0.0084667, coilFill: 0.84, statorSize: 0.102, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbSpareLayers: 1, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
+      stator: { coilType: 'pcbhex', coilPitch: 0.008466666666666667, coilFill: 0.84, statorSize: 0.102, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbSpareLayers: 1, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
       sim: { gap: 0.0015, iMax: 0.9, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
     },
   },
@@ -891,9 +891,20 @@ function renderBuild() {
   // stator has no copper to fabricate.
   const pcbCard = document.getElementById('pcbExportCard');
   if (isPcbCoil(app.cfg.stator.coilType)) {
-    const kc = buildKiCad(app.stator, app.cfg);
+    // The exports now run a full collision-checked placement plan (bridges,
+    // registers, sensors, service parts), which is seconds of work -- cache on
+    // the geometry, like the fit check above.
+    const bkey = [JSON.stringify(app.cfg.stator), app.sensorLayout?.available ? app.sensorLayout.spacing : 0].join('|');
+    if (bkey !== app._boardKey) {
+      app._kc = buildKiCad(app.stator, app.cfg, {
+        sensorSpacing: app.cfg.stator.pcbSpareLayers > 0 && app.sensorLayout?.available ? app.sensorLayout.spacing : null,
+      });
+      app._bp = buildDriverBackplane(app.stator, app.cfg);
+      app._boardKey = bkey;
+    }
+    const kc = app._kc;
     const s = kc.stats;
-    const bp = buildDriverBackplane(app.stator, app.cfg).stats;
+    const bp = app._bp.stats;
     const pv = coilPreviewSVG(app.cfg);
     const hex = app.cfg.stator.coilType === 'pcbhex';
     pcbCard.style.display = '';
@@ -911,6 +922,39 @@ function renderBuild() {
             : `<span style="color:var(--warn)">${pv.stats.contacts} through-hole(s) graze a wrong layer (ringed red) — the coil is too dense to route; lower the fill.</span>`}
         </div>
       </div>
+      ${(() => {
+        if (!(app.cfg.stator.pcbSpareLayers > 0)) return '';
+        const pkgName = { sop8: 'SOP-8 (TC118S)', dfn8: 'WSON-8 (DRV8837)', tssop16: 'TSSOP-16 (74HC595PW)', qfn16: 'DHVQFN-16 (74HC595BQ)' };
+        const bomFor = { sop8: 'TC118S', dfn8: 'DRV8837DSGR', tssop16: '74HC595PW,118', qfn16: '74HC595BQ,115' };
+        const nBridge = s.drivers, nReg = s.registers, nSens = s.sensors;
+        const bomRows = [
+          [BOM.find((b) => b.part === bomFor[s.bridgePackage]), nBridge],
+          [BOM.find((b) => b.part === bomFor[s.registerPackage]), nReg],
+          [BOM.find((b) => b.role.startsWith('flux sensor')), nSens],
+          [BOM.find((b) => b.role === 'dead-man FET'), 1],
+          [BOM.find((b) => b.role === 'decap'), (s.bridgePackage === 'dfn8' ? nBridge : 0) + 1],
+        ].filter(([b, n]) => b && n > 0);
+        const cost = bomRows.reduce((a, [b, n]) => a + b.unit * n, 0);
+        const fit = [
+          s.bridgesColliding ? `<span style="color:var(--warn)">${s.bridgesColliding} bridges could not clear the service parts — hand-place them</span>` : null,
+          s.bridgesMoved ? `${s.bridgesMoved} bridges re-searched around the header/dead-man` : null,
+          s.registersUnplaced ? `<span style="color:var(--warn)">${s.registersUnplaced} registers need manual placement</span>` : 'every register seated',
+          `${nSens} flux sensors placed`,
+        ].filter(Boolean).join(' · ');
+        let h2 = `<p style="font-size:12px;color:var(--ink-2);margin:0 0 6px"><b>Single-board electronics, as planned:</b>
+          ${nBridge} bridges in ${pkgName[s.bridgePackage] ?? s.bridgePackage} and ${nReg} shift registers in ${pkgName[s.registerPackage] ?? s.registerPackage} —
+          the plan escalates to smaller packages when a cell cannot host the bigger one without overlap (every placement is collision-checked against everything placed before it). ${fit}.</p>
+          <div class="table-wrap"><table><thead><tr><th style="text-align:left">Part</th><th>Qty</th><th style="text-align:left">LCSC</th><th>Stock</th><th>Unit</th><th>Line</th></tr></thead><tbody>`;
+        for (const [b, n] of bomRows) {
+          h2 += `<tr><td style="text-align:left">${b.part} <span style="color:var(--muted)">(${b.pkg})</span></td><td>${n}</td>
+            <td style="text-align:left"><a href="https://www.lcsc.com/product-detail/${b.lcsc}.html" target="_blank" rel="noopener">${b.lcsc}</a></td>
+            <td>${b.stock > 1 ? b.stock.toLocaleString() : '✓'}</td><td>$${b.unit.toFixed(3)}</td><td>$${(b.unit * n).toFixed(2)}</td></tr>`;
+          if (b.note) h2 += `<tr><td colspan="6" style="text-align:left;color:var(--muted);font-size:11px;padding-top:0">${b.note}</td></tr>`;
+        }
+        h2 += `</tbody></table></div>
+          <p style="font-size:12px;color:var(--muted);margin:6px 0 10px"><b>≈ $${cost.toFixed(0)} of silicon</b> drives every coil independently — LCSC stock and prices fetched 2026-07, at the quantity break this board lands in. Part numbers rot; re-verify before ordering.</p>`;
+        return h2;
+      })()}
       <button id="btnKicad" class="ghost">Download coil board</button>
       <button id="btnBackplane" class="ghost">Download driver backplane</button>
       <button id="btnTile" class="ghost">Download 3×3 tile</button>
@@ -939,9 +983,9 @@ function renderBuild() {
     };
     const key = app.presetKey ?? 'design';
     document.getElementById('btnKicad').onclick = () =>
-      dl(buildKiCad(app.stator, app.cfg).text, `maglev-coils-${key}-${s.layers}L.kicad_pcb`);
+      dl(app._kc.text, `maglev-coils-${key}-${s.layers}L.kicad_pcb`);
     document.getElementById('btnBackplane').onclick = () =>
-      dl(buildDriverBackplane(app.stator, app.cfg).text, `maglev-backplane-${key}.kicad_pcb`);
+      dl(app._bp.text, `maglev-backplane-${key}.kicad_pcb`);
     document.getElementById('btnTile').onclick = () =>
       dl(buildTile(app.cfg, 3).text, `maglev-tile3x3-${key}-${s.layers}L.kicad_pcb`);
     document.getElementById('btnTileBp').onclick = () =>
@@ -950,10 +994,7 @@ function renderBuild() {
     // coil pin, and each sensor's bus/address. Generated by the same code that
     // placed the parts, so it cannot go stale against the board.
     document.getElementById('btnFwMap').onclick = () => {
-      const single = app.cfg.stator.pcbSpareLayers > 0
-        ? buildKiCad(app.stator, app.cfg, { sensorSpacing: app.sensorLayout?.available ? app.sensorLayout.spacing : null })
-        : null;
-      const contract = single?.contract ?? buildDriverBackplane(app.stator, app.cfg).contract;
+      const contract = app._kc.contract ?? app._bp.contract;
       dl(JSON.stringify(contract, null, 2), `maglev-fwmap-${key}.json`);
     };
   } else {

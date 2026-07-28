@@ -283,10 +283,17 @@ console.log('\n=== electronics-layer fit: the parts land clear of the via fields
   check('a per-cell SOP-8 bridge fits (the single-board build is viable)',
     fit.parts.sop8.fits === true,
     fit.parts.sop8.fits ? `at (${fit.parts.sop8.at.map((v) => v.toFixed(2))}) rot ${fit.parts.sop8.rotDeg}°` : '');
-  check('the DFN fallback and the sensor package fit too',
-    fit.parts.dfn8.fits && fit.parts.sot23_6.fits);
-  check('the shift register (1 per 4 coils, sparse) finds a spot',
-    fit.parts.tssop16.fits === true);
+  check('the DFN fallback fits too', fit.parts.dfn8.fits === true);
+  // The register and sensor verdicts are now judged BESIDE the chosen bridge
+  // (obs2), and at 0.84 fill the honest answer is that nothing else tiles
+  // per-cell next to a SOP-8 -- the cell is full. That discovery is the whole
+  // reason the overlapping-driver bug existed: the old card said "fits" while
+  // grading an empty cell. What must still succeed is the sparse PLAN below.
+  check('the full plan still places every register (package escalation)',
+    fit.registers && fit.registers.every((r) => r.fits),
+    fit.registers ? `${fit.registers.length} registers as ${fit.planStats.regPackage}` : 'no plan');
+  check('a dense cell escalates the register package rather than overlapping',
+    ['tssop16', 'qfn16'].includes(fit.planStats.regPackage));
   // The search must not be grading its own homework: re-verify every returned
   // placement independently through placementClear.
   const obs = backsideObstacles(hcfg);
@@ -301,8 +308,12 @@ console.log('\n=== electronics-layer fit: the parts land clear of the via fields
   const fw = backsideFit(hcfg, { footprints: { tooBig } });
   check('a part bigger than the pitch both ways is rejected by the tiling check',
     fw.parts.tooBig.fits === false);
-  check('sensor grid places completely with a modest nudge',
-    fit.sensors && fit.sensors.failed === 0 && fit.sensors.worstNudgeMm < 2.0,
+  // The nudge budget is 2.5 mm (a RADIUS now, not a box corner), and the
+  // sensors dodge REAL parts -- bridges included -- so nudges run larger than
+  // when the search graded a bare cell. The observability cost of the placed
+  // grid is what actually matters, and analysis.test re-checks it as-placed.
+  check('sensor grid places completely within its nudge budget',
+    fit.sensors && fit.sensors.failed === 0 && fit.sensors.worstNudgeMm <= 2.5 + 1e-9,
     fit.sensors ? `${fit.sensors.placed}/${fit.sensors.wanted}, worst nudge ${fit.sensors.worstNudgeMm.toFixed(2)} mm` : '');
   check('no electronics layer -> no single-board fit to report',
     backsideFit({ stator: { ...cfg.stator, coilType: 'pcbhex' } }).available === false);
@@ -361,9 +372,11 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
   const dstat = makeStator({ ...dcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
   const out = buildKiCad(dstat, dcfg, { sensorSpacing: 0.0216 });
   check('single-board export is balanced', (out.text.match(/\(/g) || []).length === (out.text.match(/\)/g) || []).length);
-  check('one bridge per coil on the electronics layer',
+  check('one bridge per coil on the electronics layer (in the chosen package)',
     out.stats.drivers === dstat.coils.length
-    && (out.text.match(/maglev:SOP8HB/g) || []).length === dstat.coils.length);
+    && (out.text.match(/maglev:(SOP8HB|DFN8HB)/g) || []).length === dstat.coils.length
+    && ['sop8', 'dfn8'].includes(out.stats.bridgePackage),
+    `${out.stats.drivers} bridges as ${out.stats.bridgePackage}`);
   check('registers and sensors emitted match the stats',
     (out.text.match(/maglev:SR595/g) || []).length === out.stats.registers
     && (out.text.match(/maglev:TMAG/g) || []).length === out.stats.sensors && out.stats.sensors > 0);
@@ -381,6 +394,87 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
   const pstat = makeStator({ ...pcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
   const passive = buildKiCad(pstat, pcfg);
   check('a board with no electronics layer stays passive', passive.stats.drivers === 0 && !passive.contract);
+
+  // --- DRC-lite: no two different-net copper items may overlap -------------
+  // This is the check whose absence shipped a driver section full of stacked
+  // pads: registers on bridges, sensors on vias, terminal pads drawn at the
+  // wrong angle. Parse every pad, via and track back out of the emitted text,
+  // reconstruct the copper exactly as KiCad draws it (footprints are emitted
+  // unrotated; a pad's angle is literal, CCW in the y-up sense, so in file
+  // coordinates the box rotates by MINUS the stated angle -- measured off
+  // kicad-cli renders), and demand zero different-net overlaps.
+  const parseCopper = (text) => {
+    const pads = [], vias = [], tracks = [];
+    const fpRe = /\(footprint "([^"]+)" \(layer "([^"]+)"\) \(at ([-\d.]+) ([-\d.]+)( [-\d.]+)?\)([\s\S]*?)\n  \)/g;
+    let m;
+    while ((m = fpRe.exec(text))) {
+      const [, lib, layer, fx, fy, fAng, body] = m;
+      if (fAng && Math.abs(+fAng) > 1e-9) pads.push({ err: `footprint ${lib} emitted with a rotation` });
+      const padRe = /\(pad "[^"]*" smd rect \(at ([-\d.]+) ([-\d.]+)( [-\d.]+)?\) \(size ([-\d.]+) ([-\d.]+)\) \(layers "([^"]+)"[^)]*\)(?: \(clearance [-\d.]+\))? \(net (\d+)/g;
+      let p;
+      while ((p = padRe.exec(body))) {
+        pads.push({ lib, side: p[6].split('.')[0], cx: +m[3] + +p[1], cy: +m[4] + +p[2],
+          w: +p[4], h: +p[5], ang: -(+(p[3] ?? 0) * Math.PI) / 180, net: +p[7] });
+      }
+    }
+    const viaRe = /\(via \(at ([-\d.]+) ([-\d.]+)\) \(size ([-\d.]+)\)[^\n]*\(net (\d+)\)/g;
+    while ((m = viaRe.exec(text))) vias.push({ x: +m[1], y: +m[2], r: +m[3] / 2, net: +m[4] });
+    const segRe = /\(segment \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(width ([-\d.]+)\) \(layer "([^"]+)"\) \(net (\d+)\)/g;
+    while ((m = segRe.exec(text))) {
+      const [x0, y0, x1, y1, w] = [+m[1], +m[2], +m[3], +m[4], +m[5]];
+      tracks.push({ side: m[6].split('.')[0], cx: (x0 + x1) / 2, cy: (y0 + y1) / 2,
+        w: Math.hypot(x1 - x0, y1 - y0) + w, h: w, ang: Math.atan2(y1 - y0, x1 - x0), net: +m[7] });
+    }
+    return { pads, vias, tracks };
+  };
+  const corners = (r) => {
+    const c = Math.cos(r.ang), s = Math.sin(r.ang), hw = r.w / 2, hh = r.h / 2;
+    return [[hw, hh], [hw, -hh], [-hw, -hh], [-hw, hh]]
+      .map(([x, y]) => [r.cx + x * c - y * s, r.cy + x * s + y * c]);
+  };
+  const overlap = (a, b) => {
+    for (const r of [a, b]) {
+      for (const [ux, uy] of [[Math.cos(r.ang), Math.sin(r.ang)], [-Math.sin(r.ang), Math.cos(r.ang)]]) {
+        const pa = corners(a).map(([x, y]) => x * ux + y * uy);
+        const pb = corners(b).map(([x, y]) => x * ux + y * uy);
+        if (Math.max(...pa) <= Math.min(...pb) || Math.max(...pb) <= Math.min(...pa)) return false;
+      }
+    }
+    return true;
+  };
+  const hitsVia = (r, v) => {
+    const c = Math.cos(r.ang), s = Math.sin(r.ang), dx = v.x - r.cx, dy = v.y - r.cy;
+    const lx = dx * c + dy * s, ly = -dx * s + dy * c;
+    const qx = Math.max(Math.abs(lx) - r.w / 2, 0), qy = Math.max(Math.abs(ly) - r.h / 2, 0);
+    return qx * qx + qy * qy < v.r * v.r;
+  };
+  const drcLite = (text, name) => {
+    const { pads, vias, tracks } = parseCopper(text);
+    const bad = pads.filter((p) => p.err).map((p) => p.err);
+    const rects = pads.filter((p) => !p.err).concat(tracks);
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i], b = rects[j];
+        if (a.side !== b.side || a.net === b.net) continue;
+        if (Math.abs(a.cx - b.cx) > 12 || Math.abs(a.cy - b.cy) > 12) continue;
+        if (overlap(a, b)) bad.push(`${a.lib ?? 'track'}[${a.net}] on ${b.lib ?? 'track'}[${b.net}] at (${a.cx.toFixed(1)},${a.cy.toFixed(1)})`);
+      }
+      for (const v of vias) {
+        if (rects[i].net === v.net) continue;
+        if (Math.abs(rects[i].cx - v.x) > 6 || Math.abs(rects[i].cy - v.y) > 6) continue;
+        if (hitsVia(rects[i], v)) bad.push(`${rects[i].lib ?? 'track'}[${rects[i].net}] on via[${v.net}] at (${v.x.toFixed(1)},${v.y.toFixed(1)})`);
+      }
+    }
+    check(`${name}: no two different-net copper items overlap`, bad.length === 0,
+      bad.length ? `${bad.length} overlaps, e.g. ${bad[0]}` : `${rects.length} rects, ${vias.length} vias clean`);
+  };
+  drcLite(out.text, 'single-board');
+  drcLite(bp.text, 'backplane');
+  // And the terminal pads specifically: footprint unrotated, angle on the pad,
+  // negated from the plan frame -- the exact combination that renders the
+  // rectangle validatePcb approved.
+  const term = /\(footprint "maglev:Term" \(layer "B.Cu"\) \(at [-\d.]+ [-\d.]+\)[\s\S]*?\(pad "1" smd rect \(at 0 0( [-\d.]+)?\)/.exec(out.text);
+  check('terminal pads carry their rotation on the pad, not the footprint', !!term);
 }
 
 // The self-tileable outline: the board edge follows the coil-cell boundary, so

@@ -450,19 +450,44 @@ export function validatePcb(g, N, cellHalf, viaSize) {
 }
 
 // One SMD pad of a footprint on side S ('F' or 'B'), on a given net.
-// Coordinates are footprint-relative (mm).
-function fpPad(n, px, py, w, h, netNum, netName, S = 'F', rot = 0) {
-  return `    (pad "${n}" smd rect (at ${px} ${py}${rot ? ` ${rot}` : ''}) (size ${w} ${h}) (layers "${S}.Cu" "${S}.Paste" "${S}.Mask") (net ${netNum} "${netName}"))`;
+// Coordinates are footprint-relative (mm). `clr` is a pad-level clearance
+// override for land patterns whose own pads sit closer than the netclass
+// demands (the WSON exposed pad is 0.1 mm from its perimeter pads by the
+// manufacturer's drawing -- that is the part, not a layout mistake).
+function fpPad(n, px, py, w, h, netNum, netName, S = 'F', rot = 0, clr = 0) {
+  return `    (pad "${n}" smd rect (at ${px} ${py}${rot ? ` ${rot}` : ''}) (size ${w} ${h}) (layers "${S}.Cu" "${S}.Paste" "${S}.Mask")${clr ? ` (clearance ${clr})` : ''} (net ${netNum} "${netName}"))`;
 }
 
-/** Rotate a local pad position by rotDeg with EXACTLY the math placementClear
- *  verified against the keepouts. Rotated parts are emitted as unrotated
- *  footprints with pre-rotated pad positions (plus per-pad angles), so the pads
- *  land at the literal coordinates the fit search cleared -- immune to any
- *  disagreement about KiCad's rotation handedness. */
-function rotXY(px, py, rotDeg) {
+/** Emit one part at file position `at`, rotated `rotDeg` (math CCW in the
+ *  world y-up frame), with `fp.pads` given in the WORLD frame -- the exact
+ *  table the fit search cleared. This is the single place the world -> file
+ *  conversion happens: positions rotate in the world frame then negate y
+ *  (KiCad files are y-down), while the pad ANGLE passes through unchanged
+ *  (KiCad's angle convention is CCW-positive in the y-up sense; both facts
+ *  measured off kicad-cli renders, not assumed). The courtyard polygon and
+ *  reference text rotate WITH the pads -- a chip drawn at 0 degrees with its
+ *  pads swung 120 degrees away is how this bug was first seen.
+ *  `nets` maps pad index -> net, in fp.pads order. */
+function emitPart(L, { lib, value, ref, S, at, rotDeg, fp, nets, f }) {
+  const m = S === 'B' ? ' (justify mirror)' : '';
   const a = (rotDeg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
-  return [px * c - py * s, px * s + py * c];
+  const w2f = (px, py) => [px * c - py * s, -(px * s + py * c)];
+  const [bx, by] = fp.bodyOff ?? [0, 0];
+  const refY = (fp.body[1] / 2 + 0.7);
+  L.push(`  (footprint "maglev:${lib}" (layer "${S}.Cu") (at ${f(at[0])} ${f(at[1])})`);
+  L.push('    (attr smd)');
+  const [tx0, ty0] = w2f(bx, by + refY);
+  L.push(`    (fp_text reference "${ref}" (at ${f(tx0)} ${f(ty0)} ${f(rotDeg)}) (layer "${S}.SilkS") (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  L.push(`    (fp_text value "${value}" (at ${f(tx0)} ${f(ty0 + 0.8)}) (layer "${S}.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+    .map(([sx, sy]) => w2f(bx + (sx * fp.body[0]) / 2, by + (sy * fp.body[1]) / 2));
+  L.push(`    (fp_poly (pts ${corners.map(([x, y]) => `(xy ${f(x)} ${f(y)})`).join(' ')}) (layer "${S}.CrtYd") (width 0.05) (fill none))`);
+  fp.pads.forEach(([px, py, w, h, clr], k) => {
+    const net = nets[k] ?? { num: 0, name: '' };
+    const [rx, ry] = w2f(px, py);
+    L.push(fpPad(k + 1, f(rx), f(ry), w, h, net.num, net.name, S, f(rotDeg), clr ?? 0));
+  });
+  L.push('  )');
 }
 
 /** An integrated H-bridge power stage (VBUS, GND, two outputs, two PWM inputs)
@@ -484,18 +509,6 @@ function emitPowerStage(L, ref, ox, oy, f, S, vbus, gnd, outA, outAn, outB, outB
   L.push('  )');
 }
 
-/** A 0402 decoupling cap across VBUS/GND on side S. */
-function emitDecap(L, ref, ox, oy, f, S, vbus, gnd) {
-  const m = S === 'B' ? ' (justify mirror)' : '';
-  L.push(`  (footprint "maglev:C0402" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
-  L.push('    (attr smd)');
-  L.push(`    (fp_text reference "${ref}" (at 0 -0.6) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
-  L.push(`    (fp_text value "100n" (at 0 0.6) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
-  L.push(`    (fp_rect (start -0.55 -0.35) (end 0.55 0.35) (layer "${S}.CrtYd") (width 0.05))`);
-  L.push(fpPad(1, -0.5, 0, 0.4, 0.5, vbus, 'VBUS', S));
-  L.push(fpPad(2, 0.5, 0, 0.4, 0.5, gnd, 'GND', S));
-  L.push('  )');
-}
 
 /** A small n×n coil TILE, sized to exactly n coil cells so copies abut into a
  *  seamless larger stator. Same coils, vias, rounded corners and I/O pads as the
@@ -585,31 +598,123 @@ export function buildDriverBackplane(stator, cfg) {
   zone(netGND, 'GND', 'B.Cu');
   zone(netVBUS, 'VBUS', 'F.Cu');
 
-  let drivers = 0, decaps = 0, mating = 0;
+  // Placement accumulates into `placed` exactly like the single-board plan:
+  // bridges and caps first (per cell), then the registers searched clear of
+  // them, then dead-man and header -- so nothing lands on anything else. The
+  // only per-cell copper here is the two mating vias.
+  const obsB = {
+    // Same frame flip as backsideObstacles: plan y is file y, planning is y-up.
+    discs: plan.termVias.map((v) => ({ x: v.p[0], y: -v.p[1], r: via / 2 })),
+    rects: [], cellHalf, offsets: [],
+  };
+  const CLR = 0.2;
+  const placed = [];
+  let drivers = 0, decaps = 0, mating = 0, decapsMoved = 0, regsFallback = 0, outSwapped = 0;
   for (let ci = 0; ci < C; ci++) {
     const c = stator.coils[ci];
-    const ox = cx0 + c.x * 1000, oy = cy0 - c.y * 1000;
+    const cwx = c.x * 1000, cwy = c.y * 1000;
+    const ox = cx0 + cwx, oy = cy0 - cwy;
     const tx = (p0) => f(ox + p0), ty = (p1) => f(oy + p1);
-    // The H-bridge sits at the coil centre (mates over the coil's hole), cap beside it.
-    emitPowerStage(L, `U${ci}`, ox, oy, f, 'F', netVBUS, netGND, oA(ci), `OUTA_${ci}`, oB(ci), `OUTB_${ci}`, pA(ci), `PWMA_${ci}`, pB(ci), `PWMB_${ci}`);
-    emitDecap(L, `C${ci}`, ox + 1.7, oy, f, 'F', netVBUS, netGND);
-    drivers++; decaps++;
-    // Mating vias at the coil's two terminal pockets, on the bridge outputs, so
-    // the connector picks up each coil end. Route the output pad to its via.
-    const outNets = [oA(ci), oB(ci)];
+    // Each output pad routes to the NEARER mating via -- a straight run to the
+    // parity-assigned one used to slice across the chip's other pads. Swapping
+    // the outputs flips the bridge, so the PWM pair swaps WITH them: (IN1,IN2)
+    // -> (OUTA,OUTB) is symmetric and the commanded coil polarity is exactly
+    // preserved, per-cell, with the swap recorded in the net assignment.
+    const padA = [-0.9, 0.65], padB = [0.9, -0.65];          // OUTA / OUTB pads, file frame
+    const tv0 = plan.termVias[0].p, tv1 = plan.termVias[1].p;
+    const dStraight = Math.hypot(padA[0] - tv0[0], padA[1] - tv0[1]) + Math.hypot(padB[0] - tv1[0], padB[1] - tv1[1]);
+    const dSwapped = Math.hypot(padA[0] - tv1[0], padA[1] - tv1[1]) + Math.hypot(padB[0] - tv0[0], padB[1] - tv0[1]);
+    const swap = dSwapped < dStraight;         // pad A pairs with the far-parity via
+    if (swap) outSwapped++;
+    // Outputs keep their own names on their own pads; the swap re-pairs the
+    // ROUTING (which via each pad reaches) and compensates the polarity flip
+    // by exchanging which PWM net drives IN1 vs IN2.
+    const [nPa, nPan, nPb, nPbn] = swap
+      ? [pB(ci), `PWMB_${ci}`, pA(ci), `PWMA_${ci}`] : [pA(ci), `PWMA_${ci}`, pB(ci), `PWMB_${ci}`];
+    emitPowerStage(L, `U${ci}`, ox, oy, f, 'F', netVBUS, netGND, oA(ci), `OUTA_${ci}`, oB(ci), `OUTB_${ci}`, nPa, nPan, nPb, nPbn);
+    placed.push(...partRects(BACKPLANE_FPS.hb6, cwx, cwy, 0));
+    // Dogleg stubs to the PAIRED via: exit the pad OUTWARD (clear of the
+    // chip's own column), then run straight. Every segment becomes an
+    // obstacle, so the decap, registers and service parts route around the
+    // copper, not through it.
+    const stubs = swap
+      ? [[padA, tv1, oA(ci)], [padB, tv0, oB(ci)]]
+      : [[padA, tv0, oA(ci)], [padB, tv1, oB(ci)]];
+    for (const [pad, tv, net] of stubs) {
+      const exit = [pad[0] + Math.sign(pad[0]) * 0.75, pad[1]];
+      for (const [a, b] of [[pad, exit], [exit, tv]]) {
+        L.push(`  (segment (start ${tx(a[0])} ${ty(a[1])}) (end ${tx(b[0])} ${ty(b[1])}) (width ${f(g.trace)}) (layer "F.Cu") (net ${net}))`);
+        // File frame -> world frame for the obstacle list: negate y and angle.
+        const mx = cwx + (a[0] + b[0]) / 2, my = cwy - (a[1] + b[1]) / 2;
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        placed.push({ cx: mx, cy: my, w: len + g.trace, h: g.trace, ang: -Math.atan2(b[1] - a[1], b[0] - a[0]) });
+      }
+    }
     plan.termVias.forEach(({ p: tv }, k) => {
-      const net = outNets[k % 2];
+      const net = ((k % 2 === 0) !== swap) ? oA(ci) : oB(ci);
       L.push(`  (via (at ${tx(tv[0])} ${ty(tv[1])}) (size ${f(via)}) (drill ${f(drill)}) (layers "F.Cu" "B.Cu") (net ${net}))`);
-      const pad = k % 2 === 0 ? [-0.9, 0.65] : [0.9, -0.65]; // OUTA / OUTB pad
-      L.push(`  (segment (start ${tx(pad[0])} ${ty(pad[1])}) (end ${tx(tv[0])} ${ty(tv[1])}) (width ${f(g.trace)}) (layer "F.Cu") (net ${net}))`);
       mating++;
     });
+    // The cap beside the chip -- searched, not assumed, so it clears the
+    // bridge and the stubs by the same margin everything else keeps.
+    const dp = placeWorld(BACKPLANE_FPS.c0402, [cwx + 2.2, cwy], stator.coils, obsB, placed, CLR, 1.5, 0.25, [0, Math.PI / 2]);
+    const dAt = dp.fits ? dp.at : [cwx + 2.2, cwy];
+    if (dp.fits && dp.offMm > 0.01) decapsMoved++;
+    // Emitted through the same converter the plan used, so a cap the search
+    // stood on end (90 degrees) is DRAWN on end, not flattened back to 0.
+    emitPart(L, {
+      lib: 'C0402', value: '100n', ref: `C${ci}`, S: 'F',
+      at: [cx0 + dAt[0], cy0 - dAt[1]], rotDeg: dp.fits ? dp.rotDeg : 0,
+      fp: BACKPLANE_FPS.c0402, nets: [{ num: netVBUS, name: 'VBUS' }, { num: netGND, name: 'GND' }], f,
+    });
+    placed.push(...partRects(BACKPLANE_FPS.c0402, dAt[0], dAt[1], dp.fits ? (dp.rotDeg * Math.PI) / 180 : 0));
+    drivers++; decaps++;
   }
 
-  // The shift chain that makes the PWM nets real: one 595 per serpentine quad
-  // at its quad's centroid, DS -> Q7S daisy-chained in the same order.
-  for (let r = 0; r < M; r++) {
-    const reg = chain.registers[r];
+  // Dead-man and header go in before the registers: the registers can move
+  // anywhere near their quads, the service strip cannot.
+  const dmT = [-(half - 9), -(half - 3)], hdT = [0, -(half - 3)];
+  const dmP = placeWorld(SERVICE_FPS.deadman, dmT, stator.coils, obsB, placed, CLR, cellHalf * 2, 0.25, [0]);
+  const dmAt = dmP.fits ? dmP.at : dmT;
+  placed.push(...partRects(SERVICE_FPS.deadman, dmAt[0], dmAt[1], 0));
+  emitDeadman(L, cx0 + dmAt[0], cy0 - dmAt[1], f, 'F', spine);
+  const hdP = placeWorld(SERVICE_FPS.header, hdT, stator.coils, obsB, placed, CLR, cellHalf * 2, 0.25, [0]);
+  const hdAt = hdP.fits ? hdP.at : hdT;
+  placed.push(...partRects(SERVICE_FPS.header, hdAt[0], hdAt[1], 0));
+  emitHeader(L, cx0 + hdAt[0], cy0 - hdAt[1], f, 'F', [
+    { num: netVBUS, name: 'VBUS' }, { num: netGND, name: 'GND' }, spine.vcc,
+    dataNet(0), dataNet(M), spine.sclk, spine.rclk, spine.sync, spine.sda, spine.scl,
+  ]);
+
+  // The shift chain that makes the PWM nets real: one 595 per serpentine
+  // quad, searched clear of the bridges, caps, stubs and service parts. Same
+  // package escalation as the single-board plan: TSSOP-16 if it fits (it is
+  // marginal between hex bridges once the stubs are honest obstacles), else
+  // the DHVQFN-16.
+  let regPkg = 'qfn16', regPlan = null, regBest = null;
+  for (const pkg of ['tssop16', 'qfn16']) {
+    const mark = placed.length;
+    const out = [];
+    let fails = 0;
+    for (const reg of chain.registers) {
+      const p = placeWorld(FOOTPRINTS[pkg], [reg.x, reg.y], stator.coils, obsB, placed, CLR, cellHalf * 2, 0.5);
+      if (!p.fits && ++fails >= 3 && pkg !== 'qfn16') break;
+      const at = p.fits ? p.at : [reg.x, reg.y];
+      placed.push(...partRects(FOOTPRINTS[pkg], at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
+      out.push({ reg, at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits });
+    }
+    // Any fallback keeps escalating: seat every register or try smaller.
+    if (out.length === chain.registers.length && (!regBest || fails < regBest.fails)) {
+      regBest = { out, pkg, fails, rects: placed.slice(mark) };
+    }
+    placed.length = mark;
+    if (regBest && regBest.fails === 0) break;
+  }
+  placed.push(...regBest.rects);
+  regPlan = regBest.out;
+  regPkg = regBest.pkg;
+  regPlan.forEach(({ reg, at, rotDeg, fits }, r) => {
+    if (!fits) regsFallback++;
     const q = Array.from({ length: 8 }, (_, k) => {
       const coil = reg.coils[k >> 1];
       if (coil == null) return { num: 0, name: '' };
@@ -617,17 +722,11 @@ export function buildDriverBackplane(stator, cfg) {
         ? { num: pA(coil), name: `PWMA_${coil}` }
         : { num: pB(coil), name: `PWMB_${coil}` };
     });
-    emitShift595(L, reg.ref, cx0 + reg.x, cy0 - reg.y, 0, f, 'F', {
+    emitShift595(L, reg.ref, cx0 + at[0], cy0 - at[1], rotDeg, f, 'F', {
       vcc: spine.vcc, gnd: spine.gnd, sclk: spine.sclk, rclk: spine.rclk,
       oen: spine.oen, ds: dataNet(r), q7s: dataNet(r + 1), q,
-    });
-  }
-  // Dead-man in the south-west margin, header along the south edge.
-  emitDeadman(L, cx0 - half + 4, cy0 + half - 3, f, 'F', spine);
-  emitHeader(L, cx0, cy0 + half - 3, f, 'F', [
-    { num: netVBUS, name: 'VBUS' }, { num: netGND, name: 'GND' }, spine.vcc,
-    dataNet(0), dataNet(M), spine.sclk, spine.rclk, spine.sync, spine.sda, spine.scl,
-  ]);
+    }, regPkg);
+  });
 
   L.push(')');
   return {
@@ -635,7 +734,8 @@ export function buildDriverBackplane(stator, cfg) {
     stats: {
       drivers, decaps, mating, layers: 2, coils: C, boardMm: 2 * half,
       driverTopology: 'H-bridge per coil (independent)',
-      registers: M, chainBits: chain.bits,
+      registers: M, chainBits: chain.bits, registersUnplaced: regsFallback,
+      registerPackage: regPkg, decapsMoved, outSwapped,
       nets: 2 + 4 * C + 8 + (M + 1),
     },
     // Firmware's contract with the copper: which frame bit reaches which coil
@@ -658,8 +758,7 @@ export function buildKiCad(stator, cfg, opts = {}) {
   const elec = cfg.stator.pcbSpareLayers > 0
     ? backsideFit(cfg, { stator, sensorSpacing: opts.sensorSpacing ?? null })
     : null;
-  const bridgeFit = elec?.available && elec.parts.sop8.fits ? elec.parts.sop8 : null;
-  const chain = elec?.available ? chainPlan(stator, cfg) : null;
+  const chain = elec?.available ? elec.chain : null;
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const drill = via * 0.5;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
@@ -774,12 +873,21 @@ export function buildKiCad(stator, cfg, opts = {}) {
       vias++;
     }
     // The coil's input/output SMT pads on the back, at the terminal vias.
+    // The footprint is emitted UNROTATED with the angle on the pad itself:
+    // KiCad takes a pad's angle literally (it is not composed with the
+    // footprint's), so a rotated footprint around an angle-0 pad draws an
+    // axis-aligned pad -- copper validatePcb never approved. Proven against
+    // kicad-cli renders before this was changed.
     (plan.termPads || []).forEach((pad, k) => {
-      L.push(`  (footprint "maglev:Term" (layer "B.Cu") (at ${tx(pad.p[0])} ${ty(pad.p[1])} ${f((pad.a || 0) * 180 / Math.PI)})`);
+      // Plan angles live in the board's y-down frame, so the world angle is
+      // -p.a -- and KiCad pad angles are CCW in the y-up sense (measured off
+      // kicad-cli renders), so the world angle is what gets written.
+      const deg = (-(pad.a || 0) * 180) / Math.PI;
+      L.push(`  (footprint "maglev:Term" (layer "B.Cu") (at ${tx(pad.p[0])} ${ty(pad.p[1])})`);
       L.push('    (attr smd)');
       L.push(`    (fp_text reference "J${ci}.${k === 0 ? 'IN' : 'OUT'}" (at 0 -${f(pad.h / 2 + 0.3)}) (layer "B.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
       L.push(`    (fp_text value "term" (at 0 0) (layer "B.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05)) (justify mirror)))`);
-      L.push(`    (pad "1" smd rect (at 0 0) (size ${f(pad.w)} ${f(pad.h)}) (layers "B.Cu" "B.Paste" "B.Mask") (net ${net} "coil_${ci}"))`);
+      L.push(`    (pad "1" smd rect (at 0 0 ${f(deg)}) (size ${f(pad.w)} ${f(pad.h)}) (layers "B.Cu" "B.Paste" "B.Mask") (net ${net} "coil_${ci}"))`);
       L.push('  )');
       termPads++;
     });
@@ -794,56 +902,51 @@ export function buildKiCad(stator, cfg, opts = {}) {
   let bridges = 0, sensorCount = 0, regsFallback = 0;
   let contract = null;
   if (elec?.available) {
-    const bx = (ci, lx) => cx0 + stator.coils[ci].x * 1000 + lx;
-    const by = (ci, ly) => cy0 - stator.coils[ci].y * 1000 + ly;
-    if (bridgeFit) {
-      for (let ci = 0; ci < C; ci++) {
-        emitBridge8(L, `U${ci}`, bx(ci, bridgeFit.at[0]), by(ci, bridgeFit.at[1]), bridgeFit.rotDeg, f, 'B', {
-          in1: pwmA(ci), in2: pwmB(ci), vbus: spine.vbus, gnd: spine.gnd,
-          outa: { num: ci + 1, name: `coil_${ci}` }, outb: { num: ci + 1, name: `coil_${ci}` },
+    // World mm (y-up) -> board file mm. Every planned position goes through
+    // this one mapping, so the copper lands exactly where the plan cleared it.
+    const wx = (x) => cx0 + x, wy = (y) => cy0 - y;
+    const bridgePkg = elec.planStats?.bridgePackage ?? 'sop8';
+    for (const b of elec.bridges ?? []) {
+      emitBridge8(L, `U${b.coil}`, wx(b.at[0]), wy(b.at[1]), b.rotDeg, f, 'B', {
+        in1: pwmA(b.coil), in2: pwmB(b.coil), vbus: spine.vbus, gnd: spine.gnd,
+        outa: { num: b.coil + 1, name: `coil_${b.coil}` }, outb: { num: b.coil + 1, name: `coil_${b.coil}` },
+      }, bridgePkg);
+      if (b.cap) {
+        emitPart(L, {
+          lib: 'C0402', value: '100n', ref: `C${b.coil}`, S: 'B',
+          at: [wx(b.cap.at[0]), wy(b.cap.at[1])], rotDeg: b.cap.rotDeg,
+          fp: BACKPLANE_FPS.c0402, nets: [spine.vbus, spine.gnd], f,
         });
-        bridges++;
       }
+      bridges++;
     }
-    const obsB = backsideObstacles(cfg);
     const M = chain.registers.length;
-    for (let r = 0; r < M; r++) {
-      const reg = chain.registers[r];
-      let bi = 0, bd = Infinity;
-      for (let k = 0; k < C; k++) {
-        const d = Math.hypot(stator.coils[k].x * 1000 - reg.x, stator.coils[k].y * 1000 - reg.y);
-        if (d < bd) { bd = d; bi = k; }
-      }
-      const p = placeInCell(FOOTPRINTS.tssop16, obsB, elec.clearance, 3.5,
-        [reg.x - stator.coils[bi].x * 1000, reg.y - stator.coils[bi].y * 1000], 0.5);
-      // No clear spot: emit at the centroid anyway and count it, so the stats
-      // say "N registers need manual placement" instead of dropping them.
-      const at = p.fits ? p.at : [reg.x - stator.coils[bi].x * 1000, reg.y - stator.coils[bi].y * 1000];
-      if (!p.fits) regsFallback++;
+    (elec.registers ?? []).forEach((reg, r) => {
+      if (!reg.fits) regsFallback++;
       const q = Array.from({ length: 8 }, (_, k) => {
         const coil = reg.coils[k >> 1];
         if (coil == null) return { num: 0, name: '' };
         return k % 2 === 0 ? pwmA(coil) : pwmB(coil);
       });
-      emitShift595(L, reg.ref, bx(bi, at[0]), by(bi, at[1]), p.fits ? p.rotDeg : 0, f, 'B', {
+      emitShift595(L, reg.ref, wx(reg.at[0]), wy(reg.at[1]), reg.rotDeg, f, 'B', {
         vcc: spine.vcc, gnd: spine.gnd, sclk: spine.sclk, rclk: spine.rclk,
         oen: spine.oen, ds: dataNet(r), q7s: dataNet(r + 1), q,
-      });
-    }
+      }, elec.planStats?.regPackage ?? 'tssop16');
+    });
     const sensorContract = [];
     if (elec.sensors) {
       elec.sensors.list.forEach((s, k) => {
         const bus = k >> 2;
-        emitSensor(L, `MS${k}`, bx(s.coil, s.local[0]), by(s.coil, s.local[1]), 0, f, 'B', {
+        emitSensor(L, `MS${k}`, wx(s.atMm[0]), wy(s.atMm[1]), s.rotDeg, f, 'B', {
           scl: spine.scl, gnd: spine.gnd, sda: sdaNet(bus),
           int: spine.sync, vcc: spine.vcc,
         });
-        sensorContract.push({ ref: `MS${k}`, bus, addrVariant: k % 4, atMm: s.atMm, nudgeMm: s.nudgeMm });
+        sensorContract.push({ ref: `MS${k}`, bus, addrVariant: k % 4, atMm: s.atMm, nudgeMm: s.nudgeMm, rotDeg: s.rotDeg });
         sensorCount++;
       });
     }
-    emitDeadman(L, cx0 - half + 4, cy0 + half - 3, f, 'B', spine);
-    emitHeader(L, cx0, cy0 + half - 3, f, 'B', [
+    emitDeadman(L, wx(elec.service.deadman.at[0]), wy(elec.service.deadman.at[1]), f, 'B', spine);
+    emitHeader(L, wx(elec.service.header.at[0]), wy(elec.service.header.at[1]), f, 'B', [
       spine.vbus, spine.gnd, spine.vcc, dataNet(0), dataNet(M),
       spine.sclk, spine.rclk, spine.sync, nSensBus > 0 ? sdaNet(0) : spine.scl, spine.scl,
     ]);
@@ -870,7 +973,12 @@ export function buildKiCad(stator, cfg, opts = {}) {
         : 'backplane (separate board)',
       registers: elec?.available ? chain.registers.length : 0,
       registersUnplaced: regsFallback,
+      registerPackage: elec?.planStats?.regPackage ?? null,
+      bridgePackage: elec?.planStats?.bridgePackage ?? null,
       sensors: sensorCount,
+      bridgesMoved: elec?.planStats?.bridgesMoved ?? 0,
+      bridgesColliding: elec?.planStats?.bridgeFallback ?? 0,
+      serviceFallback: elec?.planStats?.serviceFallback ?? 0,
       tile: tileability(stator, cfg),
     },
     contract,
@@ -896,19 +1004,52 @@ export function buildKiCad(stator, cfg, opts = {}) {
 /** Representative land patterns, millimetres, centred, pads before rotation.
  *  These are placement-envelope models (body + pad rectangles), not fab-ready
  *  footprints -- close enough to answer "does this package class fit". */
+/** The parts behind the envelopes: real, orderable, verified in stock at LCSC
+ *  (fetched 2026-07-27, stock quoted as seen). The footprints above stay
+ *  function-named envelopes; this is what you put in the cart. One deliberate
+ *  asymmetry: the flux sensor of record is the TMAG5273 (four I2C address
+ *  variants, so four sensors share a bus -- the firmware contract's
+ *  addrVariant field assumes it), but LCSC does not stock it; the LCSC-native
+ *  alternative is the TLV493D, which has TWO addresses, so plan twice the
+ *  buses if you build from this list alone. */
+export const BOM = [
+  { role: 'bridge (dense cells)', part: 'DRV8837DSGR', mfr: 'TI', pkg: 'WSON-8-EP 2x2',
+    lcsc: 'C39159', stock: 31550, unit: 0.173, at: 500,
+    note: '11 V max, 1.8 A -- 9 V bus with margin; exposed pad to GND' },
+  { role: 'bridge (roomy cells)', part: 'TC118S', mfr: 'Fuman', pkg: 'SOP-8',
+    lcsc: 'C88308', stock: 115970, unit: 0.033, at: 500,
+    note: '2-9 V rating: ZERO margin at a 9 V bus -- run 8 V, or pay for the DRV8837' },
+  { role: 'shift register (dense)', part: '74HC595BQ,115', mfr: 'Nexperia', pkg: 'DHVQFN-16 2.5x3.5',
+    lcsc: 'C730243', stock: 162365, unit: 0.111, at: 500 },
+  { role: 'shift register (roomy)', part: '74HC595PW,118', mfr: 'Nexperia', pkg: 'TSSOP-16',
+    lcsc: 'C5948', stock: 100000, unit: 0.086, at: 500 },
+  { role: 'flux sensor (LCSC alt)', part: 'TLV493DA1B6HTSA2', mfr: 'Infineon', pkg: 'SOT-23-6',
+    lcsc: 'C126688', stock: 1, unit: 0.45, at: 100,
+    note: '3-axis I2C, +/-130 mT; TWO I2C addresses (TMAG5273 has four) -- double the sensor buses. TMAG5273 itself: DigiKey, not LCSC' },
+  { role: 'dead-man FET', part: '2N7002,215', mfr: 'Nexperia', pkg: 'SOT-23',
+    lcsc: 'C65189', stock: 567750, unit: 0.008, at: 500,
+    note: 'the classic C8545 was OUT of stock when checked -- part numbers rot, verify yours' },
+  { role: 'decap', part: 'CL05B104KO5NNNC', mfr: 'Samsung', pkg: '0402 100n 16V X7R',
+    lcsc: 'C1525', stock: 1627700, unit: 0.005, at: 100 },
+];
+
 export const FOOTPRINTS = {
   sop8: {
     // Includes the bundled 100n decap's two pads beside the chip, so the fit
     // verdict covers exactly what emitBridge8 places -- chip AND cap.
-    label: 'SOP-8 bridge + 100n (MX1508-class)', body: [4.9, 3.9],
+    label: 'SOP-8 bridge + 100n (TC118S-class)', body: [4.9, 3.9],
     pads: [-1.905, -0.635, 0.635, 1.905].flatMap((y) =>
       [[-2.7, y, 1.5, 0.6], [2.7, y, 1.5, 0.6]])
       .concat([[-0.5, 2.6, 0.4, 0.5], [0.5, 2.6, 0.4, 0.5]]),
   },
   dfn8: {
-    label: '2x2 DFN bridge (DRV8837-class)', body: [2.2, 2.2],
+    // WSON-8-EP: the exposed die pad is SOLDERED copper, so unlike the body
+    // it must clear the via field -- which is exactly the constraint that
+    // decides whether this package can sit over a cell's centre crossovers.
+    label: '2x2 DFN bridge (DRV8837, WSON-8-EP)', body: [2.2, 2.2],
     pads: [-0.75, -0.25, 0.25, 0.75].flatMap((y) =>
-      [[-0.85, y, 0.6, 0.3], [0.85, y, 0.6, 0.3]]),
+      [[-0.85, y, 0.6, 0.3, 0.09], [0.85, y, 0.6, 0.3, 0.09]])
+      .concat([[0, 0, 0.9, 1.6, 0.09]]),
   },
   sot23_6: {
     label: 'SOT-23-6 sensor (TMAG5273)', body: [2.9, 1.6],
@@ -922,6 +1063,16 @@ export const FOOTPRINTS = {
     label: 'TSSOP-16 shift register (74HC595)', body: [5.0, 4.4], sparse: true,
     pads: Array.from({ length: 8 }, (_, k) => -2.275 + k * 0.65).flatMap((y) =>
       [[-2.9, y, 1.2, 0.4], [2.9, y, 1.2, 0.4]]),
+  },
+  qfn16: {
+    // The same 74HC595 in DHVQFN-16 (2.5 x 3.5 mm): the register the DENSE
+    // build reaches for. A honeycomb cell that already carries the bridge has
+    // no 7 x 5 mm hole left for a TSSOP -- that is a fact about the cell, not
+    // the search -- but a 3.6 x 3.9 mm envelope drops into the gutter regions.
+    // Same die, same pin functions, an LCSC catalogue part (74HC595BQ-class).
+    label: 'DHVQFN-16 shift register (74HC595BQ)', body: [2.5, 3.5], sparse: true,
+    pads: Array.from({ length: 8 }, (_, k) => -1.75 + k * 0.5).flatMap((y) =>
+      [[-1.4, y, 0.8, 0.3], [1.4, y, 0.8, 0.3]]),
   },
 };
 
@@ -959,8 +1110,13 @@ export function backsideObstacles(cfg) {
   const via = Math.min(0.4, Math.max(0.2, g.pitch * 0.6));
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
   const plan = viaPlan(g, g.layers, cellHalf, via);
-  const discs = [...plan.vias, ...plan.termVias].map((v) => ({ x: v.p[0], y: v.p[1], r: via / 2 }));
-  const rects = (plan.termPads || []).map((p) => ({ cx: p.p[0], cy: p.p[1], w: p.w, h: p.h, ang: p.a }));
+  // The via plan's frame is the BOARD's: emission writes plan y straight into
+  // file y (down-screen). Part placement runs in the world frame (y up), so
+  // the obstacles flip here, once -- y negates and so do angles. Skipping this
+  // flip made every part clear the MIRROR of the cell's copper, which is how
+  // sensors kept landing on real vias their placement proof had dodged.
+  const discs = [...plan.vias, ...plan.termVias].map((v) => ({ x: v.p[0], y: -v.p[1], r: via / 2 }));
+  const rects = (plan.termPads || []).map((p) => ({ cx: p.p[0], cy: -p.p[1], w: p.w, h: p.h, ang: -p.a }));
   const hex = (g.sides ?? 4) === 6;
   const p = cfg.stator.coilPitch * 1000;
   // Nearest-neighbour lattice offsets (mm): 6 for the triangular lattice, 8 for
@@ -997,7 +1153,9 @@ export function placementClear(fp, cx, cy, ang, obs, clearance) {
   // per-cell placement tiles iff the extent clears its own lattice translates.
   const ex = Math.max(fp.body[0] / 2, ...fp.pads.map(([px, , w]) => Math.abs(px) + w / 2));
   const ey = Math.max(fp.body[1] / 2, ...fp.pads.map(([, py, , h]) => Math.abs(py) + h / 2));
-  const extent = { cx, cy, w: 2 * ex, h: 2 * ey, ang };
+  // The copies must clear each other by the same margin the pads keep from
+  // everything else -- touching extents pass an overlap test but fail DRC.
+  const extent = { cx, cy, w: 2 * ex + clearance, h: 2 * ey + clearance, ang };
   if (!fp.sparse) {
     for (const [ox, oy] of obs.offsets) {
       if (rectsOverlap(extent, { ...extent, cx: cx + ox, cy: cy + oy })) return false;
@@ -1007,6 +1165,104 @@ export function placementClear(fp, cx, cy, ang, obs, clearance) {
 }
 
 const ROTS = [0, Math.PI / 6, Math.PI / 4, Math.PI / 3, Math.PI / 2, 2 * Math.PI / 3, 3 * Math.PI / 4, 5 * Math.PI / 6];
+
+/** Every rectangle a footprint puts down at (cx, cy, ang): its pads plus its
+ *  body, in the frame (cx, cy) is given in. This is the shape that placement
+ *  must clear and that later placements must avoid -- pads because copper
+ *  shorts, body because two packages cannot occupy the same air. */
+function partRects(fp, cx, cy, ang) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  const out = fp.pads.map(([px, py, w, h]) =>
+    ({ cx: cx + px * c - py * s, cy: cy + px * s + py * c, w, h, ang }));
+  const [bx, by] = fp.bodyOff ?? [0, 0];
+  // The body rect is flagged: it collides with other PARTS (two packages
+  // cannot share air) but not with vias or pads -- a body may span tented
+  // vias, which is the whole reason the dense cells are populatable at all.
+  out.push({ cx: cx + bx * c - by * s, cy: cy + bx * s + by * c, w: fp.body[0], h: fp.body[1], ang, body: true });
+  return out;
+}
+
+const coilsNear = (coils, x, y, radius) =>
+  coils.filter((c) => Math.abs(c.x * 1000 - x) <= radius && Math.abs(c.y * 1000 - y) <= radius);
+
+/** Do these world-frame rects clear every via land and terminal pad (tested in
+ *  the local frame of each nearby coil -- exact, not lattice-approximate) AND
+ *  every previously placed part? `placed` is the accumulating world-frame
+ *  obstacle list that makes later placements respect earlier ones -- the check
+ *  whose absence let shift registers land on top of bridges. */
+function worldClear(rects, near, obs, placed, clearance) {
+  for (const r of rects) {
+    const cull = Math.hypot(r.w, r.h) / 2 + clearance;
+    // Cell copper (via lands, terminal pads) blocks PADS only; a part's body
+    // may span tented vias (placeInCell has always ruled this way).
+    if (!r.body) {
+      for (const c of near) {
+        const lr = { ...r, cx: r.cx - c.x * 1000, cy: r.cy - c.y * 1000 };
+        if (Math.abs(lr.cx) > obs.cellHalf * 1.3 + cull || Math.abs(lr.cy) > obs.cellHalf * 1.3 + cull) continue;
+        for (const d of obs.discs) if (rectHitsCircle(lr, d.x, d.y, d.r + clearance)) return false;
+        for (const o of obs.rects) if (rectsOverlap(lr, { ...o, w: o.w + 2 * clearance, h: o.h + 2 * clearance })) return false;
+      }
+    }
+    // Other parts block EVERYTHING -- pads and body alike.
+    for (const o of placed) {
+      if (Math.abs(o.cx - r.cx) > 14 || Math.abs(o.cy - r.cy) > 14) continue;
+      if (rectsOverlap(r, { ...o, w: o.w + 2 * clearance, h: o.h + 2 * clearance })) return false;
+    }
+  }
+  return true;
+}
+
+/** Search around `target` (world mm) for a clear placement. Same spiral-out
+ *  candidate order as placeInCell, but in the world frame against the full
+ *  obstacle picture: per-cell vias/pads of every nearby coil plus everything
+ *  already placed. */
+function placeWorld(fp, target, coils, obs, placed, clearance, searchHalf, step = 0.25, rots = ROTS) {
+  const diag = Math.max(...fp.pads.map(([px, py, w, h]) => Math.hypot(px, py) + Math.hypot(w, h) / 2), Math.hypot(...fp.body) / 2);
+  const near = coilsNear(coils, target[0], target[1], searchHalf + diag + obs.cellHalf * 1.5);
+  const cand = [];
+  for (let x = -searchHalf; x <= searchHalf + 1e-9; x += step) {
+    for (let y = -searchHalf; y <= searchHalf + 1e-9; y += step) {
+      // Radius, not box: `searchHalf` is a promise about the worst offset
+      // (a sensor's nudge budget), and a box corner breaks it by sqrt(2).
+      if (Math.hypot(x, y) <= searchHalf + 1e-9) cand.push([target[0] + x, target[1] + y]);
+    }
+  }
+  cand.sort((a, b) => Math.hypot(a[0] - target[0], a[1] - target[1]) - Math.hypot(b[0] - target[0], b[1] - target[1]));
+  for (const [cx, cy] of cand) {
+    for (const ang of rots) {
+      if (worldClear(partRects(fp, cx, cy, ang), near, obs, placed, clearance)) {
+        return { fits: true, at: [cx, cy], rotDeg: (ang * 180) / Math.PI, offMm: Math.hypot(cx - target[0], cy - target[1]) };
+      }
+    }
+  }
+  return { fits: false };
+}
+
+/** The fixed service parts as placeable envelopes, pads relative to the same
+ *  anchor their emitters use. The header stays horizontal (it is the spine
+ *  along the south edge), so its search is position-only. */
+/** The backplane's own two per-cell parts as placeable envelopes, matching
+ *  what emitPowerStage / emitDecap put down (both are y-symmetric, so the
+ *  world and file frames agree). */
+const BACKPLANE_FPS = {
+  hb6: {
+    label: 'HB6 power stage', body: [2.0, 2.0],
+    pads: [-0.65, 0, 0.65].flatMap((y) => [[-0.9, y, 0.5, 0.3], [0.9, y, 0.5, 0.3]]),
+  },
+  c0402: { label: '100n 0402', body: [1.1, 0.7], pads: [[-0.5, 0, 0.4, 0.5], [0.5, 0, 0.4, 0.5]] },
+};
+
+const SERVICE_FPS = {
+  deadman: {
+    label: 'dead-man (R,C,R + SOT-23)', body: [10.2, 2.6], bodyOff: [3.6, 0],
+    pads: [0, 2.2, 4.4].flatMap((x) => [[x - 0.5, 0, 0.4, 0.5], [x + 0.5, 0, 0.4, 0.5]])
+      .concat([[6.8 - 0.95, 1.0, 0.6, 0.7], [6.8 + 0.95, 1.0, 0.6, 0.7], [6.8, -1.0, 0.6, 0.7]]),
+  },
+  header: {
+    label: 'spine header', body: [19.6, 2.0],
+    pads: Array.from({ length: 10 }, (_, k) => [(k - 4.5) * 2, 0, 1.2, 1.8]),
+  },
+};
 
 /** Search one cell for a clear placement of `fp`. Candidates spiral outward
  *  from the cell centre so the first hit is also the most central. */
@@ -1039,44 +1295,182 @@ export function backsideFit(cfg, {
   if (!isPcbCoil(cfg.stator.coilType)) return { available: false, reason: 'notpcb' };
   if (!(cfg.stator.pcbSpareLayers > 0)) return { available: false, reason: 'nolayer' };
   const obs = backsideObstacles(cfg);
+
+  // Per-package feasibility card. The two bridge classes see the bare cell;
+  // the register and sensor -- which must COEXIST with the chosen bridge --
+  // see its pads and body too, so their verdicts stop describing a board where
+  // the bridges were never placed.
   const parts = {};
-  for (const [key, fp] of Object.entries(footprints)) {
-    parts[key] = { label: fp.label, ...placeInCell(fp, obs, clearance) };
+  for (const key of ['sop8', 'dfn8']) {
+    if (footprints[key]) parts[key] = { label: footprints[key].label, ...placeInCell(footprints[key], obs, clearance) };
+  }
+  const std = parts.sop8?.fits ? parts.sop8 : null;
+  const obs2 = std
+    ? { ...obs, rects: obs.rects.concat(partRects(footprints.sop8, std.at[0], std.at[1], (std.rotDeg * Math.PI) / 180)) }
+    : obs;
+  for (const key of Object.keys(footprints)) {
+    if (!parts[key]) parts[key] = { label: footprints[key].label, ...placeInCell(footprints[key], obs2, clearance) };
   }
 
-  let sensors = null;
-  if (stator && sensorSpacing) {
-    const gridHalf = cfg.stator.statorSize / 2;
-    const n = Math.floor((2 * gridHalf) / sensorSpacing) + 1;
-    const placed = [];
-    let failed = 0, worstNudge = 0;
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        const wx = (-gridHalf + i * sensorSpacing) * 1000, wy = (-gridHalf + j * sensorSpacing) * 1000;
-        // Local frame of the nearest coil: the obstacle plan is coil-local.
-        let best = null, bd = Infinity;
-        for (const c of stator.coils) {
-          const d = Math.hypot(c.x * 1000 - wx, c.y * 1000 - wy);
-          if (d < bd) { bd = d; best = c; }
+  // Full placement plan, in dependency order -- header and dead-man first
+  // (they cannot move much), then every cell's bridge, then the registers,
+  // then the sensor grid. Each stage accumulates into `placed`, so nothing
+  // later can land on anything earlier. This ordering IS the fix for the
+  // overlapping driver section: parts used to be placed against the bare
+  // cell only, blind to each other.
+  //
+  // The bridge package escalates like the register's: the SOP-8 bridge plus
+  // its cap very nearly FILLS a dense honeycomb cell (measured, not assumed:
+  // at 84% fill nothing else places beside it), so if the registers or the
+  // sensor grid starve, the whole plan re-runs on the 2 x 2 DFN bridge with a
+  // separate 0402 decap -- smaller silicon buys the room the chain needs.
+  let service = null, bridges = null, registers = null, sensors = null, chain = null;
+  let stats = null;
+  if (stator) {
+    const coils = stator.coils;
+    const outline = cellOutline(stator, cfg);
+    const halfB = outline.reduce((a, p) => Math.max(a, Math.abs(p[0]), Math.abs(p[1])), 0);
+    chain = chainPlan(stator, cfg);
+
+    const planWith = (bridgeKey) => {
+      const st = { bridgesMoved: 0, bridgeFallback: 0, regFallback: 0, serviceFallback: 0, bridgePackage: bridgeKey };
+      const placed = [];
+      const bfp = footprints[bridgeKey];
+      const bStd = parts[bridgeKey]?.fits ? parts[bridgeKey] : null;
+      const settle = (fp, p, fallbackAt) => {
+        const at = p.fits ? p.at : fallbackAt;
+        if (!p.fits) st.serviceFallback++;
+        placed.push(...partRects(fp, at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
+        return { at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits };
+      };
+      const hT = [0, -(halfB - 3)], dT = [-(halfB - 9), -(halfB - 3)];
+      const svc = {
+        header: settle(SERVICE_FPS.header, placeWorld(SERVICE_FPS.header, hT, coils, obs, placed, clearance, obs.cellHalf, 0.25, [0]), hT),
+        deadman: settle(SERVICE_FPS.deadman, placeWorld(SERVICE_FPS.deadman, dT, coils, obs, placed, clearance, obs.cellHalf, 0.25, [0]), dT),
+      };
+
+      // Placement runs in order of decreasing rigidity, so the flexible parts
+      // yield: the sensors' positions are bought with observability
+      // (poseObservability grades every nudge), a bridge works anywhere in
+      // its own cell, and a register anywhere near its quad. Cells that lose
+      // their standard bridge spot to a sensor simply re-search.
+      let sens = null;
+      if (sensorSpacing) {
+        const gridHalf = cfg.stator.statorSize / 2;
+        const n = Math.floor((2 * gridHalf) / sensorSpacing) + 1;
+        const list = [];
+        let failed = 0, worstNudge = 0;
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < n; j++) {
+            const swx = (-gridHalf + i * sensorSpacing) * 1000, swy = (-gridHalf + j * sensorSpacing) * 1000;
+            const r = placeWorld(footprints.sot23_6, [swx, swy], coils, obs, placed, clearance, nudgeMax);
+            if (!r.fits) { failed++; continue; }
+            worstNudge = Math.max(worstNudge, r.offMm);
+            placed.push(...partRects(footprints.sot23_6, r.at[0], r.at[1], (r.rotDeg * Math.PI) / 180));
+            // Anchor by (cell, local offset): the fit is proven relative to
+            // the coil lattice; emission re-applies it in the same frame.
+            let bi = 0, bd = Infinity;
+            for (let k = 0; k < coils.length; k++) {
+              const d = Math.hypot(coils[k].x * 1000 - r.at[0], coils[k].y * 1000 - r.at[1]);
+              if (d < bd) { bd = d; bi = k; }
+            }
+            list.push({
+              coil: bi, local: [r.at[0] - coils[bi].x * 1000, r.at[1] - coils[bi].y * 1000],
+              rotDeg: r.rotDeg,
+              atMm: [r.at[0], r.at[1]], nudgeMm: r.offMm,
+            });
+          }
         }
-        let bi = 0;
-        for (let k = 0; k < stator.coils.length; k++) {
-          if (stator.coils[k] === best) { bi = k; break; }
-        }
-        const r = placeInCell(footprints.sot23_6, obs, clearance, nudgeMax, [wx - best.x * 1000, wy - best.y * 1000]);
-        if (r.fits) {
-          worstNudge = Math.max(worstNudge, r.offMm);
-          // Anchor by (cell, local offset): the fit is proven in the coil-local
-          // frame, so emission must re-apply the offset in that same frame.
-          placed.push({
-            coil: bi, local: [r.at[0], r.at[1]],
-            atMm: [best.x * 1000 + r.at[0], best.y * 1000 + r.at[1]],
-            nudgeMm: r.offMm,
-          });
-        } else { failed++; }
+        sens = { wanted: n * n, placed: list.length, failed, worstNudgeMm: worstNudge, list };
       }
+      // Two passes over the bridges, so the service parts cannot start a
+      // cascade: every cell whose standard (periodicity-proven) spot is
+      // untouched keeps it; only the handful shadowed by the header or
+      // dead-man re-search, against a field of already-final neighbours.
+      let brs = null;
+      if (bStd) {
+        const stdRad = (bStd.rotDeg * Math.PI) / 180;
+        const needCap = !bfp.pads.some(([, py]) => py > bfp.body[1] / 2 + 0.4); // no bundled decap in the envelope
+        const stdOf = (c) => [c.x * 1000 + bStd.at[0], c.y * 1000 + bStd.at[1]];
+        const blocked = [];
+        brs = coils.map((c, ci) => {
+          const at = stdOf(c);
+          const rects = partRects(bfp, at[0], at[1], stdRad);
+          if (worldClear(rects, [], obs, placed, clearance)) {
+            placed.push(...rects);
+            return { coil: ci, at, rotDeg: bStd.rotDeg, moved: false };
+          }
+          blocked.push(ci);
+          return null;
+        });
+        for (const ci of blocked) {
+          const c = coils[ci];
+          const p = placeWorld(bfp, [c.x * 1000, c.y * 1000], coils, obs, placed, clearance, obs.cellHalf);
+          let out;
+          if (p.fits) { st.bridgesMoved++; out = { coil: ci, at: p.at, rotDeg: p.rotDeg, moved: true }; }
+          else { st.bridgeFallback++; out = { coil: ci, at: stdOf(c), rotDeg: bStd.rotDeg, moved: false, collides: true }; }
+          placed.push(...partRects(bfp, out.at[0], out.at[1], (out.rotDeg * Math.PI) / 180));
+          brs[ci] = out;
+        }
+        // A bare-die bridge brings no decap pads of its own: give every cell a
+        // 0402 next to its bridge, searched like everything else.
+        if (needCap) {
+          for (const b of brs) {
+            const p = placeWorld(BACKPLANE_FPS.c0402, [b.at[0] + 1.6, b.at[1]], coils, obs, placed, clearance, 2.0, 0.25, [0, Math.PI / 2]);
+            if (p.fits) {
+              b.cap = { at: p.at, rotDeg: p.rotDeg };
+              placed.push(...partRects(BACKPLANE_FPS.c0402, p.at[0], p.at[1], (p.rotDeg * Math.PI) / 180));
+            }
+          }
+        }
+      }
+
+      // Register package escalation: TSSOP-16 if the board has room for it,
+      // else the same 74HC595 in DHVQFN-16. A pass aborts on its third
+      // failure -- a package that cannot serve three quads is the wrong
+      // package, and mixing the two on one board would be a silly BOM.
+      const regPkgs = ['tssop16', 'qfn16'].filter((k) => footprints[k]);
+      let regs = null, best = null;
+      for (const pkg of regPkgs) {
+        const mark = placed.length;
+        const out = [];
+        let fails = 0;
+        for (const reg of chain.registers) {
+          const p = placeWorld(footprints[pkg], [reg.x, reg.y], coils, obs, placed, clearance, obs.cellHalf * 2, 0.5);
+          if (!p.fits && ++fails >= 3 && pkg !== regPkgs[regPkgs.length - 1]) break;
+          const at = p.fits ? p.at : [reg.x, reg.y];
+          placed.push(...partRects(footprints[pkg], at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
+          out.push({ ...reg, at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits });
+        }
+        // A pass with ANY fallback keeps escalating -- a smaller package that
+        // seats every register beats a bigger one that stacks even a single
+        // register on other copper.
+        if (out.length === chain.registers.length && (!best || fails < best.fails)) {
+          best = { out, pkg, fails, rects: placed.slice(mark) };
+        }
+        placed.length = mark;
+        if (best && best.fails === 0) break;
+      }
+      if (best) {
+        placed.push(...best.rects);
+        regs = best.out;
+        st.regPackage = best.pkg;
+        st.regFallback = best.fails;
+      }
+
+      const misses = st.regFallback + st.bridgeFallback + (sens ? sens.failed : 0);
+      return { svc, brs, regs, sens, st, misses };
+    };
+
+    const bridgeKeys = ['sop8', 'dfn8'].filter((k) => footprints[k] && parts[k]?.fits);
+    let plan = null;
+    for (const bk of bridgeKeys) {
+      const p = planWith(bk);
+      if (!plan || p.misses < plan.misses) plan = p;
+      if (p.misses === 0) break;                  // nothing starves: take it
     }
-    sensors = { wanted: n * n, placed: placed.length, failed, worstNudgeMm: worstNudge, list: placed };
+    if (!plan) plan = planWith(bridgeKeys[0] ?? 'sop8');
+    ({ svc: service, brs: bridges, regs: registers, sens: sensors, st: stats } = plan);
   }
 
   return {
@@ -1084,7 +1478,7 @@ export function backsideFit(cfg, {
     obstaclesPerCell: obs.discs.length + obs.rects.length,
     gutterMm: obs.pitchMm * (1 - cfg.stator.coilFill),
     holeMm: 2 * obs.g.halfIn,
-    clearance, parts, sensors,
+    clearance, parts, sensors, service, bridges, registers, chain, planStats: stats,
   };
 }
 
@@ -1144,30 +1538,25 @@ export function chainPlan(stator, cfg) {
 /** A 74HC595 on a TSSOP-16 envelope, REAL pinout, at (ox,oy) rot deg on side S.
  *  `n` maps function -> {num, name} nets: vcc, gnd, sclk, rclk, oen, ds, q7s,
  *  and q[0..7] for the outputs (unused outputs pass net 0 / ""). */
-function emitShift595(L, ref, ox, oy, rot, f, S, n) {
-  const m = S === 'B' ? ' (justify mirror)' : '';
-  const PIN = [ // pin -> [function, local x, y] (TSSOP-16, pin 1 top-left, CCW)
-    ['q1', -2.9, -2.275], ['q2', -2.9, -1.625], ['q3', -2.9, -0.975], ['q4', -2.9, -0.325],
-    ['q5', -2.9, 0.325], ['q6', -2.9, 0.975], ['q7', -2.9, 1.625], ['gnd', -2.9, 2.275],
-    ['q7s', 2.9, 2.275], ['mr', 2.9, 1.625], ['sclk', 2.9, 0.975], ['rclk', 2.9, 0.325],
-    ['oen', 2.9, -0.325], ['ds', 2.9, -0.975], ['q0', 2.9, -1.625], ['vcc', 2.9, -2.275],
-  ];
+function emitShift595(L, ref, ox, oy, rot, f, S, n, pkg = 'tssop16') {
+  // Net order follows the footprint's pad order (rows bottom to top in the
+  // world frame, [left, right] per row -- both 595 packages share it): pins
+  // 1..8 run DOWN the left side from the world top, 9..16 back UP the right.
+  // Pad numbers are sequential in table order, not package pin numbers -- the
+  // firmware contract names nets, never pin numbers, so nothing reads them.
+  const leftFn = ['gnd', 'q7', 'q6', 'q5', 'q4', 'q3', 'q2', 'q1'];
+  const rightFn = ['q7s', 'mr', 'sclk', 'rclk', 'oen', 'ds', 'q0', 'vcc'];
   const netFor = (fn) => {
     if (fn === 'mr') return n.vcc;                       // /MR tied high
     if (fn.startsWith('q') && fn.length <= 2 && fn !== 'q7s') return n.q[+fn.slice(1)] ?? { num: 0, name: '' };
     return n[fn] ?? { num: 0, name: '' };
   };
-  L.push(`  (footprint "maglev:SR595" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
-  L.push('    (attr smd)');
-  L.push(`    (fp_text reference "${ref}" (at 0 -3.1) (layer "${S}.SilkS") (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
-  L.push(`    (fp_text value "74HC595" (at 0 3.1) (layer "${S}.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
-  L.push(`    (fp_rect (start -2.5 -2.2) (end 2.5 2.2) (layer "${S}.CrtYd") (width 0.05))`);
-  PIN.forEach(([fn, px, py], k) => {
-    const net = netFor(fn);
-    const [rx, ry] = rotXY(px, py, rot);
-    L.push(fpPad(k + 1, f(rx), f(ry), 1.2, 0.4, net.num, net.name, S, f(rot)));
+  const fp = FOOTPRINTS[pkg];
+  const nets = fp.pads.map((_, k) => netFor((k % 2 === 0 ? leftFn : rightFn)[k >> 1]));
+  emitPart(L, {
+    lib: pkg === 'qfn16' ? 'SR595Q' : 'SR595', value: pkg === 'qfn16' ? '74HC595BQ' : '74HC595',
+    ref, S, at: [ox, oy], rotDeg: rot, fp, nets, f,
   });
-  L.push('  )');
 }
 
 /** The /OE dead-man: SYNC strobes keep C1 charged through R1, holding Q1 on and
@@ -1193,9 +1582,10 @@ function emitDeadman(L, ox, oy, f, S, n) {
   L.push('    (attr smd)');
   L.push(`    (fp_text reference "Q1" (at 0 -1.6) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
   L.push(`    (fp_text value "dead-man" (at 0 1.6) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
-  L.push(fpPad(1, -0.95, 1.0, 0.6, 0.7, n.ng.num, n.ng.name, S));   // gate
-  L.push(fpPad(2, 0.95, 1.0, 0.6, 0.7, n.gnd.num, n.gnd.name, S));  // source
-  L.push(fpPad(3, 0, -1.0, 0.6, 0.7, n.oen.num, n.oen.name, S));    // drain
+  // Pads mirror SERVICE_FPS.deadman's world-frame table: world +y is file -y.
+  L.push(fpPad(1, -0.95, -1.0, 0.6, 0.7, n.ng.num, n.ng.name, S));  // gate
+  L.push(fpPad(2, 0.95, -1.0, 0.6, 0.7, n.gnd.num, n.gnd.name, S)); // source
+  L.push(fpPad(3, 0, 1.0, 0.6, 0.7, n.oen.num, n.oen.name, S));     // drain
   L.push('  )');
 }
 
@@ -1215,47 +1605,30 @@ function emitHeader(L, ox, oy, f, S, nets) {
 
 /** A TMAG5273-class 3-axis sensor on the SOT-23-6 envelope at (ox,oy) rot deg. */
 function emitSensor(L, ref, ox, oy, rot, f, S, n) {
-  const m = S === 'B' ? ' (justify mirror)' : '';
-  L.push(`  (footprint "maglev:TMAG" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
-  L.push('    (attr smd)');
-  L.push(`    (fp_text reference "${ref}" (at 0 -1.5) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
-  L.push(`    (fp_text value "TMAG5273" (at 0 1.5) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
-  const P = [ // [function, x, y] on the sot23_6 envelope
-    ['scl', -1.1, -0.95], ['gnd', -1.1, 0], ['sda', -1.1, 0.95],
-    ['int', 1.1, 0.95], ['vcc', 1.1, 0], ['nc', 1.1, -0.95],
-  ];
-  P.forEach(([fn, px, py], k) => {
-    const net = n[fn] ?? { num: 0, name: '' };
-    const [rx, ry] = rotXY(px, py, rot);
-    L.push(fpPad(k + 1, f(rx), f(ry), 0.9, 0.6, net.num, net.name, S, f(rot)));
-  });
-  L.push('  )');
+  // FOOTPRINTS.sot23_6 pad order: rows bottom to top (world), [left, right].
+  // World top-left is SCL, down the left to SDA; NC/VCC/INT down the right.
+  const fns = ['sda', 'int', 'gnd', 'vcc', 'scl', 'nc'];
+  const nets = fns.map((fn) => n[fn] ?? { num: 0, name: '' });
+  emitPart(L, { lib: 'TMAG', value: 'TMAG5273', ref, S, at: [ox, oy], rotDeg: rot, fp: FOOTPRINTS.sot23_6, nets, f });
 }
 
 /** An integrated-bridge envelope on the fit-verified SOP-8 land pattern (pads
  *  land on the winding annulus). Function-named pads, not a specific part's
- *  pinout -- MX1508-class per the BOM. */
-function emitBridge8(L, ref, ox, oy, rot, f, S, n) {
-  const m = S === 'B' ? ' (justify mirror)' : '';
-  L.push(`  (footprint "maglev:SOP8HB" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
-  L.push('    (attr smd)');
-  L.push(`    (fp_text reference "${ref}" (at 0 -2.6) (layer "${S}.SilkS") (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
-  L.push(`    (fp_text value "MX1508-class" (at 0 2.6) (layer "${S}.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
-  L.push(`    (fp_rect (start -2.45 -1.95) (end 2.45 1.95) (layer "${S}.CrtYd") (width 0.05))`);
-  const P = [ // matches FOOTPRINTS.sop8 pad geometry
-    ['in1', -2.7, -1.905], ['in2', -2.7, -0.635], ['vbus', -2.7, 0.635], ['gnd', -2.7, 1.905],
-    ['outa', 2.7, -1.905], ['outb', 2.7, -0.635], ['gnd2', 2.7, 0.635], ['vbus2', 2.7, 1.905],
-  ];
-  const pad = (name, fn, px, py, w, h) => {
-    const net = n[fn] ?? { num: 0, name: '' };
-    const [rx, ry] = rotXY(px, py, rot);
-    L.push(fpPad(name, f(rx), f(ry), w, h, net.num, net.name, S, f(rot)));
-  };
-  P.forEach(([fn, px, py], k) => pad(k + 1, fn === 'gnd2' ? 'gnd' : fn === 'vbus2' ? 'vbus' : fn, px, py, 1.5, 0.6));
-  // The bundled 100n decap beside the chip (part of the fit envelope).
-  pad('C1', 'vbus', -0.5, 2.6, 0.4, 0.5);
-  pad('C2', 'gnd', 0.5, 2.6, 0.4, 0.5);
-  L.push('  )');
+ *  pinout -- MX1508-class per the BOM. Includes the bundled 100n decap's two
+ *  pads (last two entries of the sop8 table), so what is emitted is exactly
+ *  what backsideFit proved to fit. */
+function emitBridge8(L, ref, ox, oy, rot, f, S, n, pkg = 'sop8') {
+  // Pad order is rows bottom to top (world), [left, right] -- left column
+  // top->bottom is in1,in2,vbus,gnd; right is outa,outb,gnd,vbus. The SOP-8
+  // envelope additionally carries its bundled decap pair above the body; the
+  // DFN gets a separate 0402 placed by the plan, plus its exposed die pad
+  // (GND per the DRV8837 datasheet) as the last table entry.
+  const nets = [n.gnd, n.vbus, n.vbus, n.gnd, n.in2, n.outb, n.in1, n.outa]
+    .concat(pkg === 'sop8' ? [n.vbus, n.gnd] : [n.gnd]);
+  emitPart(L, {
+    lib: pkg === 'dfn8' ? 'DFN8HB' : 'SOP8HB', value: pkg === 'dfn8' ? 'DRV8837' : 'TC118S-class',
+    ref, S, at: [ox, oy], rotDeg: rot, fp: FOOTPRINTS[pkg], nets, f,
+  });
 }
 
 // --- self-tileable board outline --------------------------------------------

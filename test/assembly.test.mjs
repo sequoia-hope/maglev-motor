@@ -367,6 +367,22 @@ for (const [key, preset] of Object.entries(PRESETS)) {
         close(+lambda[1] / 1000, tr.cfg.pitch, 5e-3),
         `model says ${(tr.cfg.pitch * 1000).toFixed(2)} mm`);
     }
+
+    // "12 rows — even, so full boards interlock": the self-tileability claim.
+    // A rounded coil pitch once flipped the row parity from 12 to 13 and made
+    // this sentence quietly false, so it gets held to the model like the rest.
+    const rows = blurb.match(/(\d+) rows — even/);
+    if (rows) {
+      claims++;
+      const q = Q[cfg.sim.quality ?? 'balanced'];
+      const { makeStator } = await import('../src/coils.js');
+      const { tileability } = await import('../src/kicad.js');
+      const st = makeStator({ ...cfg.stator, ringsPerCoil: q.ringsPerCoil, segmentsPerSide: q.segmentsPerSide });
+      const t = tileability(st, cfg);
+      check(`${key}: blurb "${rows[1]} rows — even" (self-tileable)`,
+        t.nRows === +rows[1] && t.nRows % 2 === 0 && t.tileable === true,
+        `model says ${t.nRows} rows, tileable ${t.tileable}`);
+    }
   }
   // A ratchet, not a target: it fails if the parsers above quietly stop matching
   // (a blurb reworded, a preset renamed), which would otherwise show up as a
