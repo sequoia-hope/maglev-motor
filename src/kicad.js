@@ -611,7 +611,7 @@ export function buildDriverBackplane(stator, cfg) {
     outline,
   };
   const CLR = 0.2;
-  const placed = [];
+  const placed = new RectIndex();
   let drivers = 0, decaps = 0, mating = 0, decapsMoved = 0, regsFallback = 0, outSwapped = 0;
   for (let ci = 0; ci < C; ci++) {
     const c = stator.coils[ci];
@@ -635,7 +635,7 @@ export function buildDriverBackplane(stator, cfg) {
     const [nPa, nPan, nPb, nPbn] = swap
       ? [pB(ci), `PWMB_${ci}`, pA(ci), `PWMA_${ci}`] : [pA(ci), `PWMA_${ci}`, pB(ci), `PWMB_${ci}`];
     emitPowerStage(L, `U${ci}`, ox, oy, f, 'F', netVBUS, netGND, oA(ci), `OUTA_${ci}`, oB(ci), `OUTB_${ci}`, nPa, nPan, nPb, nPbn);
-    placed.push(...partRects(BACKPLANE_FPS.hb6, cwx, cwy, 0));
+    placed.addAll(partRects(BACKPLANE_FPS.hb6, cwx, cwy, 0));
     // Dogleg stubs to the PAIRED via: exit the pad OUTWARD (clear of the
     // chip's own column), then run straight. Every segment becomes an
     // obstacle, so the decap, registers and service parts route around the
@@ -650,7 +650,7 @@ export function buildDriverBackplane(stator, cfg) {
         // File frame -> world frame for the obstacle list: negate y and angle.
         const mx = cwx + (a[0] + b[0]) / 2, my = cwy - (a[1] + b[1]) / 2;
         const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        placed.push({ cx: mx, cy: my, w: len + g.trace, h: g.trace, ang: -Math.atan2(b[1] - a[1], b[0] - a[0]) });
+        placed.add({ cx: mx, cy: my, w: len + g.trace, h: g.trace, ang: -Math.atan2(b[1] - a[1], b[0] - a[0]) });
       }
     }
     plan.termVias.forEach(({ p: tv }, k) => {
@@ -670,7 +670,7 @@ export function buildDriverBackplane(stator, cfg) {
       at: [cx0 + dAt[0], cy0 - dAt[1]], rotDeg: dp.fits ? dp.rotDeg : 0,
       fp: BACKPLANE_FPS.c0402, nets: [{ num: netVBUS, name: 'VBUS' }, { num: netGND, name: 'GND' }], f,
     });
-    placed.push(...partRects(BACKPLANE_FPS.c0402, dAt[0], dAt[1], dp.fits ? (dp.rotDeg * Math.PI) / 180 : 0));
+    placed.addAll(partRects(BACKPLANE_FPS.c0402, dAt[0], dAt[1], dp.fits ? (dp.rotDeg * Math.PI) / 180 : 0));
     drivers++; decaps++;
   }
 
@@ -685,7 +685,7 @@ export function buildDriverBackplane(stator, cfg) {
   // mating via lands. It is also the outward face, where a cable connector
   // belongs. They compete only with those vias and each other.
   const yMinB = outline.reduce((a, p) => Math.min(a, p[1]), Infinity);
-  const placedB = [];
+  const placedB = new RectIndex();
   const settleB = (fp, target, rots = undefined) => {
     let p = { fits: false };
     for (const sh of [cellHalf * 3, cellHalf * 6, Math.max(half, cellHalf * 12)]) {
@@ -693,7 +693,7 @@ export function buildDriverBackplane(stator, cfg) {
       if (p.fits) break;
     }
     const at = p.fits ? p.at : target;
-    placedB.push(...partRects(fp, at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
+    placedB.addAll(partRects(fp, at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
     return { at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits };
   };
   const dm = settleB(SERVICE_FPS.deadman, [-(half - 9), yMinB + 3], [0]);
@@ -711,24 +711,24 @@ export function buildDriverBackplane(stator, cfg) {
   // the DHVQFN-16.
   let regPkg = 'qfn16', regPlan = null, regBest = null;
   for (const pkg of ['tssop16', 'qfn16']) {
-    const mark = placed.length;
+    const mark = placed.mark();
     const out = [];
     let fails = 0;
     for (const reg of chain.registers) {
       const p = placeWorld(FOOTPRINTS[pkg], [reg.x, reg.y], stator.coils, obsB, placed, CLR, cellHalf * 2, 0.5);
       if (!p.fits && ++fails >= 3 && pkg !== 'qfn16') break;
       const at = p.fits ? p.at : [reg.x, reg.y];
-      placed.push(...partRects(FOOTPRINTS[pkg], at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
+      placed.addAll(partRects(FOOTPRINTS[pkg], at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
       out.push({ reg, at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits });
     }
     // Any fallback keeps escalating: seat every register or try smaller.
     if (out.length === chain.registers.length && (!regBest || fails < regBest.fails)) {
-      regBest = { out, pkg, fails, rects: placed.slice(mark) };
+      regBest = { out, pkg, fails, rects: placed.all.slice(mark) };
     }
-    placed.length = mark;
+    placed.rollback(mark);
     if (regBest && regBest.fails === 0) break;
   }
-  placed.push(...regBest.rects);
+  placed.addAll(regBest.rects);
   regPlan = regBest.out;
   regPkg = regBest.pkg;
   regPlan.forEach(({ reg, at, rotDeg, fits }, r) => {
@@ -1105,16 +1105,28 @@ function rectCorners(r) {
   return [[hw, hh], [hw, -hh], [-hw, -hh], [-hw, hh]]
     .map(([x, y]) => [r.cx + x * c - y * s, r.cy + x * s + y * c]);
 }
-function rectsOverlap(a, b) {
-  // Separating-axis test on both rectangles' edge normals.
-  for (const r of [a, b]) {
-    for (const [ux, uy] of [[Math.cos(r.ang), Math.sin(r.ang)], [-Math.sin(r.ang), Math.cos(r.ang)]]) {
-      const pa = rectCorners(a).map(([x, y]) => x * ux + y * uy);
-      const pb = rectCorners(b).map(([x, y]) => x * ux + y * uy);
-      if (Math.max(...pa) < Math.min(...pb) || Math.max(...pb) < Math.min(...pa)) return false;
-    }
-  }
+// Separating-axis test on both rectangles' edge normals, allocation-free: b is
+// transformed into a's frame (and vice versa), where a's axes are the
+// coordinate axes and b's projected half-extent has a closed form. `grow`
+// inflates b by that margin on every side -- callers used to allocate a spread
+// copy per test, and this function was 78% of the placement plan's runtime.
+function satHalf(p, q, pGrow, qGrow) {
+  const c = Math.cos(p.ang), s = Math.sin(p.ang);
+  const dx = q.cx - p.cx, dy = q.cy - p.cy;
+  const qx = dx * c + dy * s, qy = -dx * s + dy * c;
+  const rel = q.ang - p.ang;
+  const cr = Math.abs(Math.cos(rel)), sr = Math.abs(Math.sin(rel));
+  const qw = q.w / 2 + qGrow, qh = q.h / 2 + qGrow;
+  if (Math.abs(qx) > p.w / 2 + pGrow + cr * qw + sr * qh) return false;
+  if (Math.abs(qy) > p.h / 2 + pGrow + sr * qw + cr * qh) return false;
   return true;
+}
+function rectsOverlap(a, b, grow = 0) {
+  // Bounding-circle pre-reject: most candidate pairs are nowhere near.
+  const ra = Math.hypot(a.w, a.h) / 2, rb = Math.hypot(b.w, b.h) / 2 + grow * Math.SQRT2;
+  const dx = b.cx - a.cx, dy = b.cy - a.cy;
+  if (dx * dx + dy * dy > (ra + rb) * (ra + rb)) return false;
+  return satHalf(a, b, 0, grow) && satHalf(b, a, grow, 0);
 }
 function rectHitsCircle(r, cx, cy, rad) {
   // Closest point on the rectangle to the circle centre, in the rect's frame.
@@ -1157,7 +1169,7 @@ function padClear(pad, obs, clearance) {
       if (rectHitsCircle(pad, d.x + ox, d.y + oy, d.r + clearance)) return false;
     }
     for (const r of obs.rects) {
-      if (rectsOverlap(pad, { ...r, cx: r.cx + ox, cy: r.cy + oy, w: r.w + 2 * clearance, h: r.h + 2 * clearance })) return false;
+      if (rectsOverlap(pad, { ...r, cx: r.cx + ox, cy: r.cy + oy }, clearance)) return false;
     }
   }
   return true;
@@ -1252,11 +1264,39 @@ function distToPoly(x, y, poly) {
 const coilsNear = (coils, x, y, radius) =>
   coils.filter((c) => Math.abs(c.x * 1000 - x) <= radius && Math.abs(c.y * 1000 - y) <= radius);
 
+/** The accumulating field of already-placed part rects, bucketed on a uniform
+ *  14 mm grid so a candidate only ever scans its own neighbourhood. By the end
+ *  of a dense plan the field holds ~2,500 rects; the linear scan this replaces
+ *  was most of the plan's runtime. `all` keeps insertion order, so
+ *  mark/rollback (the register package escalation) and clone (one base field
+ *  shared by every bridge-package pass) are exact. */
+const HASH = 14;   // bucket size = the neighbourhood cull distance in worldClear
+class RectIndex {
+  constructor() { this.all = []; this.grid = new Map(); }
+  static key(ix, iy) { return ix * 100003 + iy; }
+  add(r) {
+    this.all.push(r);
+    const k = RectIndex.key(Math.round(r.cx / HASH), Math.round(r.cy / HASH));
+    let b = this.grid.get(k);
+    if (!b) this.grid.set(k, b = []);
+    b.push(r);
+  }
+  addAll(rs) { for (const r of rs) this.add(r); }
+  bucket(ix, iy) { return this.grid.get(RectIndex.key(ix, iy)); }
+  mark() { return this.all.length; }
+  rollback(m) {
+    const keep = this.all.slice(0, m);
+    this.all = []; this.grid.clear();
+    this.addAll(keep);
+  }
+  clone() { const c = new RectIndex(); c.addAll(this.all); return c; }
+}
+
 /** Do these world-frame rects clear every via land and terminal pad (tested in
  *  the local frame of each nearby coil -- exact, not lattice-approximate) AND
- *  every previously placed part? `placed` is the accumulating world-frame
- *  obstacle list that makes later placements respect earlier ones -- the check
- *  whose absence let shift registers land on top of bridges. */
+ *  every previously placed part? `placed` is the accumulating RectIndex that
+ *  makes later placements respect earlier ones -- the check whose absence let
+ *  shift registers land on top of bridges. */
 function worldClear(rects, near, obs, placed, clearance, outline = null) {
   for (const r of rects) {
     // The board edge blocks pads and bodies alike (a tiled neighbour's parts
@@ -1271,13 +1311,21 @@ function worldClear(rects, near, obs, placed, clearance, outline = null) {
         const lr = { ...r, cx: r.cx - c.x * 1000, cy: r.cy - c.y * 1000 };
         if (Math.abs(lr.cx) > obs.cellHalf * 1.3 + cull || Math.abs(lr.cy) > obs.cellHalf * 1.3 + cull) continue;
         for (const d of obs.discs) if (rectHitsCircle(lr, d.x, d.y, d.r + clearance)) return false;
-        for (const o of obs.rects) if (rectsOverlap(lr, { ...o, w: o.w + 2 * clearance, h: o.h + 2 * clearance })) return false;
+        for (const o of obs.rects) if (rectsOverlap(lr, o, clearance)) return false;
       }
     }
-    // Other parts block EVERYTHING -- pads and body alike.
-    for (const o of placed) {
-      if (Math.abs(o.cx - r.cx) > 14 || Math.abs(o.cy - r.cy) > 14) continue;
-      if (rectsOverlap(r, { ...o, w: o.w + 2 * clearance, h: o.h + 2 * clearance })) return false;
+    // Other parts block EVERYTHING -- pads and body alike. Only the 3x3
+    // bucket neighbourhood can hold anything within the cull distance.
+    const ix = Math.round(r.cx / HASH), iy = Math.round(r.cy / HASH);
+    for (let gx = ix - 1; gx <= ix + 1; gx++) {
+      for (let gy = iy - 1; gy <= iy + 1; gy++) {
+        const b = placed.bucket(gx, gy);
+        if (!b) continue;
+        for (const o of b) {
+          if (Math.abs(o.cx - r.cx) > HASH || Math.abs(o.cy - r.cy) > HASH) continue;
+          if (rectsOverlap(r, o, clearance)) return false;
+        }
+      }
     }
   }
   return true;
@@ -1421,74 +1469,84 @@ export function backsideFit(cfg, {
     obs.outline = outline;
     chain = chainPlan(stator, cfg);
 
-    const planWith = (bridgeKey) => {
-      const st = { bridgesMoved: 0, bridgeFallback: 0, regFallback: 0, serviceFallback: 0, bridgePackage: bridgeKey };
-      const placed = [];
+    // --- bridge-independent stages, computed ONCE -------------------------
+    // Service parts and the sensor grid place before any bridge exists, so
+    // their result is identical for every bridge-package pass; recomputing
+    // them per pass was a third of the plan's runtime. They accumulate into
+    // `baseField`, which each pass clones.
+    const baseField = new RectIndex();
+    let serviceFallbackBase = 0;
+    // Service parts escalate their search radius until they seat: the target
+    // (near the south edge) is a preference, not a requirement, and emitting
+    // a fallback ON TOP of other parts is exactly the overlap bug this plan
+    // exists to prevent.
+    const settle = (fp, target, rots = ROTS) => {
+      let p = { fits: false };
+      for (const sh of [obs.cellHalf * 3, obs.cellHalf * 6, Math.max(halfB, obs.cellHalf * 12)]) {
+        p = placeWorld(fp, target, coils, obs, baseField, clearance, sh, sh > obs.cellHalf * 4 ? 0.5 : 0.25, rots);
+        if (p.fits) break;
+      }
+      const at = p.fits ? p.at : target;
+      if (!p.fits) serviceFallbackBase++;
+      baseField.addAll(partRects(fp, at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
+      return { at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits };
+    };
+    // Targets hang off the outline's TRUE south edge -- halfB is the max
+    // extent over both axes, which on a wide castellated board is the
+    // x-width, several millimetres south of any actual board edge.
+    const yMin = outline.reduce((a, p) => Math.min(a, p[1]), Infinity);
+    service = {
+      header: settle(SERVICE_FPS.header, [0, yMin + 3]),
+      deadman: settle(SERVICE_FPS.deadman, [-(halfB - 9), yMin + 3], [0]),
+    };
+
+    // Sensors next -- placement runs in order of decreasing rigidity, so the
+    // flexible parts yield: a sensor's position is bought with observability
+    // (poseObservability grades every nudge), a bridge works anywhere in its
+    // own cell, and a register anywhere near its quad. Cells that lose their
+    // standard bridge spot to a sensor simply re-search.
+    if (sensorSpacing) {
+      const gridHalf = cfg.stator.statorSize / 2;
+      const n = Math.floor((2 * gridHalf) / sensorSpacing) + 1;
+      const list = [];
+      const failedAt = [];
+      let failed = 0, offBoard = 0, worstNudge = 0;
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          const swx = (-gridHalf + i * sensorSpacing) * 1000, swy = (-gridHalf + j * sensorSpacing) * 1000;
+          // The grid spans the square statorSize; the board is the cell
+          // union, which recedes inside it. A grid point off the board is
+          // not a failure -- it is simply not on this board.
+          if (!pointInPoly(swx, swy, outline)) { offBoard++; continue; }
+          const r = placeWorld(footprints.sot23_6, [swx, swy], coils, obs, baseField, clearance, nudgeMax);
+          if (!r.fits) { failed++; failedAt.push([swx, swy]); continue; }
+          worstNudge = Math.max(worstNudge, r.offMm);
+          baseField.addAll(partRects(footprints.sot23_6, r.at[0], r.at[1], (r.rotDeg * Math.PI) / 180));
+          // Anchor by (cell, local offset): the fit is proven relative to
+          // the coil lattice; emission re-applies it in the same frame.
+          let bi = 0, bd = Infinity;
+          for (let k = 0; k < coils.length; k++) {
+            const d = Math.hypot(coils[k].x * 1000 - r.at[0], coils[k].y * 1000 - r.at[1]);
+            if (d < bd) { bd = d; bi = k; }
+          }
+          list.push({
+            coil: bi, local: [r.at[0] - coils[bi].x * 1000, r.at[1] - coils[bi].y * 1000],
+            rotDeg: r.rotDeg,
+            atMm: [r.at[0], r.at[1]], nudgeMm: r.offMm,
+          });
+        }
+      }
+      sensors = { wanted: n * n - offBoard, offBoard, placed: list.length, failed, failedAt, worstNudgeMm: worstNudge, list };
+    }
+
+    const planWith = (bridgeKey, canAbort) => {
+      const st = {
+        bridgesMoved: 0, bridgeFallback: 0, regFallback: 0,
+        serviceFallback: serviceFallbackBase, bridgePackage: bridgeKey,
+      };
+      const placed = baseField.clone();
       const bfp = footprints[bridgeKey];
       const bStd = parts[bridgeKey]?.fits ? parts[bridgeKey] : null;
-      // Service parts escalate their search radius until they seat: the
-      // target (near the south edge) is a preference, not a requirement, and
-      // emitting a fallback ON TOP of other parts is exactly the overlap bug
-      // this plan exists to prevent.
-      const settle = (fp, target, rots = ROTS) => {
-        let p = { fits: false };
-        for (const sh of [obs.cellHalf * 3, obs.cellHalf * 6, Math.max(halfB, obs.cellHalf * 12)]) {
-          p = placeWorld(fp, target, coils, obs, placed, clearance, sh, sh > obs.cellHalf * 4 ? 0.5 : 0.25, rots);
-          if (p.fits) break;
-        }
-        const at = p.fits ? p.at : target;
-        if (!p.fits) st.serviceFallback++;
-        placed.push(...partRects(fp, at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
-        return { at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits };
-      };
-      // Targets hang off the outline's TRUE south edge -- halfB is the max
-      // extent over both axes, which on a wide castellated board is the
-      // x-width, several millimetres south of any actual board edge.
-      const yMin = outline.reduce((a, p) => Math.min(a, p[1]), Infinity);
-      const svc = {
-        header: settle(SERVICE_FPS.header, [0, yMin + 3]),
-        deadman: settle(SERVICE_FPS.deadman, [-(halfB - 9), yMin + 3], [0]),
-      };
-
-      // Placement runs in order of decreasing rigidity, so the flexible parts
-      // yield: the sensors' positions are bought with observability
-      // (poseObservability grades every nudge), a bridge works anywhere in
-      // its own cell, and a register anywhere near its quad. Cells that lose
-      // their standard bridge spot to a sensor simply re-search.
-      let sens = null;
-      if (sensorSpacing) {
-        const gridHalf = cfg.stator.statorSize / 2;
-        const n = Math.floor((2 * gridHalf) / sensorSpacing) + 1;
-        const list = [];
-        const failedAt = [];
-        let failed = 0, offBoard = 0, worstNudge = 0;
-        for (let i = 0; i < n; i++) {
-          for (let j = 0; j < n; j++) {
-            const swx = (-gridHalf + i * sensorSpacing) * 1000, swy = (-gridHalf + j * sensorSpacing) * 1000;
-            // The grid spans the square statorSize; the board is the cell
-            // union, which recedes inside it. A grid point off the board is
-            // not a failure -- it is simply not on this board.
-            if (!pointInPoly(swx, swy, outline)) { offBoard++; continue; }
-            const r = placeWorld(footprints.sot23_6, [swx, swy], coils, obs, placed, clearance, nudgeMax);
-            if (!r.fits) { failed++; failedAt.push([swx, swy]); continue; }
-            worstNudge = Math.max(worstNudge, r.offMm);
-            placed.push(...partRects(footprints.sot23_6, r.at[0], r.at[1], (r.rotDeg * Math.PI) / 180));
-            // Anchor by (cell, local offset): the fit is proven relative to
-            // the coil lattice; emission re-applies it in the same frame.
-            let bi = 0, bd = Infinity;
-            for (let k = 0; k < coils.length; k++) {
-              const d = Math.hypot(coils[k].x * 1000 - r.at[0], coils[k].y * 1000 - r.at[1]);
-              if (d < bd) { bd = d; bi = k; }
-            }
-            list.push({
-              coil: bi, local: [r.at[0] - coils[bi].x * 1000, r.at[1] - coils[bi].y * 1000],
-              rotDeg: r.rotDeg,
-              atMm: [r.at[0], r.at[1]], nudgeMm: r.offMm,
-            });
-          }
-        }
-        sens = { wanted: n * n - offBoard, offBoard, placed: list.length, failed, failedAt, worstNudgeMm: worstNudge, list };
-      }
       // Two passes over the bridges, so the service parts cannot start a
       // cascade: every cell whose standard (periodicity-proven) spot is
       // untouched keeps it; only the handful shadowed by the header or
@@ -1506,7 +1564,7 @@ export function backsideFit(cfg, {
           // spot proven to tile the INTERIOR lattice may still overhang the rim.
           const rim = obs.outline && distToPoly(at[0], at[1], obs.outline) <= obs.cellHalf * 2 ? obs.outline : null;
           if (worldClear(rects, [], obs, placed, clearance, rim)) {
-            placed.push(...rects);
+            placed.addAll(rects);
             return { coil: ci, at, rotDeg: bStd.rotDeg, moved: false };
           }
           blocked.push(ci);
@@ -1518,7 +1576,7 @@ export function backsideFit(cfg, {
           let out;
           if (p.fits) { st.bridgesMoved++; out = { coil: ci, at: p.at, rotDeg: p.rotDeg, moved: true }; }
           else { st.bridgeFallback++; out = { coil: ci, at: stdOf(c), rotDeg: bStd.rotDeg, moved: false, collides: true }; }
-          placed.push(...partRects(bfp, out.at[0], out.at[1], (out.rotDeg * Math.PI) / 180));
+          placed.addAll(partRects(bfp, out.at[0], out.at[1], (out.rotDeg * Math.PI) / 180));
           brs[ci] = out;
         }
         // A bare-die bridge brings no decap pads of its own: give every cell a
@@ -1528,7 +1586,7 @@ export function backsideFit(cfg, {
             const p = placeWorld(BACKPLANE_FPS.c0402, [b.at[0] + 1.6, b.at[1]], coils, obs, placed, clearance, 2.0, 0.25, [0, Math.PI / 2]);
             if (p.fits) {
               b.cap = { at: p.at, rotDeg: p.rotDeg };
-              placed.push(...partRects(BACKPLANE_FPS.c0402, p.at[0], p.at[1], (p.rotDeg * Math.PI) / 180));
+              placed.addAll(partRects(BACKPLANE_FPS.c0402, p.at[0], p.at[1], (p.rotDeg * Math.PI) / 180));
             }
           }
         }
@@ -1537,49 +1595,62 @@ export function backsideFit(cfg, {
       // Register package escalation: TSSOP-16 if the board has room for it,
       // else the same 74HC595 in DHVQFN-16. A pass aborts on its third
       // failure -- a package that cannot serve three quads is the wrong
-      // package, and mixing the two on one board would be a silly BOM.
+      // package, and mixing the two on one board would be a silly BOM. When a
+      // FALLBACK BRIDGE still exists, even the last register package aborts
+      // once it is clearly starving: a failing search is the expensive kind
+      // (it exhausts every candidate), and burning forty of them to measure
+      // exactly how badly the doomed bridge pass loses is the old 35 seconds.
       const regPkgs = ['tssop16', 'qfn16'].filter((k) => footprints[k]);
       let regs = null, best = null;
       for (const pkg of regPkgs) {
-        const mark = placed.length;
+        const mark = placed.mark();
         const out = [];
         let fails = 0;
+        let aborted = false;
         for (const reg of chain.registers) {
           const p = placeWorld(footprints[pkg], [reg.x, reg.y], coils, obs, placed, clearance, obs.cellHalf * 2, 0.5);
-          if (!p.fits && ++fails >= 3 && pkg !== regPkgs[regPkgs.length - 1]) break;
+          if (!p.fits) {
+            fails++;
+            if (fails >= 3 && pkg !== regPkgs[regPkgs.length - 1]) { aborted = true; break; }
+            if (fails >= 6 && canAbort) { aborted = true; break; }
+          }
           const at = p.fits ? p.at : [reg.x, reg.y];
-          placed.push(...partRects(footprints[pkg], at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
+          placed.addAll(partRects(footprints[pkg], at[0], at[1], p.fits ? (p.rotDeg * Math.PI) / 180 : 0));
           out.push({ ...reg, at, rotDeg: p.fits ? p.rotDeg : 0, fits: p.fits });
         }
         // A pass with ANY fallback keeps escalating -- a smaller package that
         // seats every register beats a bigger one that stacks even a single
         // register on other copper.
-        if (out.length === chain.registers.length && (!best || fails < best.fails)) {
-          best = { out, pkg, fails, rects: placed.slice(mark) };
+        if (!aborted && out.length === chain.registers.length && (!best || fails < best.fails)) {
+          best = { out, pkg, fails, rects: placed.all.slice(mark) };
         }
-        placed.length = mark;
+        placed.rollback(mark);
         if (best && best.fails === 0) break;
       }
       if (best) {
-        placed.push(...best.rects);
+        placed.addAll(best.rects);
         regs = best.out;
         st.regPackage = best.pkg;
         st.regFallback = best.fails;
       }
 
-      const misses = st.regFallback + st.bridgeFallback + (sens ? sens.failed : 0);
-      return { svc, brs, regs, sens, st, misses };
+      // No completed register pass means this bridge package starved the
+      // chain: report it as unplaceable so the selection moves on.
+      const misses = regs
+        ? st.regFallback + st.bridgeFallback + (sensors ? sensors.failed : 0)
+        : Infinity;
+      return { brs, regs, st, misses };
     };
 
     const bridgeKeys = ['sop8', 'dfn8'].filter((k) => footprints[k] && parts[k]?.fits);
     let plan = null;
-    for (const bk of bridgeKeys) {
-      const p = planWith(bk);
+    bridgeKeys.forEach((bk, i) => {
+      if (plan && plan.misses === 0) return;      // nothing starves: taken
+      const p = planWith(bk, i < bridgeKeys.length - 1);
       if (!plan || p.misses < plan.misses) plan = p;
-      if (p.misses === 0) break;                  // nothing starves: take it
-    }
-    if (!plan) plan = planWith(bridgeKeys[0] ?? 'sop8');
-    ({ svc: service, brs: bridges, regs: registers, sens: sensors, st: stats } = plan);
+    });
+    if (!plan) plan = planWith(bridgeKeys[0] ?? 'sop8', false);
+    ({ brs: bridges, regs: registers, st: stats } = plan);
   }
 
   return {
