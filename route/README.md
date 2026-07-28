@@ -50,6 +50,20 @@ Same tile, same nets: 86 s/pass became 2 s/pass.
 `mkses.mjs` merges the `.ses` back onto the FULL twelve-layer board, and that
 merged board is what gets DRC'd. DRC on the proxy would prove nothing.
 
+It also refuses to merge copper the router gave to two nets at once. freerouting
+can return a session where one run belongs to two nets — round 2 of the amzhex
+grind handed back 17 segments that were both `PWMA_92` and `VLOGIC`, identical
+endpoints and opposite direction, plus collinear runs overlapping only in part.
+Merged as given that is a dead short. `sharedCopper()` buckets every segment by
+the infinite line it lies on and looks for overlapping extents from different
+nets, which is linear rather than a 77-million-pair sweep and exact for this
+failure mode. Where two nets share a run the one with *less* routing loses all
+of it, copper and vias, and goes back to the ratsnest where it is visible as an
+unrouted connection — dropping `VLOGIC` to save one coil's PWM would be the
+wrong trade. The drop is printed, and what survives is re-checked rather than
+assumed. This was first done by deleting the net by hand, which left the
+published board unreproducible from its own inputs; it is now a step.
+
 ## Design rules
 
 `fabRuleFiles()` in `src/kicad.js` generates the `.kicad_dru` and `.kicad_pro` that go
@@ -64,11 +78,25 @@ for FR-4 at 12 layers, 1 oz (read 2026-07-27):
 | via hole-to-hole | 0.2 mm | "Via Hole-to-Hole Spacing" |
 | copper to routed edge | 0.2 mm | "Copper clearance from routed board edges" |
 | hole to copper | 0.2 mm | "Inner layer via hole to copper" |
+| plated-hole aspect ratio | 8:1 | drill vs pressed board thickness |
 
 They come out of the same `FAB` object the geometry is sized from, so the thing
 being checked and the thing being drawn cannot drift.
-The board is drawn with 0.5 mm vias on 0.2 mm drills (a 0.15 mm ring), which
-clears every floor above with margin.
+
+The aspect ratio is the odd one out: it is the only fab limit that depends on
+the **stack** rather than on the copper, so `fabRuleFiles()` takes the pressed
+thickness and every via number falls out of it.
+
+| stack | thickness | drill | ring on a 0.5 mm land |
+|---|---|---|---|
+| 12 layer, 1 oz | 1.570 mm | 0.20 mm (7.9:1) | 0.150 mm |
+| 14 layer, 1 oz | 1.840 mm | 0.23 mm (8.0:1) | 0.135 mm |
+
+KiCad has no aspect-ratio constraint, so the `.dru` states the drill *floor*
+the ratio implies — a ratio the rule file cannot express is a ratio nothing
+checks. That silence is exactly how the 14-layer board once shipped 698 routed
+vias at 9.2:1 while DRC reported zero errors: every rule was a diameter.
+`redrill.mjs` checks any existing board against its own stated thickness.
 
 ## Things that were wrong with the board, and are not now
 

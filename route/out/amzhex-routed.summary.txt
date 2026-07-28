@@ -1,12 +1,11 @@
-DRC        : 0 errors, 243 warnings
+DRC        : 0 errors, 241 warnings
    warning    199  lib_footprint_issues
    warning     39  silk_over_copper
    warning      2  silk_edge_clearance
-   warning      2  via_dangling
    warning      1  track_dangling
-Unrouted   : 565 connections  (report lists 499)
+Unrouted   : 563 connections  (report lists 499)
               101  coil_*
-               77  PWMA_*
+               75  PWMA_*
                66  PWMB_*
                56  GND
                51  VBUS
@@ -14,4 +13,7 @@ Unrouted   : 565 connections  (report lists 499)
                35  RCLK
                31  SCLK
                31  OE_N
-               11  SYNC
+               12  SYNC
+                1  SCL
+
+DROPPED PWMA_92: 43 segments, 2 vias -- shared 2.546 mm of copper with VLOGIC

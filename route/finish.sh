@@ -12,7 +12,13 @@ OUT=out
 mkdir -p "$OUT"
 
 echo "== merging $SES into $BOARD"
-node mkses.mjs "$BOARD" "$SES" "$OUT/$NAME.kicad_pcb" || exit 1
+MERGE=$(node mkses.mjs "$BOARD" "$SES" "$OUT/$NAME.kicad_pcb") || exit 1
+echo "$MERGE"
+# Held for the summary below, not just printed: a net the router shorted is
+# routing the board does not have, and the summary beside the board is the
+# tracked artefact. Without it that file reads "563 unrouted" and says nothing
+# about why two of them are missing.
+DROPPED=$(echo "$MERGE" | grep '^DROPPED ' || true)
 # The rule files are written for the board that was just merged -- thickness
 # included, because the via rules are aspect-ratio limits and a 12-layer rule
 # file passes holes a 14-layer board cannot have (see fabRuleFiles).
@@ -50,7 +56,10 @@ for f in "$OUT/$NAME-electronics" "$OUT/$NAME-coils"; do
 done
 
 echo "== summary"
-python3 summarise.py "$OUT/$NAME.drc.json" "$OUT/$NAME.kicad_pcb" | tee "$OUT/$NAME.summary.txt"
+{
+  python3 summarise.py "$OUT/$NAME.drc.json" "$OUT/$NAME.kicad_pcb"
+  [ -n "$DROPPED" ] && printf '\n%s\n' "$DROPPED"
+} | tee "$OUT/$NAME.summary.txt"
 echo
 echo "results in $(pwd)/$OUT/"
 ls -la "$OUT/"

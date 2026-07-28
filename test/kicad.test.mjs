@@ -4,8 +4,9 @@
 // that actually matters -- every layer winding the same way so the fields add
 // instead of cancelling.
 
-import { makeStator } from '../src/coils.js';
-import { buildKiCad, buildTile, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb, viaPlan, viaSize, gutterFits, FAB } from '../src/kicad.js';
+import { makeStator, pcbBoardThickness } from '../src/coils.js';
+import { buildKiCad, buildTile, pcbCoilGeometry, spiralPoints, spiralVertices, validatePcb, viaPlan, viaSize, gutterFits, fabRuleFiles, FAB } from '../src/kicad.js';
+import { sharedCopper } from '../route/mkses.mjs';
 
 let fails = 0;
 const check = (n, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`); if (!c) fails++; };
@@ -724,6 +725,69 @@ console.log('\n=== the full board tiles with itself ===');
   const out = buildKiCad(hs, hcfg);
   check('the exported hex board has the cell-boundary outline',
     (out.text.match(/gr_line/g) || []).length > 20 && out.stats.tile.tileable === true);
+}
+
+console.log('\n=== the via rules follow the stack, not a constant ===');
+// The plated-hole limit is an aspect RATIO, so it is the one fab number that
+// moves when layers are added and nothing else does. Two rule files that
+// disagree about the drill on the SAME fab are the whole point of this check:
+// a 0.2 mm hole is 7.9:1 through a 12-layer board and 9.2:1 through a 14-layer
+// one, and 698 of the second shipped in a board DRC called clean, because every
+// rule was a diameter and none of them was the ratio.
+{
+  const t12 = pcbBoardThickness(12, 35e-6) * 1000;
+  const t14 = pcbBoardThickness(14, 35e-6) * 1000;
+  const r12 = fabRuleFiles({ boardThickness: t12 });
+  const r14 = fabRuleFiles({ boardThickness: t14 });
+  const drillOf = (r) => +JSON.parse(r.pro).net_settings.classes[0].via_drill;
+  const ruleDrill = (r) => +r.dru.match(/hole_size \(min ([\d.]+)mm\)/)[1];
+
+  check('12 and 14 layers do NOT get the same drill',
+    drillOf(r12) !== drillOf(r14), `${drillOf(r12)} vs ${drillOf(r14)} mm`);
+  for (const [n, t, r] of [[12, t12, r12], [14, t14, r14]]) {
+    check(`${n} layers: the netclass via clears ${FAB.maxAspect}:1`,
+      t / drillOf(r) <= FAB.maxAspect + 1e-9,
+      `${t.toFixed(3)} mm / ${drillOf(r)} mm = ${(t / drillOf(r)).toFixed(1)}:1`);
+    check(`${n} layers: the .dru states that floor, so DRC can catch it`,
+      Math.abs(ruleDrill(r) - Math.max(FAB.minDrill, t / FAB.maxAspect)) < 5e-5,
+      `rule floor ${ruleDrill(r)} mm`);
+    check(`${n} layers: the netclass via satisfies the fab's own rule file`,
+      drillOf(r) >= ruleDrill(r) - 1e-9
+      && (0.5 - drillOf(r)) / 2 >= FAB.minAnnular - 1e-9,
+      `ring ${((0.5 - drillOf(r)) / 2).toFixed(3)} mm vs ${FAB.minAnnular} min`);
+  }
+  // The regression exactly: no thickness used to mean "no aspect limit", and
+  // that silence is what the 14-layer board shipped on.
+  check('an unstated thickness cannot smuggle a 14-layer board past the ratio',
+    t14 / drillOf(fabRuleFiles({})) > FAB.maxAspect,
+    'so callers must pass boardThickness -- gen.mjs and finish.sh do');
+}
+
+console.log('\n=== copper the router gave to two nets at once never ships ===');
+// freerouting returned a session where 17 segments belonged to both PWMA_92 and
+// VLOGIC -- identical endpoints, opposite direction -- plus collinear runs that
+// overlap only partially. Merged as given that is a dead short, and it was
+// first fixed by deleting the net by hand, which left the board unreproducible.
+{
+  const seg = (net, layer, x0, y0, x1, y1) => ({ net, layer, x0, y0, x1, y1 });
+  check('an exactly duplicated path, written backwards, is caught',
+    sharedCopper([seg('A', 'B.Cu', 0, 0, 100, 0), seg('B', 'B.Cu', 100, 0, 0, 0)]).length === 1);
+  check('a partial collinear overlap sharing no endpoint is caught',
+    sharedCopper([seg('A', 'B.Cu', 0, 0, 100, 0), seg('B', 'B.Cu', 60, 0, 200, 0)])[0].overlap === 40);
+  check('the same net overlapping itself is not a short',
+    sharedCopper([seg('A', 'B.Cu', 0, 0, 100, 0), seg('A', 'B.Cu', 50, 0, 200, 0)]).length === 0);
+  check('collinear but disjoint runs are left alone',
+    sharedCopper([seg('A', 'B.Cu', 0, 0, 100, 0), seg('B', 'B.Cu', 150, 0, 200, 0)]).length === 0);
+  check('the same path on DIFFERENT layers is not a short',
+    sharedCopper([seg('A', 'B.Cu', 0, 0, 100, 0), seg('B', 'In12.Cu', 0, 0, 100, 0)]).length === 0);
+  check('parallel neighbours a clearance apart are not a short',
+    sharedCopper([seg('A', 'B.Cu', 0, 0, 100, 0), seg('B', 'B.Cu', 0, 90, 100, 90)]).length === 0);
+  // Diagonals: the reduced direction and the sign normalisation have to agree
+  // for the two halves of one path to land in the same bucket.
+  check('a diagonal duplicate lands in the same bucket as its reverse',
+    sharedCopper([seg('A', 'B.Cu', 0, 0, 300, 300), seg('B', 'B.Cu', 300, 300, 0, 0)]).length === 1);
+  check('a diagonal that merely crosses another is not shared copper',
+    sharedCopper([seg('A', 'B.Cu', 0, 0, 100, 100), seg('B', 'B.Cu', 0, 100, 100, 0)]).length === 0);
 }
 
 console.log(fails ? `\n${fails} FAILURES` : '\nall kicad checks pass');
