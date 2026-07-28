@@ -34,6 +34,7 @@ for r in $(seq 1 "$ROUNDS"); do
 
   timeout 10800 java -Xmx16g -jar freerouting-2.2.4.jar \
     -de grind.dsn -do "grind$r.ses" -mp "$PASSES" -mt 16 2>&1 \
+    | tee "grind$r.router.log" \
     | grep -oE "session completed.*" | tail -1
   [ -s "grind$r.ses" ] || { echo "   no session output; stopping"; break; }
 

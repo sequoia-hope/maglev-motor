@@ -26,3 +26,10 @@ frjar/
 !out/*.kicad_dru
 
 # The renders stay out: 144 MB of PNG that the board files above already say.
+
+# KiCad's own droppings once you open a board: .kicad_prl is per-user window
+# state, fp-info-cache is a cache, and production/ is the fabrication toolkit's
+# gerber+BOM output -- 6 MB regenerated from the board on demand.
+*.kicad_prl
+fp-info-cache
+production/

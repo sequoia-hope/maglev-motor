@@ -41,17 +41,22 @@ const sensorSpacing = cfg.stator.pcbSpareLayers > 0 && layout.available ? layout
 console.log(`sensor spacing: ${sensorSpacing == null ? 'none' : (sensorSpacing * 1000).toFixed(2) + ' mm'}`);
 
 const t0 = Date.now();
-const kc = buildKiCad(stator, cfg, { sensorSpacing });
+// BRIDGE=sop8 pins the bridge package instead of letting backsideFit choose --
+// the SO-8 / SOT-23-6 routing comparison.
+const kc = buildKiCad(stator, cfg, { sensorSpacing, forceBridge: process.env.BRIDGE || null });
 console.log(`built in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 console.log(JSON.stringify(kc.stats, null, 2));
 
-const out = new URL(`./${key}.kicad_pcb`, import.meta.url);
+// OUT_KEY writes under a different basename than the preset, so a variant build
+// does not clobber the board a routing run is already grinding on.
+const outKey = process.env.OUT_KEY || key;
+const out = new URL(`./${outKey}.kicad_pcb`, import.meta.url);
 writeFileSync(out, kc.text);
-writeFileSync(new URL(`./${key}.contract.json`, import.meta.url), JSON.stringify(kc.contract, null, 2));
+writeFileSync(new URL(`./${outKey}.contract.json`, import.meta.url), JSON.stringify(kc.contract, null, 2));
 // The rule files go beside the board under the same basename -- that is where
 // kicad-cli looks for them -- and they are generated from FAB, so what DRC
 // checks is what the geometry was sized from.
 const rules = fabRuleFiles({ trackWidth: pcbCoilGeometry(cfg).trace });
-writeFileSync(new URL(`./${key}.kicad_dru`, import.meta.url), rules.dru);
-writeFileSync(new URL(`./${key}.kicad_pro`, import.meta.url), rules.pro);
+writeFileSync(new URL(`./${outKey}.kicad_dru`, import.meta.url), rules.dru);
+writeFileSync(new URL(`./${outKey}.kicad_pro`, import.meta.url), rules.pro);
 console.log(`wrote ${out.pathname} (${(kc.text.length / 1e6).toFixed(1)} MB)`);

@@ -896,7 +896,7 @@ function fpPad(n, px, py, w, h, netNum, netName, S = 'F', rot = 0, clr = 0) {
  *  reference text rotate WITH the pads -- a chip drawn at 0 degrees with its
  *  pads swung 120 degrees away is how this bug was first seen.
  *  `nets` maps pad index -> net, in fp.pads order. */
-function emitPart(L, { lib, value, ref, S, at, rotDeg, fp, nets, f }) {
+function emitPart(L, { lib, value, ref, S, at, rotDeg, fp, nets, f, lcsc }) {
   const m = S === 'B' ? ' (justify mirror)' : '';
   const a = (rotDeg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
   const w2f = (px, py) => [px * c - py * s, -(px * s + py * c)];
@@ -907,6 +907,11 @@ function emitPart(L, { lib, value, ref, S, at, rotDeg, fp, nets, f }) {
   const [tx0, ty0] = w2f(bx, by + refY);
   L.push(`    (fp_text reference "${ref}" (at ${f(tx0)} ${f(ty0)} ${f(rotDeg)}) (layer "${S}.SilkS") (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
   L.push(`    (fp_text value "${value}" (at ${f(tx0)} ${f(ty0 + 0.8)}) (layer "${S}.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  // The order code, on every part that is a part. Defaults from the footprint
+  // library so a new call site cannot forget it; callers sharing a land pattern
+  // between different parts (the dead-man 0402s) pass their own.
+  const code = lcsc ?? LCSC[lib]?.code;
+  if (code) L.push(`    (property "LCSC" "${code}")`);
   const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]]
     .map(([sx, sy]) => w2f(bx + (sx * fp.body[0]) / 2, by + (sy * fp.body[1]) / 2));
   L.push(`    (fp_poly (pts ${corners.map(([x, y]) => `(xy ${f(x)} ${f(y)})`).join(' ')}) (layer "${S}.CrtYd") (width 0.05) (fill none))`);
@@ -926,7 +931,8 @@ function emitPowerStage(L, ref, ox, oy, f, S, vbus, gnd, outA, outAn, outB, outB
   L.push(`  (footprint "maglev:HB6" (layer "${S}.Cu") (at ${f(ox)} ${f(oy)})`);
   L.push('    (attr smd)');
   L.push(`    (fp_text reference "${ref}" (at 0 -1.35) (layer "${S}.SilkS") (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
-  L.push(`    (fp_text value "HB6" (at 0 1.35) (layer "${S}.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  L.push(`    (fp_text value "${LCSC.HB6.mpn}" (at 0 1.35) (layer "${S}.Fab") hide (effects (font (size 0.35 0.35) (thickness 0.06))${m}))`);
+  L.push(`    (property "LCSC" "${LCSC.HB6.code}")`);
   L.push(`    (fp_rect (start -1 -1) (end 1 1) (layer "${S}.CrtYd") (width 0.05))`);
   L.push(fpPad(1, -0.9, -0.65, 0.5, 0.3, vbus, 'VBUS', S));
   L.push(fpPad(2, -0.9, 0, 0.5, 0.3, gnd, 'GND', S));
@@ -1209,7 +1215,7 @@ export function buildKiCad(stator, cfg, opts = {}) {
   // the fit-verified positions. opts.sensorSpacing (m) additionally places the
   // TMAG grid; without it the sensors are simply omitted from this export.
   const elec = cfg.stator.pcbSpareLayers > 0
-    ? backsideFit(cfg, { stator, sensorSpacing: opts.sensorSpacing ?? null })
+    ? backsideFit(cfg, { stator, sensorSpacing: opts.sensorSpacing ?? null, forceBridge: opts.forceBridge ?? null })
     : null;
   const chain = elec?.available ? elec.chain : null;
   const cellHalf = cfg.stator.coilPitch * 1000 / 2;
@@ -1337,7 +1343,9 @@ export function buildKiCad(stator, cfg, opts = {}) {
       // kicad-cli renders), so the world angle is what gets written.
       const deg = (-(pad.a || 0) * 180) / Math.PI;
       L.push(`  (footprint "maglev:Term" (layer "B.Cu") (at ${tx(pad.p[0])} ${ty(pad.p[1])})`);
-      L.push('    (attr smd)');
+      // A coil terminal is copper, not a part: no LCSC code, and excluded from
+      // the BOM so it does not read as 336 components someone forgot to source.
+      L.push('    (attr smd exclude_from_bom)');
       // On B.Fab, not B.SilkS: a coil terminal is a drilled land in a gutter
       // 0.8 mm wide, not a part anyone places by eye. Silkscreening it put ink
       // straight onto the neighbouring copper and over the board edge, and the
@@ -1521,6 +1529,12 @@ export const BOM = [
   { role: 'bridge (roomy cells)', part: 'TC118S', mfr: 'Fuman', pkg: 'SOP-8',
     lcsc: 'C88308', stock: 115970, unit: 0.033, at: 500,
     note: '2-9 V rating: ZERO margin at a 9 V bus -- run 8 V, or pay for the DRV8837' },
+  { role: 'bridge (SOT-23-6 cells)', part: 'FM116C', mfr: 'Fuman', pkg: 'SOT-23-6',
+    lcsc: 'C2802264', stock: 0, unit: 0.024, at: 500,
+    note: '2-9 V, 600 mA continuous / 800 mA peak -- the same zero margin at 9 V as the TC118S. LCSC showed NO stock 2026-07-28; see the MX116H row for the in-stock substitute' },
+  { role: 'bridge (SOT-23-6, in stock)', part: 'MX116H', mfr: 'Mixic', pkg: 'SOT-23-6',
+    lcsc: 'C2845121', stock: 13170, unit: 0.066, at: 500,
+    note: '1 A peak, 500 mOhm Rdson, 13170 in stock -- but 2-8 V, BELOW the 9 V bus. Building on this part means running an 8 V bus, which drops the coil ceiling from 0.9 A to 0.8 A' },
   { role: 'shift register (dense)', part: '74HC595BQ,115', mfr: 'Nexperia', pkg: 'DHVQFN-16 2.5x3.5',
     lcsc: 'C730243', stock: 162365, unit: 0.111, at: 500 },
   { role: 'shift register (roomy)', part: '74HC595PW,118', mfr: 'Nexperia', pkg: 'TSSOP-16',
@@ -1533,7 +1547,45 @@ export const BOM = [
     note: 'the classic C8545 was OUT of stock when checked -- part numbers rot, verify yours' },
   { role: 'decap', part: 'CL05B104KO5NNNC', mfr: 'Samsung', pkg: '0402 100n 16V X7R',
     lcsc: 'C1525', stock: 1627700, unit: 0.005, at: 100 },
+  { role: 'dead-man R (RDM1, RDM2)', part: '0402WGF1003TCE', mfr: 'Uniroyal', pkg: '0402 100k 1%',
+    lcsc: 'C25741', stock: 4035900, unit: 0.001, at: 100,
+    note: 'one value does both jobs: 100k x the 100n CDM1 is a 10 ms dead-man timeout, and 100k is a fine /OE pull-up' },
+  { role: 'spine header', part: '1.27-2*5PLTM', mfr: 'Boomele', pkg: '2x5 1.27 mm',
+    lcsc: 'C59983', stock: null, unit: 0.106, at: 1,
+    note: 'the emitted footprint is a bare 2x5 pad grid, so any 1.27 mm 2x5 part lands on it -- this is a stocked one, not a constraint' },
 ];
+
+/** LCSC order codes keyed by the footprint library each part is emitted under.
+ *  This is the single place an order code lives: emitPart writes it into every
+ *  footprint as an `LCSC` property -- the field JLCPCB's assembly flow reads --
+ *  and the BOM table above quotes the same codes.
+ *
+ *  A package class is not orderable. "TC118S-class" told you the pinout and the
+ *  footprint and left you to find the part; every entry here is a specific one,
+ *  and `value` on the footprint now carries the same MPN so the silkscreen, the
+ *  BOM and the property cannot drift apart.
+ *
+ *  R0402 is deliberately absent: the same 0402 land carries both the dead-man
+ *  resistors and its capacitor, so those pass their code explicitly. */
+export const LCSC = {
+  SOT23HB: { code: 'C2802264', mpn: 'FM116C' },
+  SOP8HB: { code: 'C88308', mpn: 'TC118S' },
+  DFN8HB: { code: 'C39159', mpn: 'DRV8837' },
+  SR595: { code: 'C5948', mpn: '74HC595PW' },
+  SR595Q: { code: 'C730243', mpn: '74HC595BQ' },
+  TMAG: { code: 'C126688', mpn: 'TLV493D' },
+  HDR10: { code: 'C59983', mpn: '1.27-2*5PLTM' },
+  C0402: { code: 'C1525', mpn: '100n 0402' },
+  HB6: { code: 'C2802264', mpn: 'FM116C' },
+};
+
+/** The two dead-man passives and its FET, which share land patterns with other
+ *  parts and so cannot be keyed by footprint. */
+export const LCSC_SERVICE = {
+  res: { code: 'C25741', mpn: '100k 0402' },
+  cap: { code: 'C1525', mpn: '100n 0402' },
+  fet: { code: 'C65189', mpn: '2N7002' },
+};
 
 export const FOOTPRINTS = {
   sop8: {
@@ -1928,6 +1980,11 @@ export function backsideFit(cfg, {
   // tens of seconds on a 168-cell board. `plan: false` returns just the card,
   // so a UI can render instantly and run the plan in a worker.
   plan = true,
+  // Pin the bridge package instead of letting the search pick. The search
+  // optimises for parts that FIT, which on a tight cell means the smallest one
+  // -- but fitting and being routable are different questions, and a roomier
+  // package spreads its pads further apart. Set this to compare them.
+  forceBridge = null,
 } = {}) {
   if (!isPcbCoil(cfg.stator.coilType)) return { available: false, reason: 'notpcb' };
   if (!(cfg.stator.pcbSpareLayers > 0)) return { available: false, reason: 'nolayer' };
@@ -2172,7 +2229,17 @@ export function backsideFit(cfg, {
     // goes last: on this board that pad is an unroutable island (see the
     // sot23hb note in FOOTPRINTS), so a six-pin part that fits beats an
     // eight-pin one that fits and cannot be wired.
-    const bridgeKeys = ['sop8', 'sot23hb', 'dfn8'].filter((k) => footprints[k] && parts[k]?.fits);
+    const bridgeKeys = ['sop8', 'sot23hb', 'dfn8']
+      .filter((k) => (forceBridge ? k === forceBridge : true))
+      .filter((k) => footprints[k] && parts[k]?.fits);
+    // Without this the fallback below quietly plans with a package that does
+    // not fit and places NO bridges -- a board of 168 coils and no drivers that
+    // looks plausible until you count the footprints. Ask for a package that
+    // cannot go on the cell and you get told, not a silently gutted board.
+    if (forceBridge && bridgeKeys.length === 0) {
+      throw new Error(`forceBridge: "${forceBridge}" does not fit this cell `
+        + `(fits: ${['sop8', 'sot23hb', 'dfn8'].filter((k) => parts[k]?.fits).join(', ') || 'none'})`);
+    }
     let plan = null;
     bridgeKeys.forEach((bk, i) => {
       if (plan && plan.misses === 0) return;      // nothing starves: taken
@@ -2318,24 +2385,30 @@ function emitShift595(L, ref, ox, oy, rot, f, S, n, pkg = 'tssop16') {
  *  exporter keys its component list by reference and refuses to write the file
  *  at all, which is what stopped this board reaching an autorouter. */
 function emitDeadman(L, ox, oy, f, S, n) {
-  const two = (ref, val, x, a, b) => {
+  const two = (ref, val, x, a, b, part) => {
     const m = S === 'B' ? ' (justify mirror)' : '';
     L.push(`  (footprint "maglev:R0402" (layer "${S}.Cu") (at ${f(ox + x)} ${f(oy)})`);
     L.push('    (attr smd)');
     L.push(`    (fp_text reference "${ref}" (at 0 -0.6) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
     L.push(`    (fp_text value "${val}" (at 0 0.6) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+    L.push(`    (property "LCSC" "${part.code}")`);
     L.push(fpPad(1, -0.5, 0, 0.4, 0.5, a.num, a.name, S));
     L.push(fpPad(2, 0.5, 0, 0.4, 0.5, b.num, b.name, S));
     L.push('  )');
   };
-  two('RDM1', 'retrigger', 0, n.sync, n.ng);
-  two('CDM1', 'hold', 2.2, n.ng, n.gnd);
-  two('RDM2', 'pull-up', 4.4, n.oen, n.vcc);
+  // These carried function labels ('retrigger', 'hold', 'pull-up') and no
+  // values, which is not orderable. 100k x 100n makes the dead-man time out
+  // ~10 ms after the last SYNC strobe -- comfortably longer than a ~1 ms
+  // control period, short enough to drop the outputs well inside a fall.
+  two('RDM1', LCSC_SERVICE.res.mpn, 0, n.sync, n.ng, LCSC_SERVICE.res);
+  two('CDM1', LCSC_SERVICE.cap.mpn, 2.2, n.ng, n.gnd, LCSC_SERVICE.cap);
+  two('RDM2', LCSC_SERVICE.res.mpn, 4.4, n.oen, n.vcc, LCSC_SERVICE.res);
   const m = S === 'B' ? ' (justify mirror)' : '';
   L.push(`  (footprint "maglev:SOT23" (layer "${S}.Cu") (at ${f(ox + 6.8)} ${f(oy)})`);
   L.push('    (attr smd)');
   L.push(`    (fp_text reference "QDM1" (at 0 -1.6) (layer "${S}.SilkS") (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
-  L.push(`    (fp_text value "dead-man" (at 0 1.6) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+  L.push(`    (fp_text value "${LCSC_SERVICE.fet.mpn}" (at 0 1.6) (layer "${S}.Fab") hide (effects (font (size 0.3 0.3) (thickness 0.05))${m}))`);
+  L.push(`    (property "LCSC" "${LCSC_SERVICE.fet.code}")`);
   // Pads mirror SERVICE_FPS.deadman's world-frame table: world +y is file -y.
   L.push(fpPad(1, -0.95, -1.0, 0.6, 0.7, n.ng.num, n.ng.name, S));  // gate
   L.push(fpPad(2, 0.95, -1.0, 0.6, 0.7, n.gnd.num, n.gnd.name, S)); // source
@@ -2349,7 +2422,7 @@ function emitDeadman(L, ox, oy, f, S, n) {
 function emitHeader(L, ox, oy, rot, f, S, nets) {
   // JSPINE, not J1: the coil I/O pads are J{coil}.IN/.OUT, so a bare J1 reads as
   // part of that series. Refs must be unique board-wide (see emitDeadman).
-  emitPart(L, { lib: 'HDR10', value: 'spine 2x5 1.27mm', ref: 'JSPINE', S, at: [ox, oy], rotDeg: rot, fp: SERVICE_FPS.header, nets, f });
+  emitPart(L, { lib: 'HDR10', value: LCSC.HDR10.mpn, ref: 'JSPINE', S, at: [ox, oy], rotDeg: rot, fp: SERVICE_FPS.header, nets, f });
 }
 
 /** A TMAG5273-class 3-axis sensor on the SOT-23-6 envelope at (ox,oy) rot deg. */
@@ -2358,7 +2431,11 @@ function emitSensor(L, ref, ox, oy, rot, f, S, n) {
   // World top-left is SCL, down the left to SDA; NC/VCC/INT down the right.
   const fns = ['sda', 'int', 'gnd', 'vcc', 'scl', 'nc'];
   const nets = fns.map((fn) => n[fn] ?? { num: 0, name: '' });
-  emitPart(L, { lib: 'TMAG', value: 'TMAG5273', ref, S, at: [ox, oy], rotDeg: rot, fp: FOOTPRINTS.sot23_6, nets, f });
+  // Named for the part you can actually order. The design of record is the
+  // TMAG5273 (four I2C addresses; the firmware contract's addrVariant assumes
+  // it) but LCSC does not stock it -- so the board says TLV493D, which has TWO
+  // addresses and therefore wants twice the sensor buses. See BOM.
+  emitPart(L, { lib: 'TMAG', value: LCSC.TMAG.mpn, ref, S, at: [ox, oy], rotDeg: rot, fp: FOOTPRINTS.sot23_6, nets, f });
 }
 
 /** An integrated-bridge envelope on the fit-verified SOP-8 land pattern (pads
@@ -2389,7 +2466,7 @@ export const BRIDGE_OUT_PADS = {
 function emitBridge6(L, ref, ox, oy, rot, f, S, n) {
   const nets = [n.in1, n.outa, n.gnd, n.vbus, n.in2, n.outb];
   emitPart(L, {
-    lib: 'SOT23HB', value: 'TC118S-class', ref, S,
+    lib: 'SOT23HB', value: LCSC.SOT23HB.mpn, ref, S,
     at: [ox, oy], rotDeg: rot, fp: FOOTPRINTS.sot23hb, nets, f,
   });
 }
@@ -2403,7 +2480,7 @@ function emitBridge8(L, ref, ox, oy, rot, f, S, n, pkg = 'sop8') {
   const nets = [n.gnd, n.vbus, n.vbus, n.gnd, n.in2, n.outb, n.in1, n.outa]
     .concat(pkg === 'sop8' ? [n.vbus, n.gnd] : [n.gnd]);
   emitPart(L, {
-    lib: pkg === 'dfn8' ? 'DFN8HB' : 'SOP8HB', value: pkg === 'dfn8' ? 'DRV8837' : 'TC118S-class',
+    lib: pkg === 'dfn8' ? 'DFN8HB' : 'SOP8HB', value: pkg === 'dfn8' ? LCSC.DFN8HB.mpn : LCSC.SOP8HB.mpn,
     ref, S, at: [ox, oy], rotDeg: rot, fp: FOOTPRINTS[pkg], nets, f,
   });
 }
