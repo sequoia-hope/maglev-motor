@@ -117,6 +117,18 @@ const PRESETS = {
       sim: { gap: 0.0015, iMax: 1.0, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
     },
   },
+  amzhex: {
+    label: '1/4″ blocks, hex driver-per-coil (Amazing Magnets)',
+    blurb: 'The Amazing Magnets build of the driver-per-coil honeycomb: every magnet is a 1/4″ × 1/4″ × 1/8″ N52 brick, and BOTH magnetisations are catalogue parts — Q125B-N52, magnetised through the 1/8″ thickness, is the axial block; P250AB-N52, magnetised through a 1/4″ width, is the in-plane block. No jig-turning (a turned brick would stand 1/4″ tall): the flux-steering orientation is its own SKU, the platen carries half a cube array\'s magnet mass, and the whole order is $20.22 — 9 of one part and 24 of the other, and P250AB ships in dozens, so 24 is exactly two. λ = 25.4 mm because that is 4 × 1/4″, so the platen is a symmetric 7×7 lattice, 44.45 mm across on a 44.45 mm platen with zero border wasted: 33 magnets in 49 pockets, the pattern nulls left empty. Over it, the pcbhexdrv recipe rescaled to the inch pitch: a honeycomb of 168 coils on a 12-layer, plated-through-hole, 1 oz board whose bottom copper is surrendered to the electronics — each coil winds 132 turns (12 per layer) of 0.103 mm trace in the top 11 layers, a 9.9 Ω load whose current limit IS the 9 V bus: 0.9 A at 100% duty, sub-amp bridge silicon, no per-coil current sensing (commanded duty × bus ÷ calibrated R is the current). At that honest ceiling it lifts 3.7× centred and 1.8× at the corners of a ±16 mm workspace — and the honeycomb\'s yaw isotropy holds, 2.4× worst-case with the platen turned 45° — at a 1.5 mm gap over a 1.36 mm floor. The busiest hover coil draws 0.24 A at 2.4 V; hover is 4.3 W centred and ≈6.9 W worst-case (~28 K rise), and like every 1 oz honeycomb it is heat-first, 140 A/mm² peak in the thin copper. The board outline follows the honeycomb cell boundary (~106 mm, 12 rows — even, so full boards interlock with copies of themselves and continue the lattice; seam 0.41 mm). Pick this over amz316 when you want the independent-driver electronics and a lighter platen; pick it over pcbhexdrv when the supplier has to be one US catalogue.',
+    cfg: {
+      translator: { arrayType: 'halbach2d', layout: 'single',
+        driveByMagnet: true, cubicMagnets: false, magnetSize: 0.00635,
+        pitch: 0.0254, magnetThickness: 0.003175, Br: 1.45, segments: 4,
+        platenSize: 0.04445, platenMass: 0, maxOrder: 3 },
+      stator: { coilType: 'pcbhex', coilPitch: 0.0084667, coilFill: 0.84, statorSize: 0.102, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 12, pcbSpareLayers: 1, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
+      sim: { gap: 0.0015, iMax: 0.9, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
+    },
+  },
   wound: {
     label: 'Hand-wound square coils (Zhu/Teo/Pang)',
     blurb: 'Four 1-D Halbach arrays in a cross, thrusting tangentially, over a grid of square coils. Driven as the published eight-phase scheme: 8 amplifiers for ~120 live coils, full 6-DOF.',

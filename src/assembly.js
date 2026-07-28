@@ -66,6 +66,23 @@ const MAGNET_CATALOGUE = [
     note: 'One part number for the entire platen: a true cube turned in the jig is the in-plane block.',
   },
   {
+    // amzhex: the two-SKU brick. Q125B-N52 and P250AB-N52 are the SAME
+    // 1/4 x 1/4 x 1/8 inch N52 block, differing only in magnetisation axis --
+    // through the 1/8" thickness (axial) or through a 1/4" width (in-plane).
+    // No jig-turning: unlike a cube array, each orientation is its own
+    // catalogue part, and the brick is half a cube's thickness and mass.
+    // Verified 2026-07 on amazingmagnets.com (unit prices at the qty break a
+    // 7x7 platen lands in: Q125B 1-99, P250AB 24-47).
+    w: 6.35, h: 6.35, t: 3.175, grade: 'N52', tol: 0.15, vendor: 'Amazing Magnets', verified: '2026-07',
+    lines: [
+      { for: 'axial', order: '1/4″ × 1/4″ × 1/8″ N52, Q125B-N52, magnetised through the 1/8″ thickness',
+        url: 'https://amazingmagnets.com/Q125B-N52-neodymium-block-magnet', unit: 0.62 },
+      { for: 'in-plane', order: '1/4″ × 1/4″ × 1/8″ N52, P250AB-N52, magnetised through a 1/4″ width — sold in dozens',
+        url: 'https://amazingmagnets.com/P250AB-N52-Neodymium-block-magnet', unit: 0.61 },
+    ],
+    note: 'Same brick, two magnetisation axes: the in-plane block is not a turned cube but its own SKU, at half a cube\'s thickness and mass. P250AB ships in multiples of 12.',
+  },
+  {
     // desk40: a 5 mm cube is the smallest true-cube that keeps the platen a
     // catalogue build. Like every cube, one SKU is the whole array -- axial as
     // supplied, in-plane turned 90° in the jig. Verified 2026-07 on jc-magnetics.

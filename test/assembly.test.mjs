@@ -242,6 +242,16 @@ for (const [key, preset] of Object.entries(PRESETS)) {
       close(o.total, 47.60, 1e-9), `$${o.total.toFixed(2)}`);
     if (key === 'pcbmini') check('pcbmini: two Supreme SKUs total $18.06',
       o.skus === 2 && close(o.total, 18.06, 1e-9), `$${o.total.toFixed(2)}`);
+    // Same cross-check for amzhex: the blurb's $20.22 was priced from the two
+    // Amazing Magnets product pages before the catalogue entry existed, and the
+    // in-plane count must land on whole dozens because P250AB ships in 12s.
+    if (key === 'amzhex') {
+      check('amzhex: two Amazing Magnets SKUs total the $20.22 in its blurb',
+        o.skus === 2 && close(o.total, 20.22, 1e-6), `$${o.total.toFixed(2)}`);
+      check('amzhex: in-plane order is whole dozens (P250AB minimum unit)',
+        o.lines.find((l) => l.for === 'in-plane').qty % 12 === 0,
+        `${o.lines.find((l) => l.for === 'in-plane').qty} pcs`);
+    }
   }
 
   // --- the stack must physically close -------------------------------------
