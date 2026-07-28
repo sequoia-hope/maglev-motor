@@ -1,0 +1,31 @@
+(version 1)
+
+# JLCPCB FR-4, 12 layer, 1 oz. Every number is transcribed from the fab's published capability
+# table; this file is GENERATED from FAB in src/kicad.js, so it and the copper
+# it checks come from one place.
+
+(rule "min via drill"
+	(constraint hole_size (min 0.15mm))
+	(condition "A.Type == 'Via'"))
+
+(rule "min via diameter"
+	(constraint via_diameter (min 0.25mm))
+	(condition "A.Type == 'Via'"))
+
+(rule "min annular ring"
+	(constraint annular_width (min 0.13mm)))
+
+(rule "via hole to hole"
+	(constraint hole_to_hole (min 0.2mm)))
+
+(rule "min track width"
+	(constraint track_width (min 0.09mm)))
+
+(rule "min copper clearance"
+	(constraint clearance (min 0.09mm)))
+
+(rule "copper to board edge"
+	(constraint edge_clearance (min 0.2mm)))
+
+(rule "hole to copper"
+	(constraint hole_clearance (min 0.2mm)))

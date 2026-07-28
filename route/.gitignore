@@ -14,5 +14,15 @@
 *.lck
 frjar/
 
-# ...except the finished result, which is the point of the exercise.
-!out/
+# ...except the finished boards in out/, which are the point of the exercise.
+# These are tracked so an online viewer (KiCanvas et al.) can open them straight
+# from GitHub. That is also why they are NOT in Git LFS: a raw GitHub URL on an
+# LFS file serves the pointer stub, not the board, and the viewer sees nothing.
+#
+# A directory negation cannot rescue a file an extension rule already excluded,
+# so these have to name the files themselves.
+!out/*.kicad_pcb
+!out/*.kicad_pro
+!out/*.kicad_dru
+
+# The renders stay out: 144 MB of PNG that the board files above already say.
