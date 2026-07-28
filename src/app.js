@@ -15,6 +15,7 @@ import { lineChart, heatmap, barStrip, trackHover } from './plots.js';
 import { fieldMap, liftVsGap, pitchSweep, capabilityMap, rippleScan, fieldCrossCheck, sensorObservability, sensorLayout, poseObservability } from './analysis.js';
 import { MATERIALS, PROCESSES, COOLING, DEFAULT_MECH, stackUp, stackTemperatureRise, mechDefaultsFor } from './mechanical.js';
 import { buildAssembly } from './assembly.js';
+import { platenCad, magnetGridDxf, isogridDxf, platenStep, platenPreviewSVG } from './cad.js';
 import { renderExploded } from './exploded.js';
 
 // ---------------------------------------------------------------- presets ---
@@ -946,6 +947,59 @@ function renderBuild() {
   } else {
     pcbCard.style.display = 'none';
     pcbCard.innerHTML = '';
+  }
+
+  // --- platen machining export ---------------------------------------------
+  // The retainer as a part you can cut, not a mass estimate. Note the honest
+  // break with the mass model: pocketWall imagines a wall between every pair
+  // of cells, but the cells are pitch-tight (pitch = magnet x segments), so
+  // adjacent cubes TOUCH and no such wall can exist. The machinable retention
+  // is the pattern's own nulls: material rises through the empty cells as
+  // posts, plus a rim fence -- and since the posts are islands in the pocket,
+  // retainer and backing are one billet, isogrid-pocketed from the back.
+  {
+    const cad = platenCad(app.cfg, app.tr, app.cfg.mech);
+    const pv = platenPreviewSVG(cad);
+    const mmm = (x, d = 1) => (x * 1000).toFixed(d);
+    const modelMass = app.stack.pocketMass + app.stack.backingMass;
+    const tEq = Math.cbrt(12 * cad.stiffness.D / MATERIALS[cad.cad.material].E);
+    const tSheet = cad.backingSectionMass / (cad.footprint * cad.footprint * cad.rho);
+    const card = document.getElementById('platenCadCard');
+    card.innerHTML = `<h4 style="font-size:12px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Platen machining export</h4>
+      <p style="font-size:12px;color:var(--ink-2);margin:0 0 10px">One 6061 billet, machined from both sides — <b>${mmm(cad.footprint)} × ${mmm(cad.footprint)} × ${mmm(cad.thickness, 2)} mm</b>.
+      The magnet cells are pitch-tight (λ = magnet × ${app.cfg.translator.segments}), so adjacent cubes touch and there is <b>no room for a wall between cells</b> —
+      the per-cell egg-crate the mass model's “retainer wall” imagines cannot be built from stock cubes. What can: the pattern's own nulls. The top setup cuts one
+      ${mmm(cad.pocketDepth, 2)} mm pocket whose <b>${cad.nPosts} square posts</b> stand in the interior empty cells, with the rim voids becoming fence notches —
+      every magnet ends up boxed in by aluminium and its own neighbours, glued to a ${mmm(cad.skin, 1)} mm floor, standing ${mmm(cad.cad.standProud, 2)} mm proud so
+      NdFeB, not aluminium, defines the gap plane. The back setup cuts <b>${cad.triangles.length} isogrid pockets</b> (${mmm(cad.isoSide)} mm triangles,
+      ${mmm(cad.cad.ribWidth, 1)} mm ribs, ${mmm(cad.ribDepth, 1)} mm deep): the backing section bends like a <b>${mmm(tEq, 1)} mm solid plate at the sheet mass of
+      ${mmm(tSheet, 1)} mm</b>. Exported part: <b>${(cad.mass * 1000).toFixed(0)} g</b> vs the model's ${(modelMass * 1000).toFixed(0)} g retainer + backing${
+        cad.grown ? ` — footprint grows ${mmm((cad.footprint - app.cfg.translator.platenSize) / 2, 1)} mm per side for the fence, because this platen is sized exactly to its array` : ''}.</p>
+      <div style="display:flex;gap:12px;align-items:flex-start;margin:0 0 10px">
+        <div style="flex:1;max-width:260px">${pv.magnetSvg}<p style="font-size:11px;color:var(--muted);margin:4px 0 0">Top: magnet pocket (gold), posts + fence standing, dogbone reliefs (green), cells dashed.</p></div>
+        <div style="flex:1;max-width:260px">${pv.isogridSvg}<p style="font-size:11px;color:var(--muted);margin:4px 0 0">Back: isogrid pockets, ${mmm(cad.skin, 1)} mm skin left under the magnets.</p></div>
+      </div>
+      <ul style="font-size:12px;color:var(--ink-2);margin:0 0 10px;padding-left:18px">
+        ${cad.checks.map((k) => `<li style="color:${k.ok ? 'var(--ink-2)' : 'var(--warn)'}">${k.ok ? '' : '<b>Watch:</b> '}${k.msg}</li>`).join('')}
+      </ul>
+      <button id="btnMagDxf" class="ghost">Magnet grid DXF</button>
+      <button id="btnIsoDxf" class="ghost">Isogrid DXF</button>
+      <button id="btnPlatenStep" class="ghost">Platen STEP</button>
+      <p style="font-size:12px;color:var(--muted);margin:8px 0 0">DXFs are per-setup 2.5-D profiles in mm (isogrid mirrored to tool view); the <b>RELIEF layer is geometry, not advice</b> —
+      without the ${mmm(cad.cad.dogboneDia, 2)} mm dogbones the cubes cannot seat in the ${cad.nReliefs} true inside corners (island post corners are convex and stay sharp).
+      The STEP is the sharp-cornered design solid for CAM. The ${mmm(cad.cad.clearance * 1000, 0)} µm-per-side fit clearance is already cut into every pocket.</p>`;
+    const dl2 = (text, name) => {
+      const blob = new Blob([text], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    const pkey = app.presetKey ?? 'design';
+    document.getElementById('btnMagDxf').onclick = () => dl2(magnetGridDxf(cad), `maglev-platen-${pkey}-magnet-grid.dxf`);
+    document.getElementById('btnIsoDxf').onclick = () => dl2(isogridDxf(cad), `maglev-platen-${pkey}-isogrid.dxf`);
+    document.getElementById('btnPlatenStep').onclick = () => dl2(platenStep(cad, `maglev-platen-${pkey}`).text, `maglev-platen-${pkey}.step`);
   }
 
   // --- magnet order list ---------------------------------------------------
