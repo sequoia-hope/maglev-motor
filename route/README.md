@@ -12,6 +12,12 @@ freerouting  dsn     ->  amzhex.route.ses
 finish.sh    ses     ->  out/*.kicad_pcb + DRC + PNG
 ```
 
+Every step is reproducible from the one before it, and that is a property worth
+keeping: `gen.mjs` rebuilds `amzhex.kicad_pcb` byte for byte from the preset,
+and `finish.sh` rebuilds both boards in `out/` from that board plus the `.ses`.
+The two things that once broke it — a net deleted by hand after the merge, and
+the unrouted companion copied into `out/` by hand — are both steps now.
+
 Run it:
 
 ```sh
