@@ -36,16 +36,29 @@ export function effectiveTrace(traceWidth, copperThickness) {
   return Math.max(traceWidth, minTrackWidth(copperThickness));
 }
 
+/** Centre-to-centre spacing of adjacent turns: the effective trace plus the
+ *  gap between turns. The gap defaults to the TRACE WIDTH -- the historical
+ *  "trace + equal space" packing every existing preset keeps, byte-identical.
+ *  `space` (cfg.stator.pcbTraceSpace, metres) overrides it; the fab's
+ *  published minimum spacing is the honest floor. On amzhex, 0.09 mm keeps
+ *  all 144 turns and hands the 0.013 mm/turn that equal-space wasted to the
+ *  centre hole -- which is exactly the room the centre via bay needs. */
+export function pcbTurnPitch(traceWidth, copperThickness, space = null) {
+  const eff = effectiveTrace(traceWidth, copperThickness);
+  return eff + (space ?? eff);
+}
+
 // How much of the coil half-width the winding leaves clear at the centre. The
 // first cut left a full quarter (a big dead hole); winding closer to the middle
 // packs several more turns per layer straight into force. We keep a small centre
 // clear for the inner via cluster -- the layer-to-layer crossovers that must
 // stay near the centre because they cannot be routed out past the winding.
 const PCB_INNER_FRAC = 0.13;
-/** Turns per layer for a PCB spiral of half-width w/2 at effective trace `eff`.
- *  Shared by coils.js (physics) and kicad.js (copper) so they cannot diverge. */
-export function pcbTurnsPerLayer(w, eff, innerFrac = PCB_INNER_FRAC) {
-  return Math.max(1, Math.floor((w * (0.5 - innerFrac)) / (eff * 2)));
+/** Turns per layer for a PCB spiral of half-width w/2 at turn pitch `pitch`
+ *  (centre-to-centre, from pcbTurnPitch). Shared by coils.js (physics) and
+ *  kicad.js (copper) so they cannot diverge. */
+export function pcbTurnsPerLayer(w, pitch, innerFrac = PCB_INNER_FRAC) {
+  return Math.max(1, Math.floor((w * (0.5 - innerFrac)) / pitch));
 }
 
 /** Pressed thickness of an N-layer board: the one stackup formula, shared so
@@ -157,6 +170,7 @@ export function makeStator(cfg) {
   const {
     coilType, coilPitch, coilFill, statorSize,
     windingHeight, wireDiameter, pcbLayers, pcbTraceWidth, pcbCopperThickness,
+    pcbTraceSpace = null,
     pcbSpareLayers = 0,
     ringsPerCoil = 2, segmentsPerSide = 4,
   } = cfg;
@@ -181,8 +195,9 @@ export function makeStator(cfg) {
     // fab rule). Piling on copper thus does NOT monotonically buy turns.
     const w = coilPitch * coilFill;
     const eff = effectiveTrace(pcbTraceWidth, pcbCopperThickness);
+    const pitchM = pcbTurnPitch(pcbTraceWidth, pcbCopperThickness, pcbTraceSpace);
     pcbEffTrace = eff;
-    const perLayer = pcbTurnsPerLayer(w, eff);
+    const perLayer = pcbTurnsPerLayer(w, pitchM);
     // Spare layers are copper given to ELECTRONICS, not turns: a driver-per-coil
     // board that carries its bridges and flux sensors on the bottom face needs
     // the bottom layer(s) free of winding. The board is still pressed at the
@@ -196,7 +211,7 @@ export function makeStator(cfg) {
     // Inner half-width is where the winding actually stops after an integer
     // number of turns -- matched to the copper so the force integral sees the
     // real hole, not a nominal one.
-    const halfInM = Math.max(w * 0.5 - perLayer * 2 * eff, w * 0.05);
+    const halfInM = Math.max(w * 0.5 - perLayer * pitchM, w * 0.05);
     inner = [2 * halfInM, 2 * halfInM];
     wireArea = eff * pcbCopperThickness;
     // Board thickness is DERIVED from the stackup, not assumed to be 1.6 mm.

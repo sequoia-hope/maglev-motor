@@ -15,6 +15,6 @@ import sys
 
 txt = open(sys.argv[1]).read()
 cu = re.findall(r'\(\d+ "([FB]\.Cu|In\d+\.Cu)" signal\)', txt)
-wound = set(re.findall(r'\(arc \(start [^)]*\) \(mid [^)]*\) \(end [^)]*\) \(width [\d.]+\) \(layer "([^"]+)"', txt))
+wound = set(re.findall(r'\(arc \(start [^)]*\) \(mid [^)]*\) \(end [^)]*\) \(width [\d.]+\)(?: \(locked\))? \(layer "([^"]+)"', txt))
 elec = [L for L in cu if L not in wound]
 print(','.join(elec) or 'B.Cu')

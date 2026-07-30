@@ -149,9 +149,30 @@ const PRESETS = {
       // which is past the layer count where PCB pricing turns steep; the via
       // also has to grow its drill to 0.23 mm because 1.84 mm of board at 0.2 mm
       // is a 9:1 hole and the fab plates 8:1 (viaDrill/minDrillFor).
-      stator: { coilType: 'pcbhex', coilPitch: 0.008466666666666667, coilFill: 0.80, statorSize: 0.102, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 14, pcbSpareLayers: 2, pcbTraceWidth: 0.000103, pcbCopperThickness: 35e-6, lockCoilPitch: false },
+      // pcbTraceSpace 0.09: turns at the fab's published minimum SPACING
+      // instead of the historical "space = trace width". Costs nothing -- the
+      // turn count is floor()-quantised and stays 144 -- and the 0.013 mm per
+      // turn it reclaims grows the centre hole from 0.86 to 1.02 mm apothem,
+      // which is exactly what lets the six inner crossovers move to a corner
+      // ring and leave a LEGAL 0.5 mm routing-via site at the coil's centre
+      // (the only through-hole-legal B.Cu<->inner crossing under the parts).
+      // pcbEdgeInset 0.05 mm: the outline cut is pulled inside the nominal
+      // cell boundary so an oversize-routed board cannot push its abutted
+      // neighbour off the magnet lattice pitch (fixture holds nominal, the
+      // tolerance lands in the 0.1 mm air gap). 50 um, not more: the gutter
+      // affords 0.2 mm copper-to-edge plus the inset ONLY on true perimeter
+      // flats (viaPlan is edge-aware per cell; a bigger inset inverts the
+      // perimeter gutter band entirely -- measured at 0.25).
+      stator: { coilType: 'pcbhex', coilPitch: 0.008466666666666667, coilFill: 0.80, statorSize: 0.102, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 14, pcbSpareLayers: 2, pcbTraceWidth: 0.000103, pcbTraceSpace: 0.00009, pcbEdgeInset: 0.00005, pcbCopperThickness: 35e-6, lockCoilPitch: false },
       sim: { gap: 0.0015, iMax: 0.9, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
     },
+    // KiCad boards for this preset that live in the repo (route/out, kept in
+    // git): rendered as KiCanvas links in the docs tab so the latest pushed
+    // results are one click away.
+    boards: [
+      { label: 'Routed coil board (latest autoroute result)', path: 'route/out/amzhex-routed.kicad_pcb' },
+      { label: 'Unrouted coil board (copper + parts, no interconnect)', path: 'route/out/amzhex-unrouted.kicad_pcb' },
+    ],
   },
   wound: {
     label: 'Hand-wound square coils (Zhu/Teo/Pang)',
@@ -1812,6 +1833,13 @@ function renderAbout() {
 
     <h2>Current preset</h2>
     <p>${PRESETS[app.presetKey].blurb}</p>
+    ${(PRESETS[app.presetKey].boards || []).map((b) => {
+    // KiCanvas renders a .kicad_pcb straight from its GitHub blob URL, so the
+    // link always shows whatever was pushed last -- no copy step to go stale.
+    const gh = `https://github.com/sequoia-hope/maglev-motor/blob/main/${b.path}`;
+    return `<p><a href="https://kicanvas.org/?github=${encodeURIComponent(gh)}"
+      target="_blank" rel="noopener">View in KiCanvas: ${b.label}</a></p>`;
+  }).join('')}
 
     <h2>Source literature</h2>
     <ul>

@@ -546,7 +546,7 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
     }
     const viaRe = /\(via \(at ([-\d.]+) ([-\d.]+)\) \(size ([-\d.]+)\)[^\n]*\(net (\d+)\)/g;
     while ((m = viaRe.exec(text))) vias.push({ x: +m[1], y: +m[2], r: +m[3] / 2, net: +m[4] });
-    const segRe = /\(segment \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(width ([-\d.]+)\) \(layer "([^"]+)"\) \(net (\d+)\)/g;
+    const segRe = /\(segment \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(width ([-\d.]+)\)(?: \(locked\))? \(layer "([^"]+)"\) \(net (\d+)\)/g;
     while ((m = segRe.exec(text))) {
       const [x0, y0, x1, y1, w] = [+m[1], +m[2], +m[3], +m[4], +m[5]];
       tracks.push({ side: m[6].split('.')[0], cx: (x0 + x1) / 2, cy: (y0 + y1) / 2,
@@ -650,7 +650,10 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
 console.log('\n=== the full board tiles with itself ===');
 {
   const { cellOutline, tileability, buildKiCad } = await import('../src/kicad.js');
-  const hcfg = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.84, statorSize: 0.096 } };
+  // The synthetic board here models the PCBHEX preset (0.84 fill), which has
+  // neither of amzhex's knobs -- strip them so the base cfg's spread cannot
+  // change this board's turn count (pcbTraceSpace) or its outline (inset).
+  const hcfg = { stator: { ...cfg.stator, coilType: 'pcbhex', coilFill: 0.84, statorSize: 0.096, pcbTraceSpace: null, pcbEdgeInset: 0 } };
   const hs = makeStator({ ...hcfg.stator, ringsPerCoil: 2, segmentsPerSide: 3 });
   const t = tileability(hs, hcfg);
   check('the shipped hex board is self-tileable (even rows, seam copper clear)',

@@ -28,7 +28,7 @@
 // test/kicad.test.mjs checks both: the sign of each layer's enclosed area, and
 // that every via spans the full stack (F.Cu..B.Cu).
 
-import { effectiveTrace, pcbTurnsPerLayer, makeStator, isPcbCoil, pcbBoardThickness } from './coils.js';
+import { effectiveTrace, pcbTurnPitch, pcbTurnsPerLayer, makeStator, isPcbCoil, pcbBoardThickness } from './coils.js';
 
 /** The fab, as numbers. Every limit below is transcribed from JLCPCB's published
  *  capability table for FR-4 at 12 copper layers, 1 oz
@@ -269,9 +269,10 @@ export function pcbCoilGeometry(cfg) {
   // hole may be drilled -- everywhere else has winding under it on some layer.
   // Widen it and the electronics get a via site directly under the part that
   // needs one; the price is turns, one layer's worth at a time.
-  const perLayer = pcbTurnsPerLayer(w, eff, cfg.stator.pcbInnerFrac);
+  const pitchM = pcbTurnPitch(pcbTraceWidth, pcbCopperThickness, cfg.stator.pcbTraceSpace ?? null);
+  const perLayer = pcbTurnsPerLayer(w, pitchM, cfg.stator.pcbInnerFrac);
   const halfOut = (w / 2) * 1000;             // apothem (centre-to-flat) of the outermost turn
-  const pitch = 2 * eff * 1000;               // trace + equal space
+  const pitch = pitchM * 1000;                // trace + space (space defaults to the trace)
   const halfIn = halfOut - pitch * perLayer;  // small centre hole by construction
   // Coil outline: a square (4 sides) or, for the honeycomb topology, a pointy-top
   // hexagon (6 sides). Both are wound in APOTHEM space -- halfOut/halfIn are the
@@ -289,6 +290,10 @@ export function pcbCoilGeometry(cfg) {
     w: w * 1000, halfOut, halfIn, pitch, corner, sides, phase,
     turns: perLayer, layers: windLayers, physLayers: pcbLayers,
     trace: eff * 1000,
+    // The outline cut is pulled in by this much (see buildKiCad); in-cell
+    // geometry must keep its edge clearance from the CUT, not the nominal
+    // cell boundary, so viaPlan adds it to every edge margin.
+    edgeInset: (cfg.stator.pcbEdgeInset ?? 0) * 1000,
     // Pressed thickness, in mm. The via cares: a plated hole is limited by its
     // ASPECT RATIO, so the same drill that is comfortable on a 12-layer board
     // is out of spec on a 14-layer one.
@@ -326,7 +331,13 @@ function edgeTurns(g) {
 export function spiralVertices(g, layerIndex) {
   const sides = g.sides ?? 4, phase = g.phase ?? -Math.PI / 2;
   const q = edgeTurns(g);
-  const u0 = layerIndex * q, u1 = u0 + q;
+  // endShifts (edges, per layer BOUNDARY, non-decreasing) slide the shared
+  // crossover endpoints along the perimeter so each lands on a flat its via
+  // may use (see endShiftsFor). The radial clamp in rAt absorbs a longer
+  // layer by riding the rim, so positive shifts never change the turn build.
+  const S = g.endShifts ?? null;
+  const u0 = layerIndex * q + (S ? S[layerIndex] : 0);
+  const u1 = (layerIndex + 1) * q + (S ? S[layerIndex + 1] : 0);
   const inward = layerIndex % 2 === 0;
   const step = g.pitch / sides;                  // radial advance per edge
   const rAt = (u) => Math.max(g.halfIn, Math.min(g.halfOut,
@@ -340,6 +351,61 @@ export function spiralVertices(g, layerIndex) {
   for (let k = Math.floor(u0) + 1; k < u1 - 1e-9; k++) pts.push(pt(k));
   pts.push(pt(u1));
   return pts;
+}
+
+/** Boundary shifts that keep every crossover tab a short radial stub when
+ *  flats are banned. The natural end walk (edgeTurns) lands winding ends on
+ *  every flat in turn; banFlats then parks the via on ANOTHER flat and the
+ *  straight tab sweeps across the whole winding -- 845 self-intersecting
+ *  chords on the first banFlats board, copper crossing copper on every
+ *  winding layer (coilcheck.mjs found them; no KiCad DRC does, same net).
+ *  So the END moves instead of the tab: walk each OUTER boundary (even
+ *  index: both terminals and the odd crossovers) forward along the perimeter
+ *  until its edge faces an allowed flat, clear of corners and of the banned
+ *  lane y-bands. Shifts are monotone non-decreasing and inner boundaries
+ *  inherit the running shift, so no layer ever gets shorter than its radial
+ *  need. Returns all-zero shifts (byte-identical boards) with no bans. */
+export function endShiftsFor(g, opts = {}) {
+  const N = g.layers, sides = g.sides ?? 4, phase = g.phase ?? -Math.PI / 2;
+  const q = edgeTurns(g);
+  const ban = new Set(opts.banFlats ?? []);
+  const bands = opts.banBands ?? [];
+  const S = new Array(N + 1).fill(0);
+  if (sides !== 6 || (!ban.size && !bands.length)) return S;
+  const inBand = (y) => bands.some(([a, b]) => (y > a - 1e-9 && y < b + 1e-9)
+    || (-y > a - 1e-9 && -y < b + 1e-9));
+  const MARGIN = 0.18;                           // edges kept clear of corners
+  const ok = (u) => {
+    const e = ((Math.floor(u) % sides) + sides) % sides;
+    const t = u - Math.floor(u);
+    if (t < MARGIN || t > 1 - MARGIN) return false;
+    if (ban.has((e + 1) % sides)) return false;  // edge e faces flat e+1
+    const a = polyCorner(e, g.halfOut, sides, phase);
+    const b = polyCorner(e + 1, g.halfOut, sides, phase);
+    return !inBand(a[1] + (b[1] - a[1]) * t);
+  };
+  for (let b = 0; b <= N; b++) {
+    S[b] = Math.max(S[b], b > 0 ? S[b - 1] : 0); // monotone: no layer shrinks
+    // terminals (b = 0, N) keep their sharp corner-0 attachment -- their vias
+    // already place short
+    if (b === 0 || b === N) continue;
+    let u = b * q + S[b];
+    if (b % 2 !== 0) {
+      // inner boundary (centre bay): no flat constraint, but a carried shift
+      // can land it a sliver past a hexagon corner -- the final edge then
+      // degenerates, its fillet shrinks to ~0.03 mm, and the crossover tab
+      // pinches against the third-back element (672 validator hits). Nudge
+      // forward to the same corner margin the outer boundaries keep.
+      const t = u - Math.floor(u);
+      if (t < MARGIN) u += MARGIN - t;
+      else if (t > 1 - MARGIN) u += 1 + MARGIN - t;
+      S[b] = u - b * q;
+      continue;
+    }
+    while (!ok(u)) u += 0.02;
+    S[b] = u - b * q;
+  }
+  return S;
 }
 
 /** One layer's spiral as an ordered list of primitives: a straight {t:'seg'}
@@ -412,10 +478,68 @@ const f = (x) => (Math.round(x * 1e6) / 1e6).toString();
  *  one) and the tab is a SHORT RADIAL STUB -- no ring, no backtrack. Returns tab
  *  segments (tagged by layer), crossover vias, terminal stubs, terminal mating
  *  vias, and counts. */
-export function viaPlan(g, N, cellHalf, viaSize) {
+export function viaPlan(g, N, cellHalf, viaSize, opts = {}) {
+  // External callers (quadroute, lanegen) pass a bare geometry plus the same
+  // viaPlanOpts the board was built with; re-derive the end shifts so the
+  // plan's ends match the emitted winding exactly.
+  if (!g.endShifts && ((opts.banFlats?.length ?? 0) || (opts.banBands?.length ?? 0))) {
+    g = { ...g, endShifts: endShiftsFor(g, opts) };
+  }
   const off = viaSize * 1.05;                    // radial stub length off the winding
   const clr = FAB.minClearance;
   const vr = viaSize / 2;
+  // Edge margins are PER FLAT: the fab's clearance everywhere, plus the
+  // outline inset (g.edgeInset) only on flats that really are the board edge
+  // for this cell (opts.edgeFlats, plan-frame indices). Charging the inset on
+  // every flat inverts the gutter band entirely -- the 0.744 mm gutter cannot
+  // hold via + 0.2 rule + inset -- which is how a 0.25 mm inset put 138
+  // perimeter vias inside the edge rule. Interior cells pass no edgeFlats and
+  // keep the exact pre-inset geometry; perimeter cells' vias slide to
+  // interior flats, which gutterPlace already knows how to do.
+  const edgeFlats = opts.edgeFlats ?? new Set();
+  // Foreign copper this cell's gutter vias must clear: neighbouring cells'
+  // vias and terminal pads, in THIS cell's plan frame, as [x, y, r]. The
+  // periodic generic pattern is self-consistent by construction, but a rim
+  // VARIANT loses that guarantee -- its relocated vias landed on neighbours'
+  // copper (18 shorts + 10 hole violations on the bare board) until the
+  // neighbourhood was made part of the clash list.
+  const avoid = opts.avoid ?? [];
+  // Flats (plan-frame indices) gutter vias may NOT use at all. The E/W flats
+  // (0 and 3) face the vertical seams that carry the 9-via bus ladder and the
+  // constructed lane runs; a crossover or terminal via resting there blocks
+  // ladder slots (485 of 1267 on the first interleaved-ladder board) and cuts
+  // the lane corridor. Banned vias slide to the diagonal flats, which face
+  // the seams that carry nothing.
+  const banFlats = new Set(opts.banFlats ?? []);
+  // A banned flat's CORNERS pinch the adjacent flats' ends: a via parked at
+  // the end of a diagonal flat sits 0.2-0.5 mm from the seam ladder's extreme
+  // slots (it blocked every OE_N and SCL slot on the first banFlats board).
+  // Keep via centres 0.75 mm + via + clearance away from those cell corners.
+  const bannedCorners = [];
+  {
+    const R = cellHalf / Math.cos(Math.PI / 6);
+    for (const kb of banFlats) {
+      for (const s of [-1, 1]) {
+        const ang = (kb * Math.PI) / 3 + (s * Math.PI) / 6;
+        bannedCorners.push([R * Math.cos(ang), R * Math.sin(ang)]);
+      }
+    }
+    // The N/S vertices too: three cells meet at each one, so a via parked at
+    // the end of a DIAGONAL flat there lands in the adjacent row's seam
+    // corridor (one blocked every OE_N slot from a neighbouring cell's plan).
+    if (banFlats.size) bannedCorners.push([0, R], [0, -R]);
+  }
+  const cornerBan = 0.75 + viaSize / 2 + clr;
+  // Horizontal lane RUNS cross the whole cell at fixed plan-frame |y| bands;
+  // any gutter via inside a band sits closer than the 0.39 mm a 0.1 mm trace
+  // needs from a 0.5 mm barrel. Bands are given symmetrically so the plan
+  // frame's y sign cannot bite. [[yLo, yHi], ...] in mm.
+  const banBands = opts.banBands ?? [];
+  const inBand = (y) => banBands.some(([a, b]) => (y > a - 1e-9 && y < b + 1e-9)
+    || (-y > a - 1e-9 && -y < b + 1e-9));
+  const edgeCk = (k) => (k < 0 ? FAB.edgeClearance
+    : FAB.edgeClearance + (edgeFlats.has(((k % 6) + 6) % 6) ? (g.edgeInset ?? 0) : 0));
+  const edgeC = FAB.edgeClearance;               // base, for the square path
   const segments = [];                           // [x0,y0,x1,y1, layer]
   const vias = [];                               // {p, layers} crossovers
   const terminals = [];                          // [x0,y0,x1,y1, layer]
@@ -464,7 +588,9 @@ export function viaPlan(g, N, cellHalf, viaSize) {
   // edge -- and because the outline is the cell union, any flat can be the
   // perimeter on some board. It doubles as the seam rule for abutted tiles.
   const rIn = outR + clr + vr;
-  const rOut = cellHalf - vr - FAB.edgeClearance;
+  const rOutK = (k) => cellHalf - vr - edgeCk(k);
+  const rGutK = (k) => (rIn + rOutK(k)) / 2;
+  const rOut = cellHalf - vr - edgeC;
   const rGut = (rIn + rOut) / 2;
   /** Distance from a point outside a regular hexagon of apothem `a` (flats at
    *  0,60,...) to its boundary. Over a flat that is just the normal overshoot;
@@ -499,7 +625,8 @@ export function viaPlan(g, N, cellHalf, viaSize) {
    *  the setback is the edge clearance, the same as the radial one. Sliding a
    *  via to the end of its flat and stopping a copper clearance short of the
    *  next one is how the last four edge violations survived. */
-  const tLimit = (r) => (cellHalf - 0.5 * r - vr - FAB.edgeClearance) / (Math.sqrt(3) / 2);
+  const tLimit = (r, k = -1) => (cellHalf - 0.5 * r - vr
+    - (k < 0 ? edgeC : Math.max(edgeCk((k + 5) % 6), edgeCk((k + 1) % 6)))) / (Math.sqrt(3) / 2);
   const gutSpots = [];                           // every via already in the gutter
   // How far a via may be slid from where its own winding ends. The tab from the
   // winding to the via is drawn on that layer, in the gutter, and a long one
@@ -515,24 +642,31 @@ export function viaPlan(g, N, cellHalf, viaSize) {
   const gutterPlace = (p) => {
     const raw = Math.atan2(p[1], p[0]);
     const order = [...flats].sort((a, b) => angBetween(raw, a) - angBetween(raw, b));
-    const tLim = tLimit(rGut);
     const need = viaSize + clr;                  // centre-to-centre, copper to copper
     let best = null;
     for (const fa of order) {
+      const kf = flats.indexOf(fa);
+      if (banFlats.has(kf)) continue;            // lane-corridor flat: never park here
+      const rG = rGutK(kf);
+      if (rG < rIn - 1e-9) continue;             // band inverted on this flat (true edge + inset): use another
+      const tLim = tLimit(rG, kf);
       const n = [Math.cos(fa), Math.sin(fa)], t = [-Math.sin(fa), Math.cos(fa)];
       const tp = Math.max(-tLim, Math.min(tLim, p[0] * t[0] + p[1] * t[1]));
-      const at = (tv) => [n[0] * rGut + t[0] * tv, n[1] * rGut + t[1] * tv];
+      const at = (tv) => [n[0] * rG + t[0] * tv, n[1] * rG + t[1] * tv];
       const clash = (tv) => {
         const q = at(tv);
         if (hexOutDist(q, outR) < vr + clr - 1e-9) return true;  // own winding, corners included
-        return gutSpots.some((s) => Math.hypot(s[0] - q[0], s[1] - q[1]) < need - 1e-9);
+        if (gutSpots.some((s) => Math.hypot(s[0] - q[0], s[1] - q[1]) < need - 1e-9)) return true;
+        if (bannedCorners.some(([bx, by]) => Math.hypot(bx - q[0], by - q[1]) < cornerBan - 1e-9)) return true;
+        if (inBand(q[1])) return true;
+        return avoid.some(([ax, ay, ar]) => Math.hypot(ax - q[0], ay - q[1]) < ar + vr + clr - 1e-9);
       };
       for (let step = 0; step <= SLIDE_MAX + 1e-9; step += need / 4) {
         for (const tv of step === 0 ? [tp] : [tp + step, tp - step]) {
           if (Math.abs(tv) > tLim || clash(tv)) continue;
           const q = at(tv);
           const stub = Math.hypot(q[0] - p[0], q[1] - p[1]);
-          if (!best || stub < best.stub) best = { p: q, fa, n, t, tVia: tv, tLim, stub };
+          if (!best || stub < best.stub) best = { p: q, fa, kf, rG, n, t, tVia: tv, tLim, stub };
           break;
         }
         if (best) break;                         // first fit on this flat is its best
@@ -542,12 +676,20 @@ export function viaPlan(g, N, cellHalf, viaSize) {
     if (!best) {
       // Nothing cleared. Emit at the nearest flat's natural spot rather than
       // silently moving it somewhere absurd; validatePcb reports the overlap.
-      const fa = order[0];
+      const fa = order.find((a) => !banFlats.has(flats.indexOf(a))) ?? order[0];
+      const kf = flats.indexOf(fa);
+      // The band midpoint, NOT clamped to rIn: an inherently inverted band
+      // (the 0.84-fill boards) splits its shortfall between the winding side
+      // and the edge side, exactly as before the per-flat refactor -- pushing
+      // fully off the winding dumped the whole violation onto the seam and
+      // broke the pcbhex tileability guarantee (seam 0.41 -> 0.08).
+      const rG = rGutK(kf);
+      const tLim = tLimit(rG, kf);
       const n = [Math.cos(fa), Math.sin(fa)], t = [-Math.sin(fa), Math.cos(fa)];
       const tp = Math.max(-tLim, Math.min(tLim, p[0] * t[0] + p[1] * t[1]));
       best = {
-        p: [n[0] * rGut + t[0] * tp, n[1] * rGut + t[1] * tp],
-        fa, n, t, tVia: tp, tLim, stub: Infinity,
+        p: [n[0] * rG + t[0] * tp, n[1] * rG + t[1] * tp],
+        fa, kf, rG, n, t, tVia: tp, tLim, stub: Infinity,
       };
     }
     gutSpots.push(best.p);
@@ -581,11 +723,70 @@ export function viaPlan(g, N, cellHalf, viaSize) {
       return m;
     };
     const need = viaSize + clr;
-    if (inners.length > 1 && worst(pts) < need - 1e-9) {
-      const even = natural.map((_, i) => natural[0] + (i * 2 * Math.PI) / inners.length);
-      if (worst(place(even)) > worst(pts)) pts = place(even);
+    // --- the centre via BAY -------------------------------------------------
+    // When the hole affords it, the six inner crossovers take a GATED ring
+    // instead of an even one: five gaps a same-net margin wide, and one gap
+    // opened to 2x38 degrees around `bayGate` so a routing trace can pass
+    // between the lands to a via site AT THE COIL CENTRE. That site is the
+    // only through-hole-legal B.Cu <-> inner-layer crossing under the parts --
+    // a poor man's blind via, and the whole reason pcbTraceSpace exists.
+    // Constraints, in order: the ring clears a centre via by the full foreign-
+    // net rule (they are different nets); the corridor half-gap fits a trace
+    // plus clearances; the five closed gaps keep the same-net etch margin
+    // (touching lands weld layer pairs -- the DRC-invisible short).
+    const SAME = 0.05;                             // same-net etch margin, mm
+    const gate = g.bayGate ?? -Math.PI / 2;
+    const GATE_HALF = (38 * Math.PI) / 180;
+    // Slot template: gateway spans 2x38 deg; the tightest closed gap between
+    // the remaining slots is 52 deg (206 - 154 below), so that chord is the
+    // same-net constraint that decides whether the gated ring fits.
+    const bayOK = sides === 6 && inners.length === 6
+      && rHole >= viaSize + clr
+      && rHole * Math.sin(GATE_HALF) >= viaSize / 2 + clr + 0.05 + 1e-9
+      && 2 * rHole * Math.sin((26 * Math.PI) / 180) >= viaSize + SAME;
+    if (bayOK) {
+      // Slots: +/-38 deg flank the gateway, the rest spread evenly opposite.
+      const rel = [38, 96, 154, 206, 264, 322].map((d) => gate + ((d) * Math.PI) / 180);
+      const slots = place(rel);
+      // Assign layer ends to slots: try all cyclic shifts (order preserved so
+      // tabs never have to cross), keep the shift whose tabs stay clear of
+      // every OTHER slot's land -- welding a tab to another crossover is the
+      // same invisible short as touching lands -- and, of those, the shortest.
+      const byAng = inners.map((e, i) => ({ e, a: natural[i] })).sort((u, v) => u.a - v.a);
+      const slotOrder = rel.map((a, i) => ({ i, a: Math.atan2(Math.sin(a), Math.cos(a)) })).sort((u, v) => u.a - v.a);
+      let bestShift = null;
+      for (let s = 0; s < 6; s++) {
+        let cost = 0, ok = true;
+        for (let k = 0; k < 6; k++) {
+          const end = byAng[k].e, slot = slots[slotOrder[(k + s) % 6].i];
+          cost += Math.hypot(end.p[0] - slot[0], end.p[1] - slot[1]);
+          for (let m2 = 0; m2 < 6; m2++) {
+            if (slotOrder[(k + s) % 6].i === m2) continue;
+            // tab segment end.p -> slot vs other slot's land
+            const [ax, ay] = end.p, [bx, by] = slot, [qx, qy] = slots[m2];
+            const vx = bx - ax, vy = by - ay;
+            const L = vx * vx + vy * vy || 1;
+            let t = ((qx - ax) * vx + (qy - ay) * vy) / L;
+            t = Math.max(0, Math.min(1, t));
+            if (Math.hypot(qx - (ax + t * vx), qy - (ay + t * vy)) < viaSize / 2 + SAME) { ok = false; break; }
+          }
+          if (!ok) break;
+        }
+        if (ok && (!bestShift || cost < bestShift.cost)) bestShift = { s, cost };
+      }
+      if (bestShift) {
+        for (let k = 0; k < 6; k++) {
+          innerAt.set(byAng[k].e.c, slots[slotOrder[(k + bestShift.s) % 6].i]);
+        }
+      }
     }
-    inners.forEach((e, i) => innerAt.set(e.c, pts[i]));
+    if (innerAt.size === 0) {
+      if (inners.length > 1 && worst(pts) < need - 1e-9) {
+        const even = natural.map((_, i) => natural[0] + (i * 2 * Math.PI) / inners.length);
+        if (worst(place(even)) > worst(pts)) pts = place(even);
+      }
+      inners.forEach((e, i) => innerAt.set(e.c, pts[i]));
+    }
   }
   // A square cell has no gutter search, so its outward vias are a plain radial
   // nudge -- which, now that a via is the size a fab will drill rather than
@@ -595,7 +796,7 @@ export function viaPlan(g, N, cellHalf, viaSize) {
   // does not create room that is not there -- it keeps the failure inside the
   // cell where validatePcb and DRC can see it, instead of silently drilling
   // into the coil next door.)
-  const cellCap = cellHalf - vr - FAB.edgeClearance;
+  const cellCap = cellHalf - vr - edgeC;
   const clampSquare = (q) => [
     Math.max(-cellCap, Math.min(cellCap, q[0])),
     Math.max(-cellCap, Math.min(cellCap, q[1])),
@@ -640,16 +841,17 @@ export function viaPlan(g, N, cellHalf, viaSize) {
       // a pad narrower than its own drill land is not a pad, it is decoration,
       // and that is what the old `min(0.4, ...)` degenerated to as soon as the
       // via grew to a size the fab would actually drill.
-      let w = Math.min(0.6, 2 * Math.min(rGut - (g.halfOut + clr),
-        cellHalf - FAB.edgeClearance - rGut));
+      const rGf = spot.rG ?? rGut;
+      let w = Math.min(0.6, 2 * Math.min(rGf - (g.halfOut + clr),
+        cellHalf - edgeCk(spot.kf ?? -1) - rGf));
       let h = Math.min(0.9, 2 * (tLim - Math.abs(tVia)));
       w = Math.max(w, viaSize); h = Math.max(h, viaSize);
       // Final containment: shrink until every corner is inside this coil's own
       // cell, which is what keeps a pad off its neighbours (the cells tile).
       let s = 1;
-      for (const fk of flats) {
+      for (const [ki, fk] of flats.entries()) {
         const m = [Math.cos(fk), Math.sin(fk)];
-        const slack = cellHalf - FAB.edgeClearance - (via[0] * m[0] + via[1] * m[1]);
+        const slack = cellHalf - edgeCk(ki) - (via[0] * m[0] + via[1] * m[1]);
         const need = (w / 2) * Math.abs(n[0] * m[0] + n[1] * m[1])
           + (h / 2) * Math.abs(t[0] * m[0] + t[1] * m[1]);
         if (need > 1e-9) s = Math.min(s, Math.max(0, slack) / need);
@@ -1236,7 +1438,13 @@ export function buildKiCad(stator, cfg, opts = {}) {
   if (!isPcbCoil(cfg.stator.coilType)) return null;
 
   const N = cfg.stator.pcbLayers;                     // physical stackup (fab presses this)
-  const g = pcbCoilGeometry(cfg);
+  let g = pcbCoilGeometry(cfg);
+  // Flat bans move gutter vias; the winding ends must move WITH them or the
+  // straight crossover tabs slice across the whole spiral (self-intersecting
+  // copper on every winding layer -- see endShiftsFor / route/coilcheck.mjs).
+  if (opts.banFlats?.length || opts.banBands?.length) {
+    g = { ...g, endShifts: endShiftsFor(g, { banFlats: opts.banFlats, banBands: opts.banBands }) };
+  }
   const NC = g.layers;                                // winding layers (= N minus electronics layers)
   // Single-board build: with spare layer(s), the electronics land on B.Cu at
   // the fit-verified positions. opts.sensorSpacing (m) additionally places the
@@ -1252,10 +1460,63 @@ export function buildKiCad(stator, cfg, opts = {}) {
   // conductive lives inside its own cell (validatePcb), so cutting along cell
   // boundaries loses nothing -- and abutted copies of the board continue the
   // lattice seamlessly (see tileability() for the hex row-parity caveat).
-  const outline = cellOutline(stator, cfg);
+  //
+  // pcbEdgeInset (metres) pulls the CUT inward from the nominal cell boundary.
+  // The fab routs the outline to a tolerance of a couple hundred microns; cut
+  // exactly on the cell boundary, an oversize board pushes its abutted
+  // neighbour off the lattice pitch. Inset, the boards are guaranteed
+  // undersize, a fixture holds them at nominal pitch, and the tolerance lands
+  // in the (2 x inset) air gap instead of in the magnet lattice. The copper
+  // keeps its full edge clearance from the REAL cut: viaPlan adds the same
+  // inset to its edge margins (g.edgeInset).
+  const outline = insetPoly(cellOutline(stator, cfg), (cfg.stator.pcbEdgeInset ?? 0) * 1000);
   const half = outline.reduce((a, p) => Math.max(a, Math.abs(p[0]), Math.abs(p[1])), 0);
   const cx0 = half + 10, cy0 = half + 10;             // keep all coords positive
-  const plan = viaPlan(g, NC, cellHalf, via);
+  const plan = viaPlan(g, NC, cellHalf, via, { banFlats: opts.banFlats, banBands: opts.banBands });
+  // Per-cell edge-aware plans: flat k (plan frame) is a TRUE board edge for a
+  // cell iff no neighbour coil sits one pitch away in that direction (plan y
+  // is file y-down, world y is up, hence the negated sin). Interior cells all
+  // share the generic plan -- identical stamps -- and only the rim cells get
+  // variants whose edge-facing vias slide to interior flats.
+  // Rim cells are planned SEQUENTIALLY, each variant told exactly where its
+  // neighbours' gutter copper is (already-planned rim variants by their REAL
+  // plan, everyone else by the generic one): a rim via that slid to an
+  // interior flat shares that gutter with a neighbour, and the generic
+  // pattern's self-consistency proof does not cover the variant.
+  const rimPlans = new Map();                    // cell index -> its variant plan
+  const neighboursOf = (i2) => {
+    const c2 = stator.coils[i2];
+    const pw = cfg.stator.coilPitch;
+    const out = { mask: [], adj: [] };
+    for (let k2 = 0; k2 < 6; k2++) {
+      const dx2 = Math.cos((k2 * Math.PI) / 3) * pw, dy2 = -Math.sin((k2 * Math.PI) / 3) * pw;
+      const j = stator.coils.findIndex((d) => Math.hypot(d.x - c2.x - dx2, d.y - c2.y - dy2) < pw * 0.1);
+      if (j < 0) out.mask.push(k2);
+      else out.adj.push({ j, ox: dx2 * 1000, oy: -dy2 * 1000 });   // plan frame: y flips
+    }
+    return out;
+  };
+  const planFor = (i2) => {
+    if ((g.sides ?? 4) !== 6 || !(g.edgeInset > 0)) return plan;
+    if (rimPlans.has(i2)) return rimPlans.get(i2);
+    const { mask, adj } = neighboursOf(i2);
+    if (mask.length === 0) return plan;
+    const avoid = [];
+    for (const { j, ox, oy } of adj) {
+      const np = rimPlans.get(j) ?? plan;
+      for (const v of [...np.vias, ...np.termVias]) {
+        const q = [v.p[0] + ox, v.p[1] + oy];
+        if (Math.hypot(q[0], q[1]) < cellHalf * 2.4) avoid.push([q[0], q[1], via / 2]);
+      }
+      for (const t2 of np.termPads || []) {
+        const q = [t2.p[0] + ox, t2.p[1] + oy];
+        if (Math.hypot(q[0], q[1]) < cellHalf * 2.4) avoid.push([q[0], q[1], Math.hypot(t2.w, t2.h) / 2]);
+      }
+    }
+    const p2 = viaPlan(g, NC, cellHalf, via, { edgeFlats: new Set(mask), avoid, banFlats: opts.banFlats, banBands: opts.banBands });
+    rimPlans.set(i2, p2);
+    return p2;
+  };
   const thVia = [cuName(0, N), cuName(N - 1, N)];      // full-stack through-hole
 
   // --- header + layer stackup ---
@@ -1318,6 +1579,7 @@ export function buildKiCad(stator, cfg, opts = {}) {
   for (let ci = 0; ci < stator.coils.length; ci++) {
     const c = stator.coils[ci];
     const net = ci + 1;
+    const planC = planFor(ci);
     // Sim centres are metres, board centred on origin; flip y for KiCad's
     // y-down page so the exported array reads the same way up as the render.
     const ox = cx0 + c.x * 1000, oy = cy0 - c.y * 1000;
@@ -1327,34 +1589,42 @@ export function buildKiCad(stator, cfg, opts = {}) {
     // The spiral tracks, layer by layer: straight edges and arc corners. Only
     // the winding layers carry spirals -- a spare (electronics) bottom layer
     // gets via annulars and I/O pads, never turns.
+    //
+    // Every spiral track is LOCKED. The winding is ~1500 items per coil and
+    // KiCad's shove router, asked to displace it, recurses for minutes -- one
+    // nudge that bumps a coil hangs the session. Locked items are rigid
+    // obstacles the router walks around instead. The tabs and the coil's own
+    // vias stay UNLOCKED deliberately: nudging a crossover via along its
+    // gutter (and re-dressing its tab) is a legitimate hand-layout move, and
+    // a right-click can always unlock the one item being reworked.
     for (let j = 0; j < NC; j++) {
       const layer = cuName(j, N);
       for (const p of layerPath[j]) {
         if (p.t === 'arc') {
-          L.push(`  (arc (start ${tx(p.a[0])} ${ty(p.a[1])}) (mid ${tx(p.m[0])} ${ty(p.m[1])}) (end ${tx(p.b[0])} ${ty(p.b[1])}) (width ${f(g.trace)}) (layer "${layer}") (net ${net}))`);
+          L.push(`  (arc (start ${tx(p.a[0])} ${ty(p.a[1])}) (mid ${tx(p.m[0])} ${ty(p.m[1])}) (end ${tx(p.b[0])} ${ty(p.b[1])}) (width ${f(g.trace)}) (locked) (layer "${layer}") (net ${net}))`);
         } else {
-          L.push(`  (segment (start ${tx(p.a[0])} ${ty(p.a[1])}) (end ${tx(p.b[0])} ${ty(p.b[1])}) (width ${f(g.trace)}) (layer "${layer}") (net ${net}))`);
+          L.push(`  (segment (start ${tx(p.a[0])} ${ty(p.a[1])}) (end ${tx(p.b[0])} ${ty(p.b[1])}) (width ${f(g.trace)}) (locked) (layer "${layer}") (net ${net}))`);
         }
         segments++;
       }
     }
 
     // Through-hole stitching: tabs (each on its own layer) + full-stack vias.
-    for (const [x0, y0, x1, y1, layer] of plan.segments) {
+    for (const [x0, y0, x1, y1, layer] of planC.segments) {
       L.push(`  (segment (start ${tx(x0)} ${ty(y0)}) (end ${tx(x1)} ${ty(y1)}) (width ${f(g.trace)}) (layer "${cuName(layer, N)}") (net ${net}))`);
       segments++;
     }
-    for (const { p: [x, y] } of plan.vias) {
+    for (const { p: [x, y] } of planC.vias) {
       L.push(`  (via (at ${tx(x)} ${ty(y)}) (size ${f(via)}) (drill ${f(drill)}) (layers "${thVia[0]}" "${thVia[1]}") (net ${net}))`);
       vias++;
     }
     // Terminal stubs to the corner pockets, and a mating via at each so the
     // backplane connector can pick the two coil ends up.
-    for (const [x0, y0, x1, y1, layer] of plan.terminals) {
+    for (const [x0, y0, x1, y1, layer] of planC.terminals) {
       L.push(`  (segment (start ${tx(x0)} ${ty(y0)}) (end ${tx(x1)} ${ty(y1)}) (width ${f(g.trace)}) (layer "${cuName(layer, N)}") (net ${net}))`);
       segments++;
     }
-    for (const { p: [x, y] } of plan.termVias) {
+    for (const { p: [x, y] } of planC.termVias) {
       L.push(`  (via (at ${tx(x)} ${ty(y)}) (size ${f(via)}) (drill ${f(drill)}) (layers "${thVia[0]}" "${thVia[1]}") (net ${net}))`);
       vias++;
     }
@@ -1364,7 +1634,7 @@ export function buildKiCad(stator, cfg, opts = {}) {
     // footprint's), so a rotated footprint around an angle-0 pad draws an
     // axis-aligned pad -- copper validatePcb never approved. Proven against
     // kicad-cli renders before this was changed.
-    (plan.termPads || []).forEach((pad, k) => {
+    (planC.termPads || []).forEach((pad, k) => {
       // Plan angles live in the board's y-down frame, so the world angle is
       // -p.a -- and KiCad pad angles are CCW in the y-up sense (measured off
       // kicad-cli renders), so the world angle is what gets written.
@@ -1680,6 +1950,48 @@ export const FOOTPRINTS = {
       [[-1.4, y, 0.8, 0.3], [1.4, y, 0.8, 0.3]]),
   },
 };
+
+/** Offset a simple closed polygon inward by `d` mm: shift each edge along its
+ *  inward normal and intersect consecutive offset lines. Orientation-agnostic
+ *  (signed area picks the inward side). d = 0 returns the input untouched, so
+ *  boards without an inset stay byte-identical. */
+export function insetPoly(loop, d) {
+  if (!d) return loop;
+  const n = loop.length;
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const a = loop[i], b = loop[(i + 1) % n];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  const sgn = area > 0 ? 1 : -1;
+  const lines = [];
+  for (let i = 0; i < n; i++) {
+    const a = loop[i], b = loop[(i + 1) % n];
+    const ex = b[0] - a[0], ey = b[1] - a[1];
+    const L = Math.hypot(ex, ey) || 1;
+    lines.push([a[0] + (-ey / L) * sgn * d, a[1] + (ex / L) * sgn * d, ex / L, ey / L]);
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const [px, py, ux, uy] = lines[(i - 1 + n) % n];
+    const [qx, qy, vx, vy] = lines[i];
+    const den = ux * vy - uy * vx;
+    if (Math.abs(den) < 1e-9) { out.push([qx, qy]); continue; }
+    const t = ((qx - px) * vy - (qy - py) * vx) / den;
+    const vtx = [px + ux * t, py + uy * t];
+    // Reflex corners (the castellation notches) miter INWARD without bound and
+    // ate 0.2+ mm into perimeter cells -- 138 edge violations on the bare
+    // board. Clamp the join: if the mitred vertex strays more than 2.5x the
+    // offset from the original corner, bevel it at the corner's own offset.
+    const o = loop[i];
+    if (Math.hypot(vtx[0] - o[0], vtx[1] - o[1]) > 2.5 * d) {
+      const mx = (px + qx) / 2, my = (py + qy) / 2;
+      const L = Math.hypot(mx - o[0], my - o[1]) || 1;
+      out.push([o[0] + ((mx - o[0]) / L) * d, o[1] + ((my - o[1]) / L) * d]);
+    } else out.push(vtx);
+  }
+  return out;
+}
 
 // Oriented rectangle {cx, cy, w, h, ang} helpers.
 function rectCorners(r) {
