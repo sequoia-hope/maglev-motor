@@ -163,6 +163,40 @@ for (const ci of Q.cells) {
   }
 }
 
+// --- coil_78_B In12 dogleg -------------------------------------------------------
+// The 2026-07-30 winding fix walked every cell's OUT terminal from the SE flat
+// to the SW flat (endShiftsFor: terminals inherit the accumulated S[N-1], and
+// both restore directions are structurally impossible -- a negative shift
+// recreates the 845 tab chords, a forward whole-lap ride overlaps the rAt
+// clamp coast; coilcheck refused it with 2688 pairs). Only the REGISTER cell
+// cares: its south-west field is over-subscribed (GND drop, VLOGIC link, stub
+// fanout, both 79-descents, PWMA_91's wedge), and three harness variants plus
+// a weighted-BFS proof all showed a SW-terminal coil trunk evicts 2-4 of
+// those constructions; freerouting fails the net in every configuration too.
+// So the coil leaves B.Cu entirely: its terminal via is a through-hole, and
+// the In12 inter-row band south of the lane stack (OE_N, the last lane, sits
+// at cy+2.52) is empty except via barrels. Ride it east under the whole west
+// field to a constructed routing via in the SE gutter -- the site probed
+// legal against the r1 DSN keepouts (134 candidates; this one >= 0.73 from
+// every hole) -- which is where the OLD east-around corridor to U78.6 begins.
+// The same-net crossover barrels en route are MID-WINDING taps: touching one
+// shorts turns; they are not ownVia-exempt, so the verifier holds them at
+// full via clearance (dodge at (1.865,2.871) clears the (1.87,3.29) barrel
+// by 0.418 vs the 0.39 floor).
+const coilViaSW = (() => {
+  const cb = (x, y) => [+(c78x + x).toFixed(3), +(c78y + y).toFixed(3)];
+  const net = `coil_${Q.cells[0]}_B`;
+  const via = cb(2.610, 3.071);
+  runs.push({ net, layer: LANE_LAYER, pts: [
+    cb(-2.405, 2.985),                     // J78.OUT barrel centre
+    cb(-1.990, 3.021), cb(0.910, 3.021),   // straight run south of the lanes
+    cb(1.865, 2.871),                      // north dodge past the (1.87,3.29) barrel
+    cb(2.360, 2.921), via,                 // into the via land
+  ] });
+  cvias.push({ net, x: via[0], y: via[1] });
+  return { x: via[0], y: via[1] };
+})();
+
 // --- taps ----------------------------------------------------------------------
 // Tap-to-seam assignment is about ESCAPE, not distance: a tap must leave
 // toward the register without threading the seam's OTHER column (0.17 mm
@@ -448,6 +482,9 @@ const routeNet = (net, from, to, { emit = true, startVia = null, guide = null } 
       writeFileSync(process.env.DUMP_GRID, JSON.stringify({
         gw, gh, gx0, gy0, GRID, from, to,
         rows: Array.from({ length: gh }, (_, iy) => Buffer.from(merged.subarray(iy * gw, (iy + 1) * gw)).toString('base64')),
+        // static+allow alone can show start/goal CONNECTED while the A* fails:
+        // the committed foreign bands are the wall. Dump them or the flood lies.
+        fgRows: Array.from({ length: gh }, (_, iy) => Buffer.from(fg.subarray(iy * gw, (iy + 1) * gw)).toString('base64')),
       }));
       console.error(`grid dumped to ${process.env.DUMP_GRID}`);
     }
@@ -728,32 +765,58 @@ const stubRuns = new Set();
     // approach inherently cross in the N-tip channel, and of the two only
     // the coil is freerouting-hopeless (PWMB_78 completed 3 of 4 router
     // runs; with the slot left free its odds are good).
-    // coil_78_B east-around the internal seam: its greedy east-thread/slot
-    // choices are consumed by the two PWMs above
-    con(`coil_${Q.cells[0]}_B`, padAt(`J${Q.cells[0]}.OUT`, '1'), padAt(`U${Q.cells[0]}`, '6'), {
-      // seam crossing at y~69.8 (the DATA portal seals the 68.5 gap), band
-      // return north of the 63.2 barrels, mini-gate west, U78.6's WEST face
-      // from the flank pocket (the slot belongs to PWMB_78)
-      // west return dips through the mini-gate past (65.27,61.72), rounds the
-      // J78.IN blob on its north, and takes the SERPENTINE down to the flank
-      // pocket -- coil_78_A's constructed hop walls the direct gate descent
-      guide: gd([[66.72, 69.90], [67.6, 69.35], [68.5, 69.25], [69.3, 69.8], [69.85, 69.55], [70.1, 68.8],
-        [70.15, 67.0], [70.15, 65.0], [69.9, 64.1], [69.35, 63.35], [68.9, 62.75], [68.5, 62.0],
+    // PWMA_78 BEFORE the coil tail: its pocket descent (x 69.93) and the
+    // tail's flank descent share cell 79's west flank at 0.22 apart -- under
+    // the A*'s safe threshold. Tail-first forced PWMA_78 into a south-margin
+    // + x 70.23 seam-wall hook that sealed EVERY R2 pocket escape (R2 went
+    // 10/10 unrouted, score 0.00, instantly). PWMA_78 first on its measured
+    // corridor (guide pins it against grid-tie-break chaos), then the tail
+    // threads east of it at x ~70.30.
+    con(`PWMA_${Q.cells[0]}`, stubEndOf(`PWMA_${Q.cells[0]}`), padAt(`U${Q.cells[0]}`, '1'), {
+      guide: gd([[66.11, 67.35], [66.89, 67.80], [67.19, 67.28], [68.68, 67.28], [69.08, 67.38],
+        [69.93, 66.53], [69.93, 64.70], [68.73, 63.50], [67.91, 63.50], [67.58, 63.18]]),
+    });
+    // coil_78_B's B.Cu tail: starts at the constructed In12-dogleg via in the
+    // SE gutter (see the dogleg block above -- the SW terminal itself is
+    // unreachable on B.Cu without evicting the west field's constructions),
+    // which sits where the OLD east-around corridor began. Guide is the
+    // measured original with the flank descent biased east (70.15 -> 70.30)
+    // to clear PWMA_78's committed 69.93 line: east-around the internal seam,
+    // seam crossing at y~69.8 (the DATA portal seals the 68.5 gap), band
+    // return north of the 63.2 barrels, mini-gate west, U78.6's WEST face
+    // from the flank pocket (the slot belongs to PWMB_78); the west return
+    // dips through the mini-gate past (65.27,61.72), rounds the J78.IN blob
+    // on its north, and takes the SERPENTINE down to the flank pocket --
+    // coil_78_A's constructed hop walls the direct gate descent.
+    con(`coil_${Q.cells[0]}_B`, [coilViaSW.x, coilViaSW.y], padAt(`U${Q.cells[0]}`, '6'), {
+      startVia: coilViaSW,
+      guide: gd([[67.60, 69.60], [67.6, 69.35], [68.5, 69.25], [69.3, 69.8], [69.85, 69.55], [70.25, 68.8],
+        [70.30, 67.0], [70.30, 65.0], [69.95, 64.1], [69.35, 63.35], [68.9, 62.75], [68.5, 62.0],
         [66.0, 62.0], [65.6, 62.2], [64.87, 62.25], [64.6, 61.95], [64.1, 61.9], [63.7, 62.0],
         [63.2, 62.4], [63.0, 62.95], [63.15, 63.35], [63.6, 63.7], [64.05, 63.95], [64.4, 64.3],
         [64.5, 64.9], [64.94, 65.08], [65.38, 65.08]]),
     });
-    con(`PWMA_${Q.cells[0]}`, stubEndOf(`PWMA_${Q.cells[0]}`), padAt(`U${Q.cells[0]}`, '1'));
-    // 6-7. cell 79's pair: A north-touches U79.1 from the band, B rides the
-    // south lane and descends west of the (74.88,62.99) barrel into slot 79
+    // 6-7. cell 79's pair, PINNED to the corridors the A* actually took on
+    // the accepted 13:54 board (the old hand guides described different
+    // lanes and the A* deviated; after the dogleg changed grid tie-breaks,
+    // unpinned runs drifted onto PWMA_91's wedge vertical and starved it).
+    // A: SR.13 south-west descent, the x 66.11 vertical, row-3 margin east,
+    // then down into U79.1 from the north-east.
     con(`PWMA_${Q.cells[1]}`, padAt(sr, '13'), padAt(`U${Q.cells[1]}`, '1'), {
-      guide: gd([[63.70, 65.95], [63.75, 64.8], [64.1, 63.7], [64.85, 62.9], [65.4, 62.6],
-        [70.1, 62.5], [70.6, 63.0], [71.4, 63.85], [73.4, 63.9], [74.4, 63.4], [75.2, 62.7], [76.05, 62.9], [76.05, 63.18]]),
+      guide: gd([[63.68, 65.95], [63.31, 65.50], [63.56, 65.08], [63.56, 64.65], [64.23, 63.98],
+        [64.61, 63.48], [64.78, 63.65], [65.96, 63.65], [66.11, 63.50], [66.11, 59.25],
+        [69.01, 56.35], [73.13, 56.35], [74.58, 57.80], [74.58, 62.25], [75.28, 62.95],
+        [75.81, 62.95], [76.03, 63.18]]),
     });
+    // B: its own x 62.68 vertical (NOT the 61.68 wedge -- that is PWMA_91's),
+    // row-crossing at x 64.28, the row-3 margin all the way east past cell
+    // 91, then back south-west into U79.5.
     con(`PWMB_${Q.cells[1]}`, padAt(sr, '11'), padAt(`U${Q.cells[1]}`, '5'), {
-      guide: gd([[63.45, 66.38], [63.6, 65.6], [63.8, 64.8], [64.15, 63.9], [64.6, 63.75], [65.3, 63.8],
-        [66.2, 63.85], [67.4, 63.85], [68.5, 63.85], [69.4, 63.75], [70.4, 63.6],
-        [71.3, 64.1], [73.5, 64.1], [74.35, 63.5], [74.6, 63.4], [74.75, 64.9], [75.2, 65.25], [75.6, 65.08]]),
+      guide: gd([[63.43, 66.38], [62.68, 65.58], [62.68, 63.00], [64.28, 61.40], [64.28, 59.08],
+        [66.91, 56.45], [66.91, 55.78], [68.08, 54.60], [69.36, 54.80], [70.73, 54.18],
+        [73.01, 54.23], [75.13, 56.35], [81.61, 56.35], [82.63, 57.38], [82.63, 61.03],
+        [82.36, 61.30], [79.18, 61.30], [76.81, 63.68], [75.43, 63.70], [75.43, 64.65],
+        [75.86, 65.08], [76.03, 65.08]]),
     });
     // 8-11. north PWMs. B_91 owns the only clear south descent (the SW-most
     // stub crosses nothing); A_91 hops NE over the comb and takes the

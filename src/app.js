@@ -170,6 +170,7 @@ const PRESETS = {
     // git): rendered as KiCanvas links in the docs tab so the latest pushed
     // results are one click away.
     boards: [
+      { label: 'Quad stamp (centre quad: constructed lanes/combs/harness + routed coils, DRC == bare board)', path: 'route/out/amzhex-stamp.kicad_pcb' },
       { label: 'Routed coil board (latest autoroute result)', path: 'route/out/amzhex-routed.kicad_pcb' },
       { label: 'Unrouted coil board (copper + parts, no interconnect)', path: 'route/out/amzhex-unrouted.kicad_pcb' },
     ],

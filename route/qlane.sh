@@ -14,7 +14,12 @@ FR="java -Xss1024m -Xmx8g -jar freerouting-2.2.4.jar"
 export FREEROUTING__ROUTER__SCORING__VIA_COSTS=20 FREEROUTING__ROUTER__SCORING__START_RIPUP_COSTS=100
 
 if [ -z "$SKIP_GEN" ]; then
-  echo "== regenerate (ladder v3 + banFlats/banBands)"
+  echo "== regenerate (ladder v3 + banFlats/banBands, pinned placements)"
+  # The constructed combs/harness are hand-measured against THESE part
+  # positions; letting the placement search re-run against moved crossover
+  # vias shifts U/C/SR ~0.1 mm and every tooth misses its pad. rdeg 180 on
+  # U = pads 1/3 EAST (rdeg 0 mirrors the columns and the combs miss).
+  U_AT="1.493,2.396,180" C_AT="2.093,0.596,0" SR_AT="-0.707,-1.204,330" \
   OUT_KEY=$B node quadgen.mjs amzhex || exit 1
 fi
 
