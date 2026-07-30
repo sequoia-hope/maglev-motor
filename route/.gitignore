@@ -33,3 +33,17 @@ frjar/
 *.kicad_prl
 fp-info-cache
 production/
+
+# The stamp pipelines' run artefacts: checkses pin maps, quad and lane specs,
+# stage stamps, coilcheck stamps, harness grid dumps. All reproducible from
+# the scripts beside this file, same as the boards above.
+*.pins.json
+*.done
+*.quads.json
+*.coilcheck.json
+*.lanepins.json
+*.srstub.json
+*.taps.json
+*.todo.json
+*.grid.json
+*.coilgrid.json

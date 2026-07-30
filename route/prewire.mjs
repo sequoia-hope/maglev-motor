@@ -61,9 +61,13 @@ export function makeField(board, netOf) {
   const pads = [], vias = [], traces = [];
   for (const fp of board.fps) {
     for (const pd of fp.pads) {
+      // Pad angles in a .kicad_pcb are CCW in the Y-UP sense (see the mkdsn
+      // padstack note); this module works in the file's y-DOWN frame, so the
+      // angle must be negated or every rotated pad is checked MIRRORED --
+      // invisible on squares, wrong on the 0.8 x 0.3 register pads.
       pads.push({
         cx: fp.x + pd.dx, cy: fp.y + pd.dy, w: pd.w, h: pd.h,
-        ang: ((fp.rot + pd.ang) * Math.PI) / 180,
+        ang: -((fp.rot + pd.ang) * Math.PI) / 180,
         net: netOf(fp.ref, pd.name, pd.netName), layer: pd.layer,
       });
     }
@@ -73,8 +77,18 @@ export function makeField(board, netOf) {
 }
 
 /** Is this polyline clear of everything not on `net`, by `clr`, on `layer`? */
-function clear(pts, net, coilNet, field, clr, width, layer) {
+function clear(pts, net, coilNet, field, clr, width, layer, edge) {
   const half = width / 2;
+  // Fab edge clearance, when the caller provides the outline distance. Sampled
+  // at ends and midpoint of each leg -- legs here are a few mm at most.
+  if (edge) {
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+      for (const [px, py] of [[ax, ay], [(ax + bx) / 2, (ay + by) / 2], [bx, by]]) {
+        if (edge.dist(px, py) < edge.min + half) return false;
+      }
+    }
+  }
   for (let i = 0; i + 1 < pts.length; i++) {
     const a = pts[i], b = pts[i + 1];
     if (Math.abs(a[0] - b[0]) < EPS && Math.abs(a[1] - b[1]) < EPS) continue;
@@ -130,13 +144,13 @@ function candidates(A, B) {
 }
 
 /** Lay `conns` (each {net, coilNet, a, b, layer}) and return the traces laid. */
-export function prewire(conns, field, { clearance, width }) {
+export function prewire(conns, field, { clearance, width, edge = null }) {
   const laid = [];
   let done = 0;
   for (const c of conns) {
     let got = null;
     for (const pts of candidates(c.a, c.b)) {
-      if (clear(pts, c.net, c.coilNet, field, clearance, width, c.layer)) { got = pts; break; }
+      if (clear(pts, c.net, c.coilNet, field, clearance, width, c.layer, edge)) { got = pts; break; }
     }
     if (!got) continue;
     const tr = { net: c.net, pts: got, width, layer: c.layer };

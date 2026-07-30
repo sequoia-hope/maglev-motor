@@ -24,13 +24,31 @@
 // The .ses that comes back is merged into the full board by mkses.mjs, and the
 // full board is what gets DRC'd -- the proxy is only ever an input.
 
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync , statSync} from 'fs';
 
 const um = (mm) => Math.round(mm * 1000);
 
 /** Pull the parts of a generated .kicad_pcb this needs. The file is machine
  *  written and utterly regular, so these patterns are exact, not heuristic. */
+// Routing tools may only consume boards the coil validator has passed:
+// coilcheck.mjs writes <board>.coilcheck.json (a size+mtime stamp) on
+// success, and generated winding copper has shipped self-intersections that
+// no KiCad DRC reports (same net). VALIDATE_SKIP=1 bypasses in emergencies.
+function requireCoilcheck(path) {
+  if (process.env.VALIDATE_SKIP) return;
+  if (!/\.kicad_pcb$/.test(path)) return;
+  let st, stamp;
+  try { st = statSync(path); } catch { return; }
+  try { stamp = JSON.parse(readFileSync(path + '.coilcheck.json', 'utf8')); } catch {
+    throw new Error(`${path}: no coilcheck stamp -- run \`node coilcheck.mjs ${path}\` before routing (VALIDATE_SKIP=1 overrides)`);
+  }
+  if (!stamp.ok || stamp.size !== st.size || stamp.mtimeMs !== st.mtimeMs) {
+    throw new Error(`${path}: coilcheck stamp is STALE -- re-run \`node coilcheck.mjs ${path}\` (VALIDATE_SKIP=1 overrides)`);
+  }
+}
+
 export function readBoard(path) {
+  requireCoilcheck(path);
   const txt = readFileSync(path, 'utf8');
   const outline = [];
   for (const m of txt.matchAll(/\(gr_line \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(layer "Edge\.Cuts"\)/g)) {
@@ -225,6 +243,26 @@ export function writeDsn(board, opts) {
     }
     nk++;
   }
+  // Already-routed copper carried as OBSTACLES rather than wiring: freerouting
+  // 2.2.4 hangs (200% CPU, zero passes) when protected carried wiring exceeds
+  // a few hundred fragments, so a staged build presents earlier stages' copper
+  // as keepouts and routes only the current stage's nets around it.
+  for (const [i, ck] of (opts.copperKeepouts || []).entries()) {
+    if (ck.circle) {
+      p(`    (keepout "ck${i}" (circle ${ck.layer} ${um(ck.circle.dia + 2 * grow)} ${X(ck.circle.x)} ${Y(ck.circle.y)}))`);
+      continue;
+    }
+    const [x0, y0, x1, y1, wdt] = ck.seg;
+    const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const hw = wdt / 2 + grow;
+    const hx = -uy * hw, hy = ux * hw;
+    const ax = x0 - ux * grow, ay = y0 - uy * grow;
+    const bx = x1 + ux * grow, by = y1 + uy * grow;
+    const q = [[ax - hx, ay - hy], [bx - hx, by - hy], [bx + hx, by + hy], [ax + hx, ay + hy]];
+    q.push(q[0]);
+    p(`    (keepout "ck${i}" (polygon ${ck.layer} 0 ${q.map(([x, y]) => `${X(x)} ${Y(y)}`).join('  ')}))`);
+  }
   // Existing crossover vias: real copper on EVERY electronics layer.
   (opts.noXVia ? [] : keepVias).forEach((v, i) => {
     for (const ln of layers) {
@@ -241,6 +279,17 @@ export function writeDsn(board, opts) {
     for (const ln of layers) {
       if (ln === opts.padLayer) continue;         // the pad already guards this one
       p(`    (keepout "tv${i}_${ln}" (circle ${ln} ${um(v.size + 2 * grow)} ${X(v.x)} ${Y(v.y)}))`);
+    }
+  });
+  // Anchor pads are the same trap as terminal vias: the router sees a
+  // single-layer octagon, but the board has a plated THROUGH barrel there.
+  // Guard every other routing layer, or a B.Cu track runs over a power seam
+  // via and welds PWM to VBUS (six shorts on the first qlane merge).
+  (opts.anchorPads || []).forEach((ap, i) => {
+    const own = ap.layer || layers[layers.length - 1];
+    for (const ln of layers) {
+      if (ln === own) continue;
+      p(`    (keepout "av${i}_${ln}" (circle ${ln} ${um(ap.dia + 2 * grow)} ${X(ap.x)} ${Y(ap.y)}))`);
     }
   });
   p('  )');
@@ -284,6 +333,20 @@ export function writeDsn(board, opts) {
       });
     }
   }
+  // Seam anchor pads: real through-vias the CELL routing problem must arrive
+  // at. A padstack spanning every routing layer would be the physical truth
+  // (the board has a plated through hole there), but freerouting MISCOUNTS
+  // nets holding multi-layer pins -- it reports them routed while leaving the
+  // pin's island unconnected (measured: GND_C split in two, "0 unrouted").
+  // So each anchor is a single-layer circle; ap.layer picks which.
+  (opts.anchorPads || []).forEach((ap, i) => {
+    const layer = ap.layer || layers[layers.length - 1];
+    const key = `ANCH@${ap.dia.toFixed(3)}@${layer}`;
+    if (!stacks.has(key)) stacks.set(key, { id: `PSA${stacks.size}`, dia: ap.dia, oneLayer: layer });
+    parts.push({
+      ref: `ANCH_${i}`, img: stacks.get(key).id, x: ap.x, y: ap.y, net: ap.net,
+    });
+  });
   p('  (placement');
   for (const s of stacks.values()) {
     p(`    (component IMG_${s.id}`);
@@ -302,7 +365,20 @@ export function writeDsn(board, opts) {
   }
   for (const s of stacks.values()) {
     p(`    (padstack ${s.id}`);
-    p(`      (shape (polygon ${s.layer} 0 ${s.pts.map(([x, y]) => `${um(x)} ${um(y)}`).join('  ')}))`);
+    if (s.oneLayer) {
+      // an OCTAGON, not a circle: freerouting mis-books nets whose pins carry
+      // circle padstacks (reports them routed while their islands dangle);
+      // polygon padstacks go down the same code path as every SMD pad, which
+      // is the path that demonstrably works.
+      const r = s.dia / 2;
+      const oct = Array.from({ length: 8 }, (_, k) => {
+        const a = (k * Math.PI) / 4 + Math.PI / 8;
+        return `${um(r * Math.cos(a))} ${um(r * Math.sin(a))}`;
+      }).join('  ');
+      p(`      (shape (polygon ${s.oneLayer} 0 ${oct}  ${um(s.dia / 2 * Math.cos(Math.PI / 8))} ${um(s.dia / 2 * Math.sin(Math.PI / 8))}))`);
+    } else {
+      p(`      (shape (polygon ${s.layer} 0 ${s.pts.map(([x, y]) => `${um(x)} ${um(y)}`).join('  ')}))`);
+    }
     p('      (attach off)');
     p('    )');
   }
@@ -356,12 +432,26 @@ export function writeDsn(board, opts) {
   // to, so those are simply dropped -- there are only two per cell and the
   // router redoes them cheaply. Anything else whose net the router does not
   // know about goes the same way rather than referencing a net that is not there.
+  // opts.protectCarried marks the carried copper FIXED instead -- for wiring
+  // that was constructed deliberately (buses.mjs) rather than found by an
+  // earlier router pass, ripping it up would undo engineering, not routing.
   let carriedOut = 0;
   const known = new Set(netNames);
+  const fix = opts.protectCarried ? ' (type protect)' : '';
   for (const t of opts.carried || []) {
     if (!known.has(t.net)) continue;
-    p(`    (wire (path ${t.layer} ${um(t.width)} ${X(t.a[0])} ${Y(t.a[1])}  ${X(t.b[0])} ${Y(t.b[1])}) (net ${t.net}))`);
+    p(`    (wire (path ${t.layer} ${um(t.width)} ${X(t.a[0])} ${Y(t.a[1])}  ${X(t.b[0])} ${Y(t.b[1])}) (net ${t.net})${fix})`);
     carriedOut++;
+  }
+  // Carried VIAS, as wiring rather than keepouts. Without this a carried net
+  // that changes layer is two trees the router thinks are unconnected, with a
+  // keepout sitting exactly where the join belongs -- it reroutes the whole
+  // connection elsewhere and the carried copper is dead weight.
+  let carriedVias = 0;
+  for (const v of opts.carriedVias || []) {
+    if (!known.has(v.net)) continue;
+    p(`    (via "${via.name}" ${X(v.x)} ${Y(v.y)} (net ${v.net})${fix})`);
+    carriedVias++;
   }
   p('  )');
   p(')');

@@ -70,7 +70,10 @@ const coilKeepR = g.halfOut + g.trace / 2;
 // interior via site this board has.
 const innerR = g.halfIn - g.trace / 2;
 const rHole = innerR - FAB.minClearance - vSize / 2;      // crossover-via ring
-const coilHoleR = Math.max(0, rHole - vSize / 2 - FAB.minClearance);
+// Legal radius for a ROUTING via centre inside the ring: from the ring's inner
+// LAND edge, not its centreline -- the old formula was one via-radius
+// optimistic and advertised sites the fab rules do not allow.
+const coilHoleR = Math.max(0, rHole - vSize - FAB.minClearance);
 console.log(`coil centre hole: ${innerR.toFixed(3)} mm apothem, via-legal radius ${coilHoleR.toFixed(3)} mm (a via needs ${(vSize / 2).toFixed(3)})`);
 
 // The terminal vias are represented by the coil's I/O pads (which cover them),
@@ -215,12 +218,29 @@ console.log(`pre-routed ${pre.done} of ${pre.tried} local connections`);
 // CARRY=<board.kicad_pcb>: take the electronics-layer tracks off an
 // already-routed board and hand them back to the router as a starting point.
 let carried = [];
+let carriedVias = [];
 if (process.env.CARRY) {
   const prev = readBoard(process.env.CARRY);
   const nameOf = (n) => prev.nets.get(n);
   carried = prev.tracks
     .filter((t) => layers.includes(t.layer) && nameOf(t.net))
     .map((t) => ({ ...t, net: nameOf(t.net) }));
+
+  // Routing vias off the carried board come back as WIRING, not keepouts: a
+  // keepout where the layer change was leaves the router seeing two trees it
+  // must reconnect and a disc it may not touch at the join. Only vias whose
+  // net survives to the router qualify -- a coil-net via (crossovers) stays a
+  // keepout, exactly as before.
+  const carriedAt = new Set();
+  carriedVias = prev.vias
+    .filter((v) => nameOf(v.net) && !/^coil_\d+$/.test(nameOf(v.net)) && !isTerm(v))
+    .map((v) => ({ x: v.x, y: v.y, net: nameOf(v.net) }));
+  for (const v of carriedVias) carriedAt.add(`${v.x.toFixed(3)},${v.y.toFixed(3)}`);
+  // ...and they must not ALSO be keepouts (the board being routed is often the
+  // carried board itself).
+  for (let i = keepVias.length - 1; i >= 0; i--) {
+    if (carriedAt.has(`${keepVias[i].x.toFixed(3)},${keepVias[i].y.toFixed(3)}`)) keepVias.splice(i, 1);
+  }
 
   // A carried coil track has the BOARD's net name -- `coil_i` -- but the router
   // is given the coil as two terminals, coil_i_A and coil_i_B, so a bare
@@ -285,6 +305,8 @@ const stats = writeDsn(board, {
   netOverride,
   prewired: pre.laid,
   carried,
+  carriedVias,
+  protectCarried: !!process.env.PROTECT_CARRY,
   onlyNets: (process.env.ONLY || '').split(',').filter(Boolean),
   planeNets: (process.env.PLANES || '').split(',').filter(Boolean),
   out,
