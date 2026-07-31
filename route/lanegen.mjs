@@ -27,7 +27,7 @@
 // trustworthy because of this.
 import { readFileSync, writeFileSync } from 'fs';
 import { makeStator } from '../src/coils.js';
-import { FAB } from '../src/kicad.js';
+import { FAB, pcbCoilGeometry } from '../src/kicad.js';
 import { readBoard } from './mkdsn.mjs';
 import { SEAM_SIGNALS } from './cellspec.mjs';
 
@@ -481,6 +481,20 @@ const allowFor = (net, startVia) => {
     if (!nearOwn(v.x, v.y) || ownV(v)) continue;
     blockDisc2(v.x, v.y, v.size / 2 + CLR + W / 2 + SAFE, allow, 0);
   }
+  // ... nor foreign CONSTRUCTED copper (the VBUS via-link's corner sits
+  // 0.23 mm from SR pad 1 at the flip; the pad's allow zone overrode the
+  // link's raster and GND's drop grazed it at 0.185)
+  for (const r2 of runs) {
+    if (r2.layer !== PAD_LAYER || boardName(r2.net) === bn) continue;
+    for (let i2 = 0; i2 + 1 < r2.pts.length; i2++) {
+      const [ax, ay] = r2.pts[i2], [bx2, by2] = r2.pts[i2 + 1];
+      if (!nearOwn(ax, ay) && !nearOwn(bx2, by2)) continue;
+      const L = Math.hypot(bx2 - ax, by2 - ay), n3 = Math.max(1, Math.ceil(L / (GRID * 2)));
+      for (let k3 = 0; k3 <= n3; k3++) {
+        blockDisc2(ax + ((bx2 - ax) * k3) / n3, ay + ((by2 - ay) * k3) / n3, W + CLR + SAFE, allow, 0);
+      }
+    }
+  }
   return allow;
 };
 // Harness copper is committed PER NET, not into `blocked`: each route then
@@ -492,6 +506,10 @@ const foreignFor = (net) => {
   foreignScratch.fill(0);
   for (const c2 of committed) {
     if (c2.net === net) continue;
+    // same BOARD net = same copper: VLOGIC_CE may touch VLOGIC_C's drop (the
+    // chain ends on the pad that drop leaves from). The COIL halves are the
+    // one same-board split whose touching is a real short -- keep them apart.
+    if (boardName(c2.net) === boardName(net) && !boardName(net).startsWith('coil_')) continue;
     blockSeg(c2.seg[0], c2.seg[1], c2.seg[2], c2.seg[3], W + CLR + SAFE_P, foreignScratch);
   }
   return foreignScratch;
@@ -506,10 +524,17 @@ const prefFor = (guide) => {
   }
   return g2;
 };
-const routeNet = (net, from, to, { emit = true, startVia = null, guide = null, denyPads = null } = {}) => {
+const routeNet = (net, from, to, { emit = true, startVia = null, guide = null, denyPads = null, alsoOpen = null } = {}) => {
   if (!from || !to) { console.error(`HARNESS: missing endpoint for ${net}`); return false; }
   if (startVia) ownBarrels.push({ net, x: startVia.x, y: startVia.y });
   const allow = allowFor(net, startVia);
+  // alsoOpen: additional own-net barrels the path may land on (a route
+  // between TWO of its own vias -- the gutter doglegs' rise leg ends on the
+  // DATA_E portal, which the static raster blocked long before)
+  if (alsoOpen) for (const sv of alsoOpen) {
+    ownBarrels.push({ net, x: sv.x, y: sv.y });
+    blockDisc(sv.x, sv.y, 0.25 + CLR + W / 2 + SAFE, allow);
+  }
   // denyPads: same-BOARD-net pads this route must nevertheless keep clear of.
   // The coil halves are one KiCad net, so allowFor opens BOTH terminals' pads
   // -- copper grazing the far terminal would short across the whole winding,
@@ -658,6 +683,9 @@ const stubRuns = new Set();
   // long axis, 0.29 mm past the fan's mutual-clearance bar; the A* then
   // routes tap<->stub-end and pad order stops mattering.
   const srFp = board.fps.find((f2) => f2.ref === sr);
+  // the 180-flip orientation (rot ~150): same pocket as the committed 330,
+  // pinout swapped -- it gets its own measured harness below
+  const srFlip = Math.abs(((((srFp.pads[0].ang || 0) - 150) % 360) + 540) % 360 - 180) < 15;
   const stubEnd = new Map();                     // pad name -> [x, y]
   const stubFor = (net, name) => {
     const p2 = srFp.pads.find((q) => q.name === name);
@@ -874,17 +902,26 @@ const stubRuns = new Set();
       // short), then the committed dogleg + tail, else withdraw the dogleg
       // entirely -- a carried In12 leg with no tail would keep out its own
       // net's J.OUT pin in the router stages.
+      // AT THE FLIP (register rotated ~150) the preference INVERTS: the
+      // direct trunk hugs x 61.6-61.8, exactly between the west-column pads
+      // and their seam taps -- measured, it is what killed all five control
+      // drops -- while the dogleg leaves the whole west field to them.
       const cn = `coil_${Q.cells[0]}_B`;
       const deny = [[`J${Q.cells[0]}.IN`, '1'], [`U${Q.cells[0]}`, '2']];
-      con(cn, padAt(`J${Q.cells[0]}.OUT`, '1'), padAt(`U${Q.cells[0]}`, '6'), { denyPads: deny });
-      if (!built.includes(cn)) {
+      const tryDirect = () => con(cn, padAt(`J${Q.cells[0]}.OUT`, '1'), padAt(`U${Q.cells[0]}`, '6'), { denyPads: deny });
+      const tryDogleg = () => {
         coilViaSW.emitLeg();
+        // the raster was built before this late emission -- later A* work
+        // must see the dogleg via as the barrel it is
+        blockDisc(coilViaSW.x, coilViaSW.y, 0.25 + CLR + W / 2 + SAFE, blocked);
         con(cn, [coilViaSW.x, coilViaSW.y], padAt(`U${Q.cells[0]}`, '6'), { startVia: coilViaSW, guide: tailGuide, denyPads: deny });
         if (!built.includes(cn)) {
           for (let i2 = runs.length - 1; i2 >= 0; i2--) if (runs[i2].net === cn) runs.splice(i2, 1);
           for (let i2 = cvias.length - 1; i2 >= 0; i2--) if (cvias[i2].net === cn) cvias.splice(i2, 1);
         }
-      }
+      };
+      if (srFlip) { tryDogleg(); if (!built.includes(cn)) tryDirect(); }
+      else { tryDirect(); if (!built.includes(cn)) tryDogleg(); }
     }
     if (process.env.SR_SWEEP) {
       // The REGISTER CELL's own _B coil is the router-hopeless net wherever
@@ -903,6 +940,14 @@ const stubRuns = new Set();
         con(cn2, padAt(`J${regCell}.OUT`, '1'), padAt(`U${regCell}`, '6'),
           { denyPads: [[`J${regCell}.IN`, '1'], [`U${regCell}`, '2']] });
       }
+      if (srFlip && regCell === Q.cells[0]) {
+        // at the flip the 79ers' south-gutter constructions hem THEIR OWN
+        // cell's coil (R1 lost coil_79_B the run they landed) -- coils
+        // first applies to cell 79 too
+        const cn3 = `coil_${Q.cells[1]}_B`;
+        con(cn3, padAt(`J${Q.cells[1]}.OUT`, '1'), padAt(`U${Q.cells[1]}`, '6'),
+          { denyPads: [[`J${Q.cells[1]}.IN`, '1'], [`U${Q.cells[1]}`, '2']] });
+      }
     }
     if (process.env.SR_SWEEP && process.env.SR_CONSTRUCT) {
       // GENERIC parametric harness for a candidate register: stubs on every
@@ -912,25 +957,253 @@ const stubRuns = new Set();
       // minus the guides. What constructs here is exactly the candidate's
       // own geometry, which is the quantity the sweep ranks.
       const GEN_NETS = SR_NETS.map(([net, pad]) => (pad === '16' ? ['VLOGIC_CE', pad] : [net, pad]));
-      for (const [net, pad] of GEN_NETS) stubFor(net, pad);
-      blockEnvelope();
+      // at the flip the even column's NW stubs angle ACROSS the neighbouring
+      // pads' approach lanes (measured: pad-10's stub sealed RCLK's face);
+      // the west drops approach their own faces straight-on and want no
+      // stubs. The odd column's SE stubs stay -- they are the PWM take-offs.
+      for (const [net, pad] of GEN_NETS) {
+        // the flip wants NO stubs at all: the even column's NW stubs angle
+        // across their neighbours' approach lanes (pad-10's sealed pad 8
+        // for good), and the odd column's SE stubs wall each other's gutter
+        // take-offs at 0.5 pitch -- the comb theorem, south-east edition.
+        // Every drop and dogleg leaves from its own pad face instead.
+        if (srFlip) {
+          const p2 = srFp.pads.find((q) => q.name === pad);
+          stubEnd.set(pad, [+(srFp.x + p2.dx).toFixed(3), +(srFp.y + p2.dy).toFixed(3)]);
+          continue;
+        }
+        stubFor(net, pad);
+      }
+      // the envelope stays generic-only: the flip's drops are ordered and
+      // guided straight onto their own faces, and the envelope would seal
+      // the under-body channel the VLOGIC chain rides
+      if (!srFlip) blockEnvelope();
       const hasStub = (pad) => {
         const e = stubEnd.get(pad);
         const p2 = srFp.pads.find((q) => q.name === pad);
         return Math.hypot(e[0] - (srFp.x + p2.dx), e[1] - (srFp.y + p2.dy)) > 0.5;
       };
-      for (const [net, pad] of [['SCLK_C', '6'], ['RCLK_C', '8'], ['OE_N_C', '10'], ['DATA_W', '12'],
-        ['DATA_E', '2'], ['GND_C', '1'], ['VLOGIC_C', '4'], ['VLOGIC_CE', '16']]) {
+      const dropOf = (net, pad, guide) => {
         const t = taps.find((t2) => t2.net === net && t2.kind !== 'stub');
-        con(net, [t.x, t.y], stubEnd.get(pad), { startVia: t });
-      }
-      for (const [net, srPad, cell, uPad] of [
-        [`PWMB_${Q.cells[3]}`, '3', Q.cells[3], '5'], [`PWMA_${Q.cells[3]}`, '5', Q.cells[3], '1'],
-        [`PWMB_${Q.cells[2]}`, '7', Q.cells[2], '5'], [`PWMA_${Q.cells[2]}`, '9', Q.cells[2], '1'],
-        [`PWMB_${Q.cells[1]}`, '11', Q.cells[1], '5'], [`PWMA_${Q.cells[1]}`, '13', Q.cells[1], '1'],
-        [`PWMB_${Q.cells[0]}`, '15', Q.cells[0], '5'], [`PWMA_${Q.cells[0]}`, '14', Q.cells[0], '1'],
-      ]) {
-        con(net, stubEnd.get(srPad), padAt(`U${cell}`, uPad));
+        con(net, [t.x, t.y], stubEnd.get(pad), { startVia: t, guide });
+      };
+      if (!srFlip) {
+        for (const [net, pad] of [['SCLK_C', '6'], ['RCLK_C', '8'], ['OE_N_C', '10'], ['DATA_W', '12'],
+          ['DATA_E', '2'], ['GND_C', '1'], ['VLOGIC_C', '4'], ['VLOGIC_CE', '16']]) {
+          dropOf(net, pad);
+        }
+        for (const [net, srPad, cell, uPad] of [
+          [`PWMB_${Q.cells[3]}`, '3', Q.cells[3], '5'], [`PWMA_${Q.cells[3]}`, '5', Q.cells[3], '1'],
+          [`PWMB_${Q.cells[2]}`, '7', Q.cells[2], '5'], [`PWMA_${Q.cells[2]}`, '9', Q.cells[2], '1'],
+          [`PWMB_${Q.cells[1]}`, '11', Q.cells[1], '5'], [`PWMA_${Q.cells[1]}`, '13', Q.cells[1], '1'],
+          [`PWMB_${Q.cells[0]}`, '15', Q.cells[0], '5'], [`PWMA_${Q.cells[0]}`, '14', Q.cells[0], '1'],
+        ]) {
+          con(net, stubEnd.get(srPad), padAt(`U${cell}`, uPad));
+        }
+      } else {
+        // MEASURED FLIP HARNESS (derived 2026-07-30 on srswp4; guides in
+        // board coords for the centre quad, generalising like every other
+        // guide because each quad is the same stamp). The even column faces
+        // the west seam: five short parallel WSW drops in column order,
+        // DATA_W diving before OE_N (their targets cross). VLOGIC_CE chains
+        // pad 16 to pad 4 through the under-body channel -- at the flip the
+        // bay ring sits at the column's NORTH end so the channel's south
+        // half is clear (the mirror of the committed orientation's
+        // pad-4-only rule). GND crosses east to the internal barrel through
+        // the A-column's 65.3-66.9 y-gap. The odd column faces the old
+        // east-pocket corridors: PWMB_79 rides the y~69.8 south-of-ladder
+        // window east (the corridor the east-drops experiment measured and
+        // shelved as "valid if SR ever moves"); DATA_E threads the
+        // ring/C78/pad-1 squeeze north-about; PWMA_78 climbs the west field
+        // (freed by preferring the dogleg) to the mini-gate band and enters
+        // U78.1 from the north-west; PWMB_78 loops south-east, dodges the
+        // dogleg via, threads the C78 pad gap and the 0.06 mm-band slit
+        // between C78.2 and the GND riser to U78.5's east face; the 90 pair
+        // crosses the internal seam's via-free section (y < 64.4) and rides
+        // cell 79's west flank north to the row-3 y-56.35 band; the 91 pair
+        // goes last so its long free-form paths dodge every committed
+        // corridor.
+        // RCLK and OE_N go to the ROUTER: their westward drops are
+        // geometrically exclusive with PWMA_78's climb (any north-south
+        // lane in the 1.5 mm face strip crosses every westward drop), the
+        // router can hop to In12, and RCLK_C was router-completed at the
+        // committed orientation repeatedly. Their pad faces stay clear.
+        dropOf('VLOGIC_C', '4', gd([[63.70, 66.05], [63.0, 65.7], [62.2, 65.2], [61.5, 64.95], [61.04, 64.85]]));
+        dropOf('SCLK_C', '6', gd([[63.45, 66.48], [63.0, 66.6], [62.2, 67.0], [61.4, 67.45], [60.47, 67.79]]));
+        dropOf('DATA_W', '12', gd([[62.70, 67.78], [62.15, 67.42], [61.7, 67.75], [61.3, 68.2], [60.95, 68.5], [60.47, 68.63]]));
+        con('VLOGIC_CE', padAt(sr, '16'), padAt(sr, '4'), {
+          guide: gd([[62.67, 68.92], [63.1, 68.15], [63.5, 67.3], [63.65, 66.6], [63.70, 66.3]]),
+        });
+        dropOf('GND_C', '1', gd([[66.5, 66.95], [67.4, 66.5], [68.3, 66.11], [69.50, 66.11]]));
+        // --- gutter doglegs ------------------------------------------------
+        // Flood-measured: the dogleg via, the tail's start segment, J66.IN,
+        // U66.2 and the row gutter's crossover-via cluster close each
+        // other's gaps -- there is NO B.Cu crossing of the row gutter east
+        // of x 66.3. The In12 gutter band (y ~c78y+2.72..+4.5, between the
+        // OE_N lane and row 5's stack) is empty but for those barrels, so
+        // each eastbound net drops through its own PROBED via, rides its own
+        // In12 y-lane, and rises near its destination -- the coil_78_B
+        // dogleg, generalised. Sites are probed against the FULL board
+        // (winding hexes + vias + pads + constructed copper; the r1-proxy
+        // trap cost 8 real DRC hits once already).
+        const gGeom = pcbCoilGeometry(cfg);
+        const coilKeepR2 = gGeom.halfOut + gGeom.trace / 2;
+        const hexD = (dx2, dy2) => {
+          let m = -1e9;
+          for (let k2 = 0; k2 < 6; k2++) {
+            const a2 = (k2 * Math.PI) / 3;
+            m = Math.max(m, dx2 * Math.cos(a2) + dy2 * Math.sin(a2));
+          }
+          return m;
+        };
+        const ptSeg2 = (px, py, ax, ay, bx, by) => {
+          const dx2 = bx - ax, dy2 = by - ay, L2 = dx2 * dx2 + dy2 * dy2;
+          const t2 = L2 ? Math.max(0, Math.min(1, ((px - ax) * dx2 + (py - ay) * dy2) / L2)) : 0;
+          return Math.hypot(px - (ax + t2 * dx2), py - (ay + t2 * dy2));
+        };
+        const siteOK = (x, y, net) => {
+          for (const [cx2, cy2] of coils) {
+            if (Math.hypot(x - cx2, y - cy2) < 6.5 && hexD(x - cx2, -(y - cy2)) < coilKeepR2 + CLR + 0.25 + 0.03) return false;
+          }
+          for (const v of board.vias) if (Math.hypot(x - v.x, y - v.y) < 0.6) return false;
+          for (const v of cvias) if (Math.hypot(x - v.x, y - v.y) < 0.6) return false;
+          for (const fp of board.fps) {
+            if (Math.hypot(x - fp.x, y - fp.y) > 4) continue;
+            for (const p2 of fp.pads) {
+              if (inPad(x, y, { x: fp.x + p2.dx, y: fp.y + p2.dy, w: p2.w, h: p2.h, rot: -((fp.rot || 0) + (p2.ang || 0)) }, 0.25 + CLR + 0.03)) return false;
+            }
+          }
+          for (const r2 of runs) {
+            if (r2.net === net) continue;         // own copper may touch its own barrel
+            for (let i2 = 0; i2 + 1 < r2.pts.length; i2++) {
+              if (ptSeg2(x, y, r2.pts[i2][0], r2.pts[i2][1], r2.pts[i2 + 1][0], r2.pts[i2 + 1][1]) < 0.25 + CLR + W / 2 + 0.03) return false;
+            }
+          }
+          return true;
+        };
+        const findSite = ([px, py], net) => {
+          let best = null;
+          for (let dy2 = -0.9; dy2 <= 0.9 + 1e-9; dy2 += 0.1) {
+            for (let dx2 = -1.8; dx2 <= 1.8 + 1e-9; dx2 += 0.1) {
+              const x = px + dx2, y = py + dy2;
+              if (y < c78y + 2.77 || y > c78y + 4.6) continue;
+              if (!siteOK(x, y, net)) continue;
+              const d = Math.hypot(dx2, dy2);
+              if (!best || d < best.d) best = { x: +x.toFixed(3), y: +y.toFixed(3), d };
+            }
+          }
+          return best;
+        };
+        const gutterPath = (a, b, laneY) => {
+          const pts = [[a.x, a.y], [a.x, laneY]];
+          const dir = Math.sign(b.x - a.x) || 1;
+          const blockers = [...board.vias, ...cvias]
+            .filter((v) => v.y > c78y + 2.6 && v.y < c78y + 4.9
+              && (v.x - a.x) * dir > 0.3 && (b.x - v.x) * dir > 0.3 && Math.abs(v.y - laneY) < 0.44)
+            .sort((u, v) => (u.x - v.x) * dir);
+          for (const v of blockers) {
+            const yj = +(v.y + (laneY <= v.y ? -0.46 : 0.46)).toFixed(3);
+            pts.push([+(v.x - 0.5 * dir).toFixed(3), laneY], [v.x, yj], [+(v.x + 0.5 * dir).toFixed(3), laneY]);
+          }
+          pts.push([b.x, laneY], [b.x, b.y]);
+          return pts.map(([x, y]) => [+(+x).toFixed(3), +(+y).toFixed(3)]);
+        };
+        const gd1 = (x, y) => gd([[x, y]])[0];
+        const gutterNet = (net, fromPt, dropPref, laneYOff, risePref, riseLeg, dropGuide = null) => {
+          const dv = findSite(dropPref, net);
+          const rvS = findSite(risePref, net);
+          if (!dv || !rvS) {
+            console.error(`GUTTER: no ${dv ? 'rise' : 'drop'} via site for ${net}`);
+            if (!harnessFail.includes(net)) harnessFail.push(net);
+            return;
+          }
+          // undo by TRUNCATION, not net-filter: DATA_E's original In12 lane
+          // and portal predate this call and must survive a withdrawal
+          const mark = { r: runs.length, c: cvias.length, m: committed.length };
+          const undo = () => {
+            runs.length = mark.r;
+            cvias.length = mark.c;
+            committed.length = mark.m;
+            if (!harnessFail.includes(net)) harnessFail.push(net);
+          };
+          cvias.push({ net, x: dv.x, y: dv.y }, { net, x: rvS.x, y: rvS.y });
+          runs.push({ net, layer: LANE_LAYER, pts: gutterPath(dv, rvS, +(c78y + laneYOff).toFixed(3)) });
+          if (!routeNet(net, fromPt, [dv.x, dv.y], { startVia: dv, guide: dropGuide })
+            || !riseLeg(rvS)) { undo(); return; }
+          built.push(net);
+          blockDisc(dv.x, dv.y, 0.25 + CLR + W / 2 + SAFE, blocked);
+          blockDisc(rvS.x, rvS.y, 0.25 + CLR + W / 2 + SAFE, blocked);
+        };
+        // PWMB_79: east through the seam's A/B-column inter-via gaps
+        // (A 66.95-67.79, B 66.11-68.21 -- the only B.Cu crossings left),
+        // the y~66.7 jog band between the GND-B via and the tail's top,
+        // the shelf south of cell 79's bay ring, to U79.5's west face
+        con(`PWMB_${Q.cells[1]}`, stubEnd.get('11'), padAt(`U${Q.cells[1]}`, '5'), {
+          guide: gd([[65.5, 69.35], [66.2, 68.9], [67.0, 68.3], [67.8, 67.75], [68.5, 67.5], [68.93, 67.35],
+            [69.50, 67.15], [69.95, 66.9], [70.5, 66.75], [71.2, 66.7], [72.0, 66.5], [72.5, 66.1],
+            [72.95, 65.6], [73.6, 65.5], [74.4, 65.5], [75.0, 65.4], [75.59, 65.09], [76.04, 65.09]]),
+        });
+        // DATA_E: the under-body channel beside the VLOGIC chain, out the
+        // south mouth to its drop via, ride east, rise south of the ladder
+        // and enter the portal from the SOUTH (J78.IN denies the west face,
+        // the B-column the east)
+        {
+          const portalT = taps.find((t2) => t2.net === 'DATA_E' && t2.kind !== 'stub');
+          // the rise leg STARTS at the portal: the portal's only legal
+          // approach is a sub-raster sliver past J78.IN that exists solely
+          // inside the startVia's allow disc (exactly how the committed
+          // orientation's drop reached it)
+          gutterNet('DATA_E', padAt(sr, '2'), gd1(63.8, 70.9), 3.47, gd1(69.85, 69.6),
+            (rv3) => routeNet('DATA_E', [portalT.x, portalT.y], [rv3.x, rv3.y], {
+              startVia: portalT, alsoOpen: [{ x: rv3.x, y: rv3.y }],
+              guide: gd([[68.93, 68.63], [68.8, 69.15], [69.3, 69.62], [69.85, 69.62]]),
+            }),
+            gd([[64.36, 65.9], [64.15, 66.6], [63.8, 67.4], [63.5, 68.2], [63.25, 69.0], [63.4, 69.7], [63.7, 70.4]]));
+        }
+        // PWMA_78 goes to the router: its only corridor (the west-face
+        // climb) crosses EVERY west drop -- flood-measured mutual
+        // exclusion, five drops beat one PWM. The structural fix is
+        // re-mapping which register pad drives which cell (qFn in quadgen
+        // is convention, not geometry) -- a co-design lever for later.
+        con(`PWMA_${Q.cells[1]}`, stubEnd.get('13'), padAt(`U${Q.cells[1]}`, '1'));
+        // the 90 pair crosses the same column gaps north of GND's wall.
+        // A_90 jogs east at y~66.65 (the band between the GND-B via and the
+        // tail's top) and climbs x~70.6 east of the tail to the row-3
+        // over-the-top band, into U90.1's north face. B_90 descends the
+        // one-lane band WEST of the tail (x ~69.98, clear until the tail's
+        // west curl at y 63.35), jogs east at y~63.15 under the curl, and
+        // climbs x~70.9 to the C90 pad gap and U90's inter-column slot.
+        // the A-column keeps only two usable crossing slots (the split
+        // [65.67,65.92]/[66.30,66.55] band around GND's line) and PWMB_79
+        // took one -- the 90 pair crosses UNDER the ladder instead (south
+        // of every A via at y > 69.03 and of OE_N at y > 69.45, B_91's
+        // discovery), then north: A_90 threads the x~70.6 slit east of the
+        // tail's leg, B_90 rounds J79.OUT at x~71.5 through cell 79's west
+        // interior. Both end as before (over-the-top / the C90 pad gap).
+        con(`PWMA_${Q.cells[2]}`, stubEnd.get('9'), padAt(`U${Q.cells[2]}`, '1'), {
+          guide: gd([[65.85, 69.05], [66.6, 69.4], [67.4, 69.6], [68.2, 69.65], [68.93, 69.6], [69.6, 69.65],
+            [70.15, 69.55], [70.55, 69.25], [70.6, 68.7], [70.6, 68.0], [70.62, 67.2], [70.62, 66.5],
+            [70.6, 65.5], [70.6, 64.5], [70.55, 63.5], [70.5, 62.5], [70.45, 61.5], [70.4, 60.5], [70.45, 59.5],
+            [70.5, 58.5], [70.55, 57.5], [70.6, 56.5], [70.6, 55.8], [70.9, 55.3], [71.4, 55.3], [71.75, 55.5], [71.81, 55.85]]),
+        });
+        con(`PWMB_${Q.cells[2]}`, stubEnd.get('7'), padAt(`U${Q.cells[2]}`, '5'), {
+          guide: gd([[66.1, 68.7], [66.9, 69.2], [67.7, 69.85], [68.5, 70.0], [69.3, 70.0], [70.1, 70.0],
+            [70.9, 70.0], [71.5, 69.95], [71.55, 69.3], [71.5, 68.5], [71.5, 67.5], [71.5, 66.5], [71.5, 65.5],
+            [71.45, 64.5], [71.4, 63.5], [71.3, 62.5], [71.2, 61.5], [71.1, 60.5], [71.05, 59.6],
+            [71.31, 59.15], [71.31, 58.6], [71.31, 58.2], [71.45, 57.85], [71.81, 57.75]]),
+        });
+        // PWMB_91: east sweep south of PWMB_79's lane, clear of coil_91_B's
+        // committed diagonal, then U91's north slot to U91.5's west face
+        con(`PWMB_${Q.cells[3]}`, stubEnd.get('3'), padAt(`U${Q.cells[3]}`, '5'), {
+          guide: gd([[67.1, 67.95], [68.2, 68.9], [69.2, 70.0], [70.5, 70.1], [72.5, 69.6], [74.5, 68.6],
+            [75.6, 67.4], [75.9, 66.0], [76.2, 64.4], [76.6, 62.9], [77.4, 61.9], [78.4, 61.3], [79.3, 60.7],
+            [79.7, 59.8], [79.6, 58.7], [79.3, 57.9], [79.4, 57.3], [79.9, 57.55], [80.28, 57.75]]),
+        });
+        con(`PWMA_${Q.cells[3]}`, stubEnd.get('5'), padAt(`U${Q.cells[3]}`, '1'));
+        // PWMB_78 goes to the router: every constructible line to U78.5 is
+        // an already-claimed corridor (the west climb is PWMA_78's, the
+        // U78 slot entries pinch below the raster), and the router can hop
+        // to In12 -- which completed short pocket escapes all sweep long.
       }
       // unbuilt-but-stubbed nets hand the router the stub-end tap pad; their
       // SR pads leave the netlist (srstub) exactly like the measured fanout's
@@ -1103,11 +1376,13 @@ for (const s of segs) {
     if (d < -1e-9) { console.error(`VIOLATION ${s.net} vs ${v.net} portal via: ${d.toFixed(3)}`); bad++; }
   }
 }
-// constructed vs constructed, per layer, different nets
+// constructed vs constructed, per layer, different nets (same BOARD net is
+// the same copper and may touch -- except the coil halves, a real short)
 for (let i = 0; i < segs.length; i++) {
   for (let j = i + 1; j < segs.length; j++) {
     const a = segs[i], b = segs[j];
     if (a.net === b.net || a.layer !== b.layer) continue;
+    if (baseName(a.net) === baseName(b.net) && !baseName(a.net).startsWith('coil_')) continue;
     const d = Math.min(
       ptSeg(a.seg[0], a.seg[1], ...b.seg), ptSeg(a.seg[2], a.seg[3], ...b.seg),
       ptSeg(b.seg[0], b.seg[1], ...a.seg), ptSeg(b.seg[2], b.seg[3], ...a.seg),
