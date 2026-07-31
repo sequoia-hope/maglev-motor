@@ -29,6 +29,12 @@ const N = cfg.stator.pcbLayers, spare = cfg.stator.pcbSpareLayers;
 const cuName = (j) => (j === 0 ? 'F.Cu' : j === N - 1 ? 'B.Cu' : `In${j}.Cu`);
 const layers = [];
 for (let j = N - 1; j >= N - spare; j--) layers.push(cuName(j));
+// Winding-layer FABRIC: extra routing layers through the seam gutters. The
+// router gets them declared WITH the truth about their copper -- the hex
+// annulus and that layer's tabs become wire keepouts below -- or it would
+// happily route through the winding it cannot see.
+const FABRIC = (process.env.FABRIC_LAYERS || '').split(',').filter(Boolean);
+layers.push(...FABRIC);
 
 const board = readBoard(boardPath);
 let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
@@ -334,6 +340,37 @@ const innerR = g.halfIn - g.trace / 2;
 const rHole = innerR - FAB.minClearance - vSize / 2;
 const coilHoleR = Math.max(0, rHole - vSize - FAB.minClearance);
 const routeVia = { name: 'Via_route', dia: vSize, drill: viaDrill(vSize, g.thickness) };
+// fabric wire keepouts: per fabric layer, every coil's winding annulus (as
+// six pre-grown trapezoids -- specctra polygons have no holes) plus that
+// layer's crossover/terminal tabs
+if (FABRIC.length) {
+  const grow = FAB.minClearance;
+  const cos30 = Math.cos(Math.PI / 6);
+  const innerRW = g.halfIn - g.trace / 2;
+  const RoW = (coilKeepR + grow) / cos30;
+  const RiW = Math.max(0.1, (innerRW - grow)) / cos30;
+  const hexPtW = (c, R, k) => {
+    const a = (k * Math.PI) / 3 + Math.PI / 6;
+    return [c[0] + R * Math.cos(a), c[1] + R * Math.sin(a)];
+  };
+  const nameOfIdx = (j) => (j === 0 ? 'F.Cu' : `In${j}.Cu`);
+  for (const c of coils) {
+    for (let k = 0; k < 6; k++) {
+      const q = [hexPtW(c, RiW, k), hexPtW(c, RoW, k), hexPtW(c, RoW, k + 1), hexPtW(c, RiW, k + 1)];
+      q.push(q[0]);
+      for (const ln of FABRIC) copperKeepouts.push({ layer: ln, poly: q });
+    }
+  }
+  for (const [cxm, cym] of coils) {
+    for (const t of [...plan.segments, ...plan.terminals]) {
+      const ln = nameOfIdx(t[4]);
+      if (!FABRIC.includes(ln)) continue;
+      copperKeepouts.push({ layer: ln, seg: [cxm + t[0], cym + t[1], cxm + t[2], cym + t[3], g.trace] });
+    }
+  }
+  console.log(`fabric: ${FABRIC.join(',')} declared with winding keepouts`);
+}
+
 const stats = writeDsn(board, {
   name: 'quad_route',
   layers,

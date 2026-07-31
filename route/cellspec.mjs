@@ -30,14 +30,25 @@
 // constructed) takes the two inner slots. quadgen bans gutter vias from the
 // lane bands (viaPlan banBands, |y| in [0.85, 2.93]) so the run lines stay
 // clear across the whole row.
+// v4 (2026-07-31): both columns shifted 0.12 mm WEST (A 3.95 -> 3.83,
+// B 4.52 -> 4.40). The gutter is 1.590 wide and the v3 ladder split it so
+// evenly that NO winding-layer lane could pass the ladder span (a 0.1 mm
+// trace needs 0.53 mm between a via column and a hex, and both sides had
+// 0.51). The shift keeps every existing clearance -- A stays 0.052 clear of
+// the west hex's via rule, y offsets and the interleave are untouched -- and
+// opens a 0.628 mm corridor EAST of column B: the fabric's N-S hug lane at
+// cell + 4.795 (0.395 from B's barrels, 0.094 clear of the east hex rule),
+// one independent copy per winding layer.
 export const SEAM_SIGNALS = [
-  { net: 'VBUS', at: [3.95, -0.42] },
-  { net: 'GND', at: [4.52, 0.42] },
-  { net: 'VLOGIC', at: [4.52, 1.68] },
-  { net: 'SDA', at: [3.95, 1.26] },     // reserved: sensor-variant cells
-  { net: 'SCL', at: [3.95, 2.10] },     // reserved
-  { net: 'DATA', at: [3.95, -2.10] },   // net DATA_{k+1}: out of cell k, into k+1
-  { net: 'SCLK', at: [3.95, -1.26] },
-  { net: 'RCLK', at: [4.52, -1.68] },
-  { net: 'OE_N', at: [4.52, -2.52] },
+  { net: 'VBUS', at: [3.83, -0.42] },
+  { net: 'GND', at: [4.40, 0.42] },
+  { net: 'VLOGIC', at: [4.40, 1.68] },
+  { net: 'SDA', at: [3.83, 1.26] },     // reserved: sensor-variant cells
+  { net: 'SCL', at: [3.83, 2.10] },     // reserved
+  { net: 'DATA', at: [3.83, -2.10] },   // net DATA_{k+1}: out of cell k, into k+1
+  { net: 'SCLK', at: [3.83, -1.26] },
+  { net: 'RCLK', at: [4.40, -1.68] },
+  { net: 'OE_N', at: [4.40, -2.52] },
 ];
+// The fabric hug lane's offset from the WEST cell's centre (see above).
+export const FABRIC_HUG_X = 4.795;

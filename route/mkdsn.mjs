@@ -252,6 +252,12 @@ export function writeDsn(board, opts) {
       p(`    (keepout "ck${i}" (circle ${ck.layer} ${um(ck.circle.dia + 2 * grow)} ${X(ck.circle.x)} ${Y(ck.circle.y)}))`);
       continue;
     }
+    if (ck.poly) {
+      // pre-grown polygon (the winding-annulus wire keepouts on fabric
+      // layers arrive already inflated by their caller)
+      p(`    (keepout "ck${i}" (polygon ${ck.layer} 0 ${ck.poly.map(([x, y]) => `${X(x)} ${Y(y)}`).join('  ')}))`);
+      continue;
+    }
     const [x0, y0, x1, y1, wdt] = ck.seg;
     const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len;
