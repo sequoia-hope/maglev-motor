@@ -27,7 +27,7 @@
 // trustworthy because of this.
 import { readFileSync, writeFileSync } from 'fs';
 import { makeStator } from '../src/coils.js';
-import { FAB, pcbCoilGeometry } from '../src/kicad.js';
+import { FAB, pcbCoilGeometry, viaPlan, viaSize } from '../src/kicad.js';
 import { readBoard } from './mkdsn.mjs';
 import { SEAM_SIGNALS } from './cellspec.mjs';
 
@@ -90,6 +90,22 @@ const [c78x, c78y] = coils[swCell];
 const off = Object.fromEntries(SEAM_SIGNALS.map((s) => [s.net, s.at]));
 const at = (net) => [c78x + off[net][0], c78y - off[net][1]];
 function pt([x, y]) { return { x: +x.toFixed(3), y: +y.toFixed(3) }; }
+
+// Coil terminals are their THROUGH-VIAS now (the Term SMT pads are gone --
+// they only ate B.Cu next to the pockets). Locate them from the same via
+// plan the board was built with; termVias[0] = IN lead (-> coil_i_A),
+// termVias[1] = OUT (-> coil_i_B). Plan coords are file-frame cell offsets.
+const gPlan = pcbCoilGeometry(cfg);
+const cellHalfP = (cfg.stator.coilPitch * 1000) / 2;
+const planT = viaPlan(gPlan, gPlan.layers, cellHalfP, viaSize(gPlan, cellHalfP), spec.viaPlanOpts || {});
+const termViaAt = (ci, which) => {
+  const tv = planT.termVias[which === 'IN' ? 0 : 1];
+  const [ccx, ccy] = coils[ci];
+  const bx = ccx + tv.p[0], by = ccy + tv.p[1];
+  const bv = board.vias.find((v) => Math.hypot(v.x - bx, v.y - by) < 0.05);
+  if (!bv) { console.error(`termViaAt: no board via at ${which} terminal of cell ${ci} (${bx.toFixed(3)},${by.toFixed(3)})`); process.exit(1); }
+  return [bv.x, bv.y];
+};
 
 // --- lane runs -------------------------------------------------------------------
 const LANES = ['SCLK_C', 'RCLK_C', 'OE_N_C', 'VLOGIC_C', 'SDA_C', 'SCL_C', 'DATA_E'];
@@ -198,21 +214,32 @@ const coilViaSW = (() => {
   const cb = (x, y) => [+(c78x + x).toFixed(3), +(c78y + y).toFixed(3)];
   const net = `coil_${Q.cells[0]}_B`;
   const via = cb(2.610, 3.071);
+  // the leg starts at the OUT terminal barrel WHEREVER the walks put it (it
+  // moved when the 2026-07-31 endShift fixes landed); the run to the via
+  // stays in the inter-row In12 band. If the terminal is no longer on the
+  // south side this leg stops making sense and the verifier will say so.
+  const outT = termViaAt(Q.cells[0], 'OUT');
   const legPts = [
-    cb(-2.405, 2.985),                     // J78.OUT barrel centre
+    [outT[0], outT[1]],
     cb(-1.990, 3.021), cb(0.910, 3.021),   // straight run south of the lanes
     cb(1.865, 2.871),                      // north dodge past the (1.87,3.29) barrel
     cb(2.360, 2.921), via,                 // into the via land
   ];
+  // The dogleg existed because the 2026-07-30 winding fix stranded the OUT
+  // terminal on the SW flat behind the register's west field. The
+  // 2026-07-31 terminal walks park it on the NORTH flats instead (2.5 mm
+  // from U.6) -- the leg's measured In12 corridor is meaningless from
+  // there, so it only arms when the terminal is actually near its measured
+  // start.
+  const legValid = Math.hypot(outT[0] - (c78x - 2.405), outT[1] - (c78y + 2.985)) < 1.0;
   const emitLeg = () => {
+    if (!legValid) { console.log('dogleg: OUT terminal moved off the SW flat -- leg not armed'); return false; }
     runs.push({ net, layer: LANE_LAYER, pts: legPts });
     cvias.push({ net, x: via[0], y: via[1] });
+    return true;
   };
-  // SR_SWEEP: a candidate register may leave the SW terminal's west field
-  // free, making a direct B.Cu path cheaper than the dogleg -- the leg is
-  // emitted on demand from the harness block instead (or not at all).
   if (!process.env.SR_SWEEP) emitLeg();
-  return { x: via[0], y: via[1], emitLeg };
+  return { x: via[0], y: via[1], emitLeg, legValid };
 })();
 
 // --- taps ----------------------------------------------------------------------
@@ -752,8 +779,8 @@ const stubRuns = new Set();
   //    carry and 0.00 with it). freerouting routes them 8/8 as stage one.
   for (const ci of Q.cells) {
     if (process.env.HARNESS_FULL) {
-      rn(`coil_${ci}_A`, padAt(`J${ci}.IN`, '1'), padAt(`U${ci}`, '2'));
-      rn(`coil_${ci}_B`, padAt(`J${ci}.OUT`, '1'), padAt(`U${ci}`, '6'));
+      { const tv = termViaAt(ci, 'IN'); rn(`coil_${ci}_A`, tv, padAt(`U${ci}`, '2'), { startVia: { x: tv[0], y: tv[1] } }); }
+      { const tv = termViaAt(ci, 'OUT'); rn(`coil_${ci}_B`, tv, padAt(`U${ci}`, '6'), { startVia: { x: tv[0], y: tv[1] } }); }
     } else {
       harnessFail.push(`coil_${ci}_A`, `coil_${ci}_B`);
     }
@@ -823,20 +850,42 @@ const stubRuns = new Set();
     // pads' clearance zones, but the harness lanes threading past it left
     // freerouting only 0.2-0.3 mm weaves it refuses (R1 regression measured
     // 2026-07-30); constructed first, everything else nests around it.
-    con(`coil_${Q.cells[0]}_A`, padAt(`J${Q.cells[0]}.IN`, '1'), padAt(`U${Q.cells[0]}`, '2'));
+    {
+      const tv = termViaAt(Q.cells[0], 'IN');
+      con(`coil_${Q.cells[0]}_A`, tv, padAt(`U${Q.cells[0]}`, '2'), { startVia: { x: tv[0], y: tv[1] } });
+    }
     // coil_90_B: freerouting refuses the 0.13 mm thread between cell 90's
     // ring-east via and C90.1 once the harness hems its start; constructed
     // through the measured window
-    con(`coil_${Q.cells[2]}_B`, padAt(`J${Q.cells[2]}.OUT`, '1'), padAt(`U${Q.cells[2]}`, '6'), {
-      guide: gd([[70.95, 62.56], [70.5, 61.9], [70.15, 61.0], [70.0, 60.2], [70.15, 59.6],
-        [70.37, 59.15], [70.37, 58.7], [70.3, 57.75], [69.62, 57.75]]),
-    });
+    {
+      // the measured window guide is tied to the OLD terminal spot; when the
+      // terminal walks (2026-07-31) the whole con is deferred to the
+      // shortest-first per-cell loop below -- an unguided _B built here
+      // diagonals across U.2's face and walls its own sibling (measured:
+      // coil_90_A's goal fully inside 90_B's committed band)
+      const tv = termViaAt(Q.cells[2], 'OUT');
+      const g0 = gd([[70.95, 62.56]])[0];
+      if (Math.hypot(tv[0] - g0[0], tv[1] - g0[1]) < 1.2) {
+        con(`coil_${Q.cells[2]}_B`, tv, padAt(`U${Q.cells[2]}`, '6'), {
+          startVia: { x: tv[0], y: tv[1] },
+          guide: gd([[70.95, 62.56], [70.5, 61.9], [70.15, 61.0], [70.0, 60.2], [70.15, 59.6],
+            [70.37, 59.15], [70.37, 58.7], [70.3, 57.75], [69.62, 57.75]]),
+        });
+      }
+    }
     // coil_91_B: the mirrored window (0.11 mm past ring-91-east / C91.1),
     // further hemmed by PWMB_91's pocket vertical
-    con(`coil_${Q.cells[3]}_B`, padAt(`J${Q.cells[3]}.OUT`, '1'), padAt(`U${Q.cells[3]}`, '6'), {
-      guide: gd([[79.42, 62.56], [78.97, 61.9], [78.62, 61.0], [78.47, 60.2], [78.62, 59.6],
-        [78.84, 59.15], [78.84, 58.7], [78.77, 57.75], [78.08, 57.75]]),
-    });
+    {
+      const tv = termViaAt(Q.cells[3], 'OUT');
+      const g0 = gd([[79.42, 62.56]])[0];
+      if (Math.hypot(tv[0] - g0[0], tv[1] - g0[1]) < 1.2) {
+        con(`coil_${Q.cells[3]}_B`, tv, padAt(`U${Q.cells[3]}`, '6'), {
+          startVia: { x: tv[0], y: tv[1] },
+          guide: gd([[79.42, 62.56], [78.97, 61.9], [78.62, 61.0], [78.47, 60.2], [78.62, 59.6],
+            [78.84, 59.15], [78.84, 58.7], [78.77, 57.75], [78.08, 57.75]]),
+        });
+      }
+    }
     // 1-2. the west field's own users, before the north verticals wall it
     // (SR_SWEEP: both are register drops measured against the committed spot
     // -- a candidate register leaves them to the router)
@@ -907,10 +956,13 @@ const stubRuns = new Set();
       // and their seam taps -- measured, it is what killed all five control
       // drops -- while the dogleg leaves the whole west field to them.
       const cn = `coil_${Q.cells[0]}_B`;
-      const deny = [[`J${Q.cells[0]}.IN`, '1'], [`U${Q.cells[0]}`, '2']];
-      const tryDirect = () => con(cn, padAt(`J${Q.cells[0]}.OUT`, '1'), padAt(`U${Q.cells[0]}`, '6'), { denyPads: deny });
+      const deny = [[`U${Q.cells[0]}`, '2']];   // the IN barrel stays a blocked obstacle by itself
+      const tryDirect = () => {
+        const tv = termViaAt(Q.cells[0], 'OUT');
+        con(cn, tv, padAt(`U${Q.cells[0]}`, '6'), { denyPads: deny, startVia: { x: tv[0], y: tv[1] } });
+      };
       const tryDogleg = () => {
-        coilViaSW.emitLeg();
+        if (!coilViaSW.emitLeg()) return;        // terminal moved: leg meaningless
         // the raster was built before this late emission -- later A* work
         // must see the dogleg via as the barrel it is
         blockDisc(coilViaSW.x, coilViaSW.y, 0.25 + CLR + W / 2 + SAFE, blocked);
@@ -920,7 +972,9 @@ const stubRuns = new Set();
           for (let i2 = cvias.length - 1; i2 >= 0; i2--) if (cvias[i2].net === cn) cvias.splice(i2, 1);
         }
       };
-      if (srFlip) { tryDogleg(); if (!built.includes(cn)) tryDirect(); }
+      // dogleg-first only while the terminal really is in the measured SW
+      // spot; on the walked-terminal boards the direct hop is 2.5 mm
+      if (srFlip && coilViaSW.legValid) { tryDogleg(); if (!built.includes(cn)) tryDirect(); }
       else { tryDirect(); if (!built.includes(cn)) tryDogleg(); }
     }
     if (process.env.SR_SWEEP) {
@@ -937,19 +991,45 @@ const stubRuns = new Set();
       }
       if (regCell !== Q.cells[0]) {
         const cn2 = `coil_${regCell}_B`;
-        con(cn2, padAt(`J${regCell}.OUT`, '1'), padAt(`U${regCell}`, '6'),
-          { denyPads: [[`J${regCell}.IN`, '1'], [`U${regCell}`, '2']] });
+        {
+          const tv = termViaAt(regCell, 'OUT');
+          con(cn2, tv, padAt(`U${regCell}`, '6'),
+            { denyPads: [[`U${regCell}`, '2']], startVia: { x: tv[0], y: tv[1] } });
+        }
       }
       if (srFlip && regCell === Q.cells[0]) {
         // at the flip the 79ers' south-gutter constructions hem THEIR OWN
         // cell's coil (R1 lost coil_79_B the run they landed) -- coils
         // first applies to cell 79 too
         const cn3 = `coil_${Q.cells[1]}_B`;
-        con(cn3, padAt(`J${Q.cells[1]}.OUT`, '1'), padAt(`U${Q.cells[1]}`, '6'),
-          { denyPads: [[`J${Q.cells[1]}.IN`, '1'], [`U${Q.cells[1]}`, '2']] });
+        {
+          const tv = termViaAt(Q.cells[1], 'OUT');
+          con(cn3, tv, padAt(`U${Q.cells[1]}`, '6'),
+            { denyPads: [[`U${Q.cells[1]}`, '2']], startVia: { x: tv[0], y: tv[1] } });
+        }
       }
     }
     if (process.env.SR_SWEEP && process.env.SR_CONSTRUCT) {
+      // With the 2026-07-31 terminal walks every coil terminal sits on the
+      // cell's NORTH flats, 1-2.5 mm from its bridge pad -- and the OTHER
+      // constructed coils' pocket hugs seal those short hops for the router
+      // (R1 went 0.00 with carry, 999 bare). So construct every remaining
+      // quad coil too, shortest-first: the _A hops (IN terminal -> U.2).
+      const dropFail = (nm) => { let i3; while ((i3 = harnessFail.indexOf(nm)) >= 0) harnessFail.splice(i3, 1); };
+      for (const ci of Q.cells) {
+        const an = `coil_${ci}_A`;
+        if (!built.includes(an)) {
+          dropFail(an);                          // pre-listed by the fallback push; we are attempting it now
+          const tv = termViaAt(ci, 'IN');
+          con(an, tv, padAt(`U${ci}`, '2'), { startVia: { x: tv[0], y: tv[1] }, denyPads: [[`U${ci}`, '6']] });
+        }
+        const bn2 = `coil_${ci}_B`;
+        if (!built.includes(bn2)) {
+          dropFail(bn2);
+          const tv = termViaAt(ci, 'OUT');
+          con(bn2, tv, padAt(`U${ci}`, '6'), { startVia: { x: tv[0], y: tv[1] }, denyPads: [[`U${ci}`, '2']] });
+        }
+      }
       // GENERIC parametric harness for a candidate register: stubs on every
       // SR pad (stubFor reads the pad geometry, placement-agnostic), the
       // escape envelope, A* drops from each control net's tap barrel to its

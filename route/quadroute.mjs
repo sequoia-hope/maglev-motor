@@ -71,10 +71,19 @@ for (const i of stator.coils.keys()) {
     anchorNetAt.set(`${fx.toFixed(3)},${fy.toFixed(3)}`, nm);
   }
 }
-const termAt = new Set();
-for (const fp of board.fps) {
-  if (fp.lib !== 'Term') continue;
-  termAt.add(`${fp.x.toFixed(3)},${fp.y.toFixed(3)}`);
+// Coil terminal vias: the Term SMT pads are gone (the via IS the terminal --
+// user call, 2026-07-31), so terminals are located from the via plan itself.
+// termVias[0] is the IN lead (layer 0's start), [1] the OUT (last layer's
+// end); route.mjs convention maps IN -> coil_i_A, OUT -> coil_i_B.
+const planEarly = viaPlan(g, g.layers, cellHalf, vSize, spec.viaPlanOpts || {});
+const termNetAt = new Map();                     // "x,y" -> quad coil net (A/B)
+const termAt = new Set();                        // every cell's terminal spots
+for (const [i, [cxm, cym]] of coils.entries()) {
+  planEarly.termVias.forEach((tv, k) => {
+    const key = `${(cxm + tv.p[0]).toFixed(3)},${(cym + tv.p[1]).toFixed(3)}`;
+    termAt.add(key);
+    if (inQuad.has(i)) termNetAt.set(key, `coil_${i}_${k === 0 ? 'A' : 'B'}`);
+  });
 }
 const isTerm = (v) => termAt.has(`${v.x.toFixed(3)},${v.y.toFixed(3)}`);
 // DONE_NETS: lane nets whose seam vias are already joined by CONSTRUCTED
@@ -89,10 +98,17 @@ const taps = process.env.TAPS ? JSON.parse(readFileSync(process.env.TAPS, 'utf8'
 const tapAt = (x, y) => taps.find((t) => Math.hypot(t.x - x, t.y - y) < 0.02);
 const anchorPads = [], keepVias = [], tapVias = [];
 for (const v of board.vias) {
-  if (isTerm(v)) continue;
+  if (isTerm(v)) {
+    // a quad cell's terminal via is the coil's ROUTER PIN (B.Cu, where the
+    // bridge pads live); every other cell's is a plain obstacle on all layers
+    const tn = termNetAt.get(`${v.x.toFixed(3)},${v.y.toFixed(3)}`);
+    if (tn) anchorPads.push({ x: v.x, y: v.y, dia: v.size, net: tn, layer: 'B.Cu' });
+    else keepVias.push(v);
+    continue;
+  }
   const nm = anchorNetAt.get(`${v.x.toFixed(3)},${v.y.toFixed(3)}`);
   if (nm && tapAt(v.x, v.y)) tapVias.push(v);
-  else if (nm && !doneNets.has(nm)) anchorPads.push({ x: v.x, y: v.y, dia: v.size, net: nm });
+  else if (nm && !doneNets.has(nm)) anchorPads.push({ x: v.x, y: v.y, dia: v.size, net: nm, layer: 'In12.Cu' });
   else keepVias.push(v);
 }
 // barrel taps of a DONE net are joined to each other by the constructed lane
@@ -105,7 +121,7 @@ for (const t of taps) {
     join: t.kind !== 'stub' && doneNets.has(t.net) ? t.net : undefined,
   });
 }
-const termVias = [...board.vias.filter(isTerm), ...tapVias];
+const termVias = tapVias;                        // barrels whose B.Cu land is a pad the router uses
 console.log(`anchors ${anchorPads.length} (${taps.length} taps), keepouts ${keepVias.length}`);
 
 // --- net overrides -----------------------------------------------------------
@@ -113,8 +129,8 @@ const doneNetsEarly = new Set((process.env.DONE_NETS || '').split(',').filter(Bo
 const ov = (k, nm) => { if (!(doneNetsEarly.has(nm) && !k.startsWith('SR'))) netOverride.set(k, nm); };
 const netOverride = new Map();
 for (const ci of qcells) {
-  netOverride.set(`J${ci}.IN|1`, `coil_${ci}_A`);
-  netOverride.set(`J${ci}.OUT|1`, `coil_${ci}_B`);
+  // the coil halves' OTHER pins are the terminal-via anchor pads (see the
+  // isTerm branch above) -- the J footprints no longer exist
   netOverride.set(`U${ci}|2`, `coil_${ci}_A`);
   netOverride.set(`U${ci}|6`, `coil_${ci}_B`);
   ov(`U${ci}|3`, 'GND_C');

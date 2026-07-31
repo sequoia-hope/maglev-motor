@@ -221,7 +221,11 @@ for (const [k, elems] of groups) {
 // get the fab clearance. An element may touch a via only where it ATTACHES
 // (an endpoint on the land) -- that is the tab-to-via joint, or routed copper
 // landing on the terminal.
-const SAME_MIN = 0.035, CLR_MIN = 0.089, ATTACH = 0.26;
+// ATTACH covers a kinked departure: routed copper may leave its own barrel,
+// turn within the land, and pass the land again -- the touching element's
+// endpoint sits up to via_r + trace/2 + a step from the centre while its
+// chain neighbour is the actual attachment. Real welds pass MID-span.
+const SAME_MIN = 0.035, CLR_MIN = 0.089, ATTACH = 0.32;
 const VCELL = 2.0;
 const vgrid = new Map();
 vias.forEach((v, i) => {
