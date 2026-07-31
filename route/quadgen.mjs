@@ -152,7 +152,20 @@ const seamOK = (fx, fy) => {
     const qx = Math.max(Math.abs(lx) - pd.w / 2, 0), qy = Math.max(Math.abs(ly) - pd.h / 2, 0);
     if (Math.hypot(qx, qy) < CLR + rV) return `pad ${fp.ref}`;
   }
-  if (fx - minX < 0.45 || maxX - fx < 0.45 || fy - minY < 0.45 || maxY - fy < 0.45) return 'edge';
+  // Edge rule against the REAL outline, not the bounding box: the outline
+  // vees into a notch between every rim cell pair, and the ladder's extreme
+  // slots (OE_N at +/-2.52) sit right in those vees -- 29 sub-0.2 mm
+  // copper_edge hits on the first rim-margin board came from exactly this.
+  {
+    const ptSeg = (px, py, x0, y0, x1, y1) => {
+      const dx = x1 - x0, dy = y1 - y0, L = dx * dx + dy * dy;
+      const t = L > 1e-12 ? Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / L)) : 0;
+      return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+    };
+    for (const [x0, y0, x1, y1] of board.outline) {
+      if (ptSeg(fx, fy, x0, y0, x1, y1) < rV + 0.2 + 0.03) return 'edge';
+    }
+  }
   return null;
 };
 const eastOf = new Map();
@@ -231,6 +244,7 @@ for (const fp of board.fps) {
   }
 }
 const placedRects = [];
+const dbgFit = (msg) => { if (process.env.DEBUG_FIT) console.error(`  fit-clash: ${msg}`); };
 const partFits = (fp, rx, ry, ang, clr) => {
   const c = Math.cos(ang), s = Math.sin(ang);
   const pads = fp.pads.map(([px, py, w, h]) => {
@@ -239,15 +253,15 @@ const partFits = (fp, rx, ry, ang, clr) => {
   });
   const bodyR = { cx: rx, cy: ry, w: fp.body[0], h: fp.body[1], ang };
   for (const pr of pads) {
-    for (const d of discs) if (circHit(pr, d.x, d.y, d.r + clr)) return false;
+    for (const d of discs) if (circHit(pr, d.x, d.y, d.r + clr)) { dbgFit(`pad (${pr.cx.toFixed(2)},${pr.cy.toFixed(2)}) vs disc (${d.x.toFixed(2)},${d.y.toFixed(2)}) r${d.r} clr${clr}`); return false; }
     for (const [ox, oy] of [[0, 0], ...latt]) {
-      for (const r2 of baseRects) if (rcOverlap(pr, { ...r2, cx: r2.cx + ox, cy: r2.cy + oy }, clr)) return false;
-      for (const r2 of placedRects) if (rcOverlap(pr, { ...r2, cx: r2.cx + ox, cy: r2.cy + oy }, clr)) return false;
+      for (const r2 of baseRects) if (rcOverlap(pr, { ...r2, cx: r2.cx + ox, cy: r2.cy + oy }, clr)) { dbgFit(`pad (${pr.cx.toFixed(2)},${pr.cy.toFixed(2)}) vs baseRect (${(r2.cx + ox).toFixed(2)},${(r2.cy + oy).toFixed(2)}) ${r2.w}x${r2.h} clr${clr}`); return false; }
+      for (const r2 of placedRects) if (rcOverlap(pr, { ...r2, cx: r2.cx + ox, cy: r2.cy + oy }, clr)) { dbgFit(`pad (${pr.cx.toFixed(2)},${pr.cy.toFixed(2)}) vs placedRect (${(r2.cx + ox).toFixed(2)},${(r2.cy + oy).toFixed(2)}) clr${clr}`); return false; }
     }
   }
   for (const [ox, oy] of [[0, 0], ...latt]) {
-    for (const r2 of placedRects) if (rcOverlap(bodyR, { ...r2, cx: r2.cx + ox, cy: r2.cy + oy }, clr)) return false;
-    for (const r2 of baseRects) if (rcOverlap(bodyR, { ...r2, cx: r2.cx + ox, cy: r2.cy + oy }, clr)) return false;
+    for (const r2 of placedRects) if (rcOverlap(bodyR, { ...r2, cx: r2.cx + ox, cy: r2.cy + oy }, clr)) { dbgFit(`body vs placedRect (${(r2.cx + ox).toFixed(2)},${(r2.cy + oy).toFixed(2)}) clr${clr}`); return false; }
+    for (const r2 of baseRects) if (rcOverlap(bodyR, { ...r2, cx: r2.cx + ox, cy: r2.cy + oy }, clr)) { dbgFit(`body vs baseRect (${(r2.cx + ox).toFixed(2)},${(r2.cy + oy).toFixed(2)}) ${r2.w}x${r2.h} clr${clr}`); return false; }
   }
   return true;
 };
@@ -266,6 +280,28 @@ const search = (fp, costFn, { rotStep = 30, span = [[-3.6, 3.6], [-4.8, 4.8]], p
       if (fits(fp, rx, ry, (rdeg * Math.PI) / 180, clr)) {
         return { rx, ry, rdeg, clr, cost: costFn(rx, ry, (rdeg * Math.PI) / 180) };
       }
+    }
+    // The pinned spot was measured against an older via layout; when the
+    // generator's vias move a few tens of microns the pin should slide with
+    // them, not die. Search a tight window around the pin, same rotation,
+    // best clearance first then nearest -- and SAY so, because every
+    // hand-measured construction downstream needs to know the parts moved.
+    let near = null;
+    for (const clr of [0.30, 0.25, 0.20, 0.15, 0.12, 0.09]) {
+      for (let dx = -0.35; dx <= 0.351; dx += 0.05) {
+        for (let dy = -0.35; dy <= 0.351; dy += 0.05) {
+          if (!fits(fp, rx + dx, ry + dy, (rdeg * Math.PI) / 180, clr)) continue;
+          const d = Math.hypot(dx, dy);
+          if (!near || clr > near.clr + 1e-9 || (Math.abs(clr - near.clr) < 1e-9 && d < near.d)) {
+            near = { rx: +(rx + dx).toFixed(3), ry: +(ry + dy).toFixed(3), rdeg, clr, d, cost: costFn(rx + dx, ry + dy, (rdeg * Math.PI) / 180) };
+          }
+        }
+      }
+      if (near) break;
+    }
+    if (near) {
+      console.log(`override ${override} nudged to ${near.rx},${near.ry},${near.rdeg} (clr ${near.clr})`);
+      return near;
     }
     console.log(`override ${override} DOES NOT FIT`);
     return null;
@@ -373,6 +409,7 @@ const emitPartText = (lib, value, ref, lcsc, fp, pl, fx, fy, netForPad) => {
     const [qx, qy] = rot2(px, py, ca, sa);
     const netStr = nm ? `(net ${netOf.get(nm)} "${nm}")` : '(net 0 "")';
     emit.push(`    (pad "${k3 + 1}" smd rect (at ${f3(qx)} ${f3(-qy)}${pl.rdeg ? ` ${f3(pl.rdeg)}` : ''}) (size ${w} ${h}) (layers "B.Cu" "B.Paste" "B.Mask") ${netStr})`);
+    stampPads.push({ x: fx + qx, y: fy - qy, w, h, ang: (pl.rdeg * Math.PI) / 180 });
   });
   emit.push('  )');
 };
@@ -382,8 +419,9 @@ const emitPartText = (lib, value, ref, lcsc, fp, pl, fx, fy, netForPad) => {
 // stamps are trimmed at clone time anyway, so losing part-position identity
 // on the rim costs nothing the rim had.
 let nudged = 0;
+const stampPads = [];                            // pads already EMITTED this pass (board frame, y-up ang)
 const fitOrNudge = (fp, pl, fx0, fy0) => {
-  const obs = { discs: [], rects: [] };
+  const obs = { discs: [], rects: [], edges: [] };
   for (const v of board.vias) {
     const dx = v.x - fx0, dy = -(v.y - fy0);
     if (Math.hypot(dx, dy) < pitch * 1.4) obs.discs.push({ x: dx, y: dy, r: v.size / 2 });
@@ -392,6 +430,26 @@ const fitOrNudge = (fp, pl, fx0, fy0) => {
     const dx = fp2.x + pd.dx - fx0, dy = -(fp2.y + pd.dy - fy0);
     if (Math.hypot(dx, dy) < pitch * 1.4) obs.rects.push({ cx: dx, cy: dy, w: pd.w, h: pd.h, ang: (pd.ang * Math.PI) / 180 });
   }
+  // ...and the parts THIS pass already emitted: a nudged rim bridge that only
+  // checked the stripped board landed square on its own cell's decap (36
+  // shorts on the first edge-aware run)
+  for (const sp of stampPads) {
+    const dx = sp.x - fx0, dy = -(sp.y - fy0);
+    if (Math.hypot(dx, dy) < pitch * 1.4) obs.rects.push({ cx: dx, cy: dy, w: sp.w, h: sp.h, ang: sp.ang });
+  }
+  // rim: the outline notches vee deep into the cell lattice, and a stamped
+  // pad may not come within the 0.2 mm edge rule of the CUT (18 rim U pads
+  // did, on the first rim-margin board)
+  for (const [x0, y0, x1, y1] of board.outline) {
+    if (Math.min(Math.hypot(x0 - fx0, y0 - fy0), Math.hypot(x1 - fx0, y1 - fy0)) < pitch * 1.6) {
+      obs.edges.push([x0 - fx0, -(y0 - fy0), x1 - fx0, -(y1 - fy0)]);
+    }
+  }
+  const ptSegD = (px, py, [x0, y0, x1, y1]) => {
+    const dx = x1 - x0, dy = y1 - y0, L = dx * dx + dy * dy;
+    const t = L > 1e-12 ? Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / L)) : 0;
+    return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+  };
   const ok = (rx, ry, ang) => {
     const c = Math.cos(ang), s = Math.sin(ang);
     for (const [px, py, w, h] of fp.pads) {
@@ -399,6 +457,15 @@ const fitOrNudge = (fp, pl, fx0, fy0) => {
       const pr = { cx: rx + qx, cy: ry + qy, w, h, ang };
       for (const d of obs.discs) if (circHit(pr, d.x, d.y, d.r + 0.09)) return false;
       for (const r2 of obs.rects) if (rcOverlap(pr, r2, 0.09)) return false;
+      // pad corners vs the cut (corners suffice: the pad is convex, the cut
+      // segments are straight)
+      for (const e of obs.edges) {
+        for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+          const cxr = pr.cx + (sx * w / 2) * c - (sy * h / 2) * s;
+          const cyr = pr.cy + (sx * w / 2) * s + (sy * h / 2) * c;
+          if (ptSegD(cxr, cyr, e) < 0.23) return false;
+        }
+      }
     }
     return true;
   };

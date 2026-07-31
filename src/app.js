@@ -163,7 +163,7 @@ const PRESETS = {
       // affords 0.2 mm copper-to-edge plus the inset ONLY on true perimeter
       // flats (viaPlan is edge-aware per cell; a bigger inset inverts the
       // perimeter gutter band entirely -- measured at 0.25).
-      stator: { coilType: 'pcbhex', coilPitch: 0.008466666666666667, coilFill: 0.80, statorSize: 0.102, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 14, pcbSpareLayers: 2, pcbTraceWidth: 0.000103, pcbTraceSpace: 0.00009, pcbEdgeInset: 0.00005, pcbCopperThickness: 35e-6, lockCoilPitch: false },
+      stator: { coilType: 'pcbhex', coilPitch: 0.008466666666666667, coilFill: 0.80, statorSize: 0.102, windingHeight: 0.0016, wireDiameter: 0.0005, pcbLayers: 14, pcbSpareLayers: 2, pcbTraceWidth: 0.000103, pcbTraceSpace: 0.00009, pcbEdgeInset: 0.00005, pcbRimMargin: 0.00015, pcbBayGate: 38, pcbCopperThickness: 35e-6, lockCoilPitch: false },
       sim: { gap: 0.0015, iMax: 0.9, bwPos: 22, bwAtt: 40, zeta: 1.0, kiPos: 0.6, kiAtt: 0.6, maxTilt: 0.06, quality: 'balanced', grouping: 'independent' },
     },
     // KiCad boards for this preset that live in the repo (route/out, kept in

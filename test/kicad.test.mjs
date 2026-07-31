@@ -73,6 +73,10 @@ check('two SMT terminal pads per coil, on B.Cu',
   (out.text.match(/\(footprint "maglev:Term" \(layer "B.Cu"\)/g) || []).length === stator.coils.length * 2
   && out.stats.termPads === stator.coils.length * 2,
   `${out.stats.termPads} pads`);
+// Footprint unrotated, angle on the pad, negated from the plan frame -- the
+// exact combination that renders the rectangle validatePcb approved.
+check('terminal pads carry their rotation on the pad, not the footprint',
+  !!/\(footprint "maglev:Term" \(layer "B.Cu"\) \(at [-\d.]+ [-\d.]+\)[\s\S]*?\(pad "1" smd rect \(at 0 0( [-\d.]+)?\)/.exec(out.text));
 // Checked at a fill whose gutter can actually host the via the fab will drill.
 // `cfg` is the shipped 0.94-fill square preset, and 0.94 CANNOT: see the gutter
 // check below. The old form of this test passed only because it measured a
@@ -635,11 +639,13 @@ console.log('\n=== shift chain: the PWM nets are driven, and the contract is a b
     holds(out, dstat, dcfg, 'single-board');
     holds(bp2, dstat, dcfg, 'backplane');
   }
-  // And the terminal pads specifically: footprint unrotated, angle on the pad,
-  // negated from the plan frame -- the exact combination that renders the
-  // rectangle validatePcb approved.
-  const term = /\(footprint "maglev:Term" \(layer "B.Cu"\) \(at [-\d.]+ [-\d.]+\)[\s\S]*?\(pad "1" smd rect \(at 0 0( [-\d.]+)?\)/.exec(out.text);
-  check('terminal pads carry their rotation on the pad, not the footprint', !!term);
+  // A single-board build (spare layers on board) has NO terminal SMT pads:
+  // the coil terminal is its through-via, and the pad only ate B.Cu routing
+  // room next to the register pockets (dropped 2026-07-31, user call). The
+  // backplane-mode coil board keeps them -- the rotation-on-pad emission is
+  // asserted on the square backplane-mode board near the top of this file.
+  check('single-board build drops the terminal SMT pads (vias are the terminals)',
+    !/maglev:Term/.test(out.text));
 }
 
 // The self-tileable outline: the board edge follows the coil-cell boundary, so

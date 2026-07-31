@@ -6,6 +6,20 @@
 // changes the winding's turn count and resistance. This is the same
 // invisible-shorts class as the winding-layer parity bug.
 //
+// ALSO checked (2026-07-31, after srswp4.merged shipped with 1259 of these):
+//   * coil copper vs VIA BARRELS. A coil's own vias are mid-winding taps --
+//     copper touching one anywhere but its own tab attachment shorts turns
+//     out of the winding, and KiCad DRC says nothing (same net). The bay
+//     fallback had been threading inner tabs THROUGH sibling via lands
+//     (worst -0.23 mm) on every cell, and rim cells drew whole tab chords
+//     across the winding to far-flat vias. Foreign vias under coil copper
+//     are plain shorts and are checked with the fab clearance.
+//   * via vs via, same net: two crossover lands touching welds two whole
+//     winding layers together -- the original DRC-invisible short.
+// Both checks run on ANY board including merged/routed ones; routed copper
+// on a coil net obeys the same rules (its legal attachment is the terminal
+// via, which the endpoint exemption covers).
+//
 //   node coilcheck.mjs <board.kicad_pcb> [--verbose]
 //
 // Exit 0 and write <board>.coilcheck.json (a content stamp) on pass; exit 1
@@ -44,6 +58,12 @@ for (const m of src.matchAll(arcRe)) {
   nArc++;
 }
 if (nSeg + nArc === 0) { console.error('coilcheck: parsed ZERO winding tracks -- parser/board mismatch, refusing to pass'); process.exit(2); }
+// every via on the board -- the barrel is copper on EVERY layer, so coil
+// copper on any layer must respect it
+const vias = [];
+for (const m of src.matchAll(/\(via \(at ([-\d.]+) ([-\d.]+)\) \(size ([\d.]+)\) \(drill ([\d.]+)\) \(layers "[^"]+" "[^"]+"\) \(net (\d+)\)\)/g)) {
+  vias.push({ x: +m[1], y: +m[2], size: +m[3], drill: +m[4], net: +m[5] });
+}
 
 // --- geometry ---------------------------------------------------------------
 // Arcs are sampled into short chords (max sagitta ~2 um at 0.05 mm steps on
@@ -69,6 +89,19 @@ const arcPoly = (e, step) => {
   return out;
 };
 const poly = (e, step) => (e.arc ? arcPoly(e, step) : [e.a, e.b]);
+// Grid seeding must sample SEGMENT INTERIORS too: a straight tab chord is one
+// element whose midpoints cross dozens of turns, and with endpoint-only
+// seeding the pair grid never buckets it against the copper it slices (the
+// rim chords rode exactly this hole -- 7 mm of winding-crossing tab, zero
+// reports).
+const samp = (e, step) => {
+  if (e.arc) return arcPoly(e, step);
+  const L = Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]);
+  const n = Math.max(1, Math.ceil(L / step));
+  const out = [];
+  for (let i = 0; i <= n; i++) out.push([e.a[0] + ((e.b[0] - e.a[0]) * i) / n, e.a[1] + ((e.b[1] - e.a[1]) * i) / n]);
+  return out;
+};
 const segSeg = (p1, p2, p3, p4) => {
   // min distance between two segments
   const d1 = [p2[0] - p1[0], p2[1] - p1[1]], d2 = [p4[0] - p3[0], p4[1] - p3[1]];
@@ -133,7 +166,7 @@ for (const [k, elems] of groups) {
   const [netNo, layer] = k.split('|');
   const name = nets.get(+netNo);
   const near = chainNear(elems);
-  const polys = elems.map((e) => poly(e, STEP));
+  const polys = elems.map((e) => samp(e, STEP));
   // point grid: min sampled point-pair distance per element pair, then exact
   // refinement only for pairs already within contact + sampling slack
   const grid = new Map();
@@ -182,9 +215,107 @@ for (const [k, elems] of groups) {
     }
   }
 }
-if (bad) {
-  console.error(`SELF-INTERSECTING COPPER: ${bad} touching pairs, worst overlap ${worst.toFixed(4)} mm`);
-  for (const e of examples) console.error('  ' + e);
+// --- coil copper vs via barrels, and via vs via -----------------------------
+// Same-net floors: the tightest DESIGNED same-net feature is the bay's 0.05
+// etch margin, so anything under 0.035 is a weld, not a margin. Foreign nets
+// get the fab clearance. An element may touch a via only where it ATTACHES
+// (an endpoint on the land) -- that is the tab-to-via joint, or routed copper
+// landing on the terminal.
+const SAME_MIN = 0.035, CLR_MIN = 0.089, ATTACH = 0.26;
+const VCELL = 2.0;
+const vgrid = new Map();
+vias.forEach((v, i) => {
+  const k = `${Math.floor(v.x / VCELL)},${Math.floor(v.y / VCELL)}`;
+  if (!vgrid.has(k)) vgrid.set(k, []);
+  vgrid.get(k).push(i);
+});
+const nearVias = (x, y) => {
+  const cx = Math.floor(x / VCELL), cy = Math.floor(y / VCELL);
+  const out = [];
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const q = vgrid.get(`${cx + dx},${cy + dy}`);
+      if (q) out.push(...q);
+    }
+  }
+  return out;
+};
+const ptSegD = (p, a, b) => {
+  const vx = b[0] - a[0], vy = b[1] - a[1], L = vx * vx + vy * vy;
+  const t = L > 1e-12 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / L)) : 0;
+  return Math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy));
+};
+const elemViaDist = (e, v) => {
+  const pts = poly(e, STEP / 5);
+  let d = Infinity;
+  for (let i = 0; i + 1 < pts.length; i++) d = Math.min(d, ptSegD([v.x, v.y], pts[i], pts[i + 1]));
+  return d;
+};
+let badVia = 0, worstVia = 0;
+const viaEx = [];
+for (const [k, elems] of groups) {
+  const [netNo, layer] = k.split('|');
+  const name = nets.get(+netNo);
+  for (const e of elems) {
+    const cx = (e.a[0] + e.b[0]) / 2, cy = (e.a[1] + e.b[1]) / 2;
+    const reach = Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) / 2 + 1.4;
+    for (const vi of nearVias(cx, cy)) {
+      const v = vias[vi];
+      if (Math.hypot(v.x - cx, v.y - cy) > reach) continue;
+      const own = v.net === +netNo;
+      if (own && (Math.hypot(v.x - e.a[0], v.y - e.a[1]) < ATTACH || Math.hypot(v.x - e.b[0], v.y - e.b[1]) < ATTACH)) continue;
+      const floor = own ? SAME_MIN : CLR_MIN;
+      const coarse = elemViaDist(e, v) - v.size / 2 - e.w / 2;
+      if (coarse >= floor) continue;
+      badVia++;
+      worstVia = Math.max(worstVia, floor - coarse);
+      if (viaEx.length < 12) {
+        viaEx.push(`${name} ${layer} elem (${e.a[0].toFixed(2)},${e.a[1].toFixed(2)})-(${e.b[0].toFixed(2)},${e.b[1].toFixed(2)}) vs ${own ? 'OWN' : `net-${nets.get(v.net)}`} via (${v.x},${v.y}): gap ${coarse.toFixed(4)}`);
+      }
+    }
+  }
+}
+let badVV = 0;
+const vvEx = [];
+for (const [k, ids] of vgrid) {
+  const [cx, cy] = k.split(',').map(Number);
+  const neigh = [];
+  for (let dy = 0; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dy === 0 && dx < 0) continue;
+      const q = vgrid.get(`${cx + dx},${cy + dy}`);
+      if (q) neigh.push(...q);
+    }
+  }
+  for (const i of ids) {
+    for (const j of neigh) {
+      if (j <= i) continue;
+      const a = vias[i], b = vias[j];
+      const gap = Math.hypot(a.x - b.x, a.y - b.y) - (a.size + b.size) / 2;
+      const floor = a.net === b.net ? SAME_MIN : CLR_MIN;
+      // only flag pairs involving a coil net -- pure routing-net spacing is
+      // freerouting's job and KiCad DRC's, not this gate's
+      if (!coilNet(a.net) && !coilNet(b.net)) continue;
+      if (gap < floor) {
+        badVV++;
+        if (vvEx.length < 8) vvEx.push(`via (${a.x},${a.y})[${nets.get(a.net)}] vs (${b.x},${b.y})[${nets.get(b.net)}]: gap ${gap.toFixed(4)}`);
+      }
+    }
+  }
+}
+if (bad || badVia || badVV) {
+  if (bad) {
+    console.error(`SELF-INTERSECTING COPPER: ${bad} touching pairs, worst overlap ${worst.toFixed(4)} mm`);
+    for (const e of examples) console.error('  ' + e);
+  }
+  if (badVia) {
+    console.error(`COIL COPPER ON VIA BARRELS: ${badVia} welds, worst ${worstVia.toFixed(4)} mm under floor`);
+    for (const e of viaEx) console.error('  ' + e);
+  }
+  if (badVV) {
+    console.error(`VIA-VIA WELDS: ${badVV}`);
+    for (const e of vvEx) console.error('  ' + e);
+  }
   process.exit(1);
 }
 const st = statSync(boardPath);
