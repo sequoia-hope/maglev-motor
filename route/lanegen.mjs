@@ -1023,14 +1023,27 @@ const stubRuns = new Set();
         // cell 79's west flank north to the row-3 y-56.35 band; the 91 pair
         // goes last so its long free-form paths dodge every committed
         // corridor.
-        // RCLK and OE_N go to the ROUTER: their westward drops are
-        // geometrically exclusive with PWMA_78's climb (any north-south
-        // lane in the 1.5 mm face strip crosses every westward drop), the
-        // router can hop to In12, and RCLK_C was router-completed at the
-        // committed orientation repeatedly. Their pad faces stay clear.
-        dropOf('VLOGIC_C', '4', gd([[63.70, 66.05], [63.0, 65.7], [62.2, 65.2], [61.5, 64.95], [61.04, 64.85]]));
-        dropOf('SCLK_C', '6', gd([[63.45, 66.48], [63.0, 66.6], [62.2, 67.0], [61.4, 67.45], [60.47, 67.79]]));
-        dropOf('DATA_W', '12', gd([[62.70, 67.78], [62.15, 67.42], [61.7, 67.75], [61.3, 68.2], [60.95, 68.5], [60.47, 68.63]]));
+        // All five west drops construct: PWMA_78's climb -- the reason RCLK
+        // and OE_N were once exiled to the router (any north-south lane in
+        // the face strip crosses every drop, five-to-one) -- is gone; its
+        // net leaves south through the gutter fabric instead.
+        // Exit PERPENDICULAR (0.55 straight off the face) before fanning --
+        // a shallow-angle exit sweeps the committed band across the next
+        // pad's funnel (flood-measured: SCLK's sealed RCLK's face, DATA_W's
+        // sealed OE_N's). Fans nest by tap depth; OE_N, whose tap is deeper
+        // than DATA_W's despite the shallower pad, descends EAST of
+        // DATA_W's diagonal (the lane PWMA_78's climb vacated) and turns
+        // west underneath it.
+        dropOf('VLOGIC_C', '4', gd([[63.70, 66.05], [63.18, 65.75], [62.3, 65.3], [61.5, 64.95], [61.04, 64.85]]));
+        dropOf('SCLK_C', '6', gd([[63.45, 66.48], [62.93, 66.18], [62.3, 66.35], [61.6, 66.9], [61.0, 67.45], [60.47, 67.79]]));
+        // three deep-southwest taps, two physical lanes (the nested fan and
+        // the vacated-climb descent) -- flood-proven, one net must ride the
+        // router. OE_N loses the seat: DATA_W is the quad's serial INPUT
+        // (chain-breaking if missing) and RCLK is the latch; OE_N is a
+        // global enable a board-level pull can cover at worst.
+        dropOf('RCLK_C', '8', gd([[63.20, 66.92], [62.68, 66.62], [62.05, 66.8], [61.5, 67.3], [61.2, 67.8], [61.04, 68.21]]));
+        dropOf('DATA_W', '12', gd([[62.70, 67.78], [62.18, 67.48], [61.6, 67.7], [61.15, 68.1], [60.8, 68.45], [60.47, 68.63]]));
+        dropOf('OE_N_C', '10', gd([[62.95, 67.35], [62.43, 67.05], [62.1, 67.3], [62.05, 68.0], [62.0, 68.7], [61.7, 69.1], [61.3, 69.15], [61.04, 69.05]]));
         con('VLOGIC_CE', padAt(sr, '16'), padAt(sr, '4'), {
           guide: gd([[62.67, 68.92], [63.1, 68.15], [63.5, 67.3], [63.65, 66.6], [63.70, 66.3]]),
         });
