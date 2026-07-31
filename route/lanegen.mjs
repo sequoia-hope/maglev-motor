@@ -179,6 +179,17 @@ for (const ci of Q.cells) {
 // field to a constructed routing via in the SE gutter -- the site probed
 // legal against the r1 DSN keepouts (134 candidates; this one >= 0.73 from
 // every hole) -- which is where the OLD east-around corridor to U78.6 begins.
+// PROBE WARNING (cost 8 real DRC hits, 2026-07-30): the r1 DSN carries only
+// the QUAD's winding keepouts and no component pads -- sites that pass its
+// probe can still land in a NEIGHBOUR cell's territory (a via at (69.45,
+// 69.90) hit cell 66's rim fillet arcs and U66.2's pad; the row-1 cells' U
+// pockets sit at their N vertices, y ~69.5-70.5). Probe any future site
+// against the FULL board's copper, not the routing proxy. Also measured and
+// CLOSED (same day): constructing the pocket escapes (OE_N / SCLK / DATA_E
+// in any combination, three verified corridor layerings) always displaces
+// at least as many router successes (RCLK_C, PWMA_91, even coil_79_B) --
+// the register pocket is saturated at this SR placement; the remaining
+// escapes wait on the SR re-rotation co-design.
 // The same-net crossover barrels en route are MID-WINDING taps: touching one
 // shorts turns; they are not ownVia-exempt, so the verifier holds them at
 // full via clearance (dodge at (1.865,2.871) clears the (1.87,3.29) barrel
