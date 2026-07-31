@@ -47,3 +47,5 @@ production/
 *.todo.json
 *.grid.json
 *.coilgrid.json
+*.srscan.json
+srsweep.cands.txt
