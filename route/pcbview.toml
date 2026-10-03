@@ -1,6 +1,6 @@
 # The amzhex 1/4" board in pcbview (~/Software/pcbview): copper layer by layer,
-# the 3D model, and the part pane, as a static site the simulator's "Board"
-# tab frames and GitHub Pages serves as-is.
+# the 3D model, and the part pane, as a static site the simulator links out to
+# ("Pcbview", beside "Board report") and GitHub Pages serves as-is.
 #
 #     ~/Software/pcbview/bin/pcbview build route/pcbview.toml   ->  route/pcbview/
 #
@@ -10,7 +10,7 @@
 title = "amzhex — the routed 1/4\" honeycomb stator"
 subtitle = "maglev-motor"
 out = "pcbview"
-back = { href = "../../#board", label = "Simulator" }
+back = { href = "../../", label = "Simulator" }
 repo = "https://github.com/sequoia-hope/maglev-motor"
 
 [[boards]]

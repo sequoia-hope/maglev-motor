@@ -12,10 +12,10 @@ python3 serve.py 8000           # then http://localhost:8000  (no-store headers;
 
 It is also published as a static site from `main` by GitHub Pages:
 <https://sequoia-hope.github.io/maglev-motor/>. Everything is relative paths and
-pre-rendered files, so the Pages copy has every tab, including the **Board** tab
-(pcbview's copper/3D/parts site in `route/pcbview/`, built from `route/pcbview.toml`;
-boardvis's assembly drawings in `route/boardvis/`, built by `route/boardvis.sh`) and
-the **Board report** (`route/report/`).
+pre-rendered files, so the Pages copy has every tab, including the **Board view**
+(boardvis's assembly drawings in `route/boardvis/`, built by `route/boardvis.sh`), and
+both link-outs: the **Board report** (`route/report/`) and **Pcbview** (copper, 3D and
+parts in `route/pcbview/`, built from `route/pcbview.toml`).
 
 Tests (Node 18+, no dependencies):
 

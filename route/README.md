@@ -417,8 +417,8 @@ connector's own 1.27 mm pin is rated about the same.
 
 `pcbview.toml` → `~/Software/pcbview/bin/pcbview build route/pcbview.toml` → `pcbview/`:
 every copper layer plotted by kicad-cli in board coordinates, the GLB of the board, and
-the part pane with LCSC numbers, as a static site. The simulator's Board tab frames it
-(`route/pcbview/#copper`) and GitHub Pages serves it unchanged. Rebuild after the board
+the part pane with LCSC numbers, as a static site. The simulator links out to it ("Pcbview",
+beside "Board report") and GitHub Pages serves it unchanged. Rebuild after the board
 changes; the layer plots are the heavy part.
 
 ### Assembly view: boardvis

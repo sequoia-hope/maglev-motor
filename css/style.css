@@ -76,7 +76,7 @@ body {
 .tabs { display: flex; gap: 4px; margin-left: auto; }
 .tabs button {
   background: none; border: 1px solid transparent; color: var(--ink-2);
-  padding: 5px 12px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px;
+  padding: 5px 12px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; white-space: nowrap;
 }
 .tabs button:hover { background: var(--plane); }
 .tabs button.active { background: var(--plane); border-color: var(--border); color: var(--ink); font-weight: 600; }
@@ -309,8 +309,6 @@ tr.infeasible td { color: var(--muted); }
 .viewctl output { font-variant-numeric: tabular-nums; font-size: 11px; min-width: 20px; }
 .viewctl select { margin-left: 0; }
 .viewctl a { font-size: 11px; color: var(--accent); text-decoration: none; }
-
-.pv-frame { display: block; width: 100%; height: calc(100vh - 150px); min-height: 480px; border: 0; border-radius: 6px; background: var(--plane); }
 
 /* Board view: the boardvis page is dark-on-dark copper art, so it gets its own
    plate in both themes rather than the card's paper. */

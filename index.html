@@ -20,12 +20,14 @@
     <button data-tab="optimise">Optimise</button>
     <button data-tab="build">Build</button>
     <button data-tab="simulate">Simulate</button>
-    <button data-tab="board" title="The amzhex 1/4&quot; board: copper layer by layer, 3D and the part pane (pcbview), and the assembly drawings (boardvis)">Board</button>
+    <button data-tab="board" title="The amzhex 1/4&quot; board as boardvis documents it for assembly: parts, pin-1 callouts, and the interview still owed">Board view</button>
     <button data-tab="about">Notes &amp; sources</button>
     <!-- Not a tab: the routed-board documentation is a separate served page, and
          #tabs' handler keys on button[data-tab], so an anchor here is inert to it. -->
     <a class="tablink" href="route/report/"
        title="amzhex: the whole 12x14 coil board routed end to end, every gate measured on the board file">Board report &#8599;</a>
+    <a class="tablink" href="route/pcbview/#copper"
+       title="pcbview: the routed board's copper layer by layer, the 3D model and the part pane (route/pcbview/, built from route/pcbview.toml)">Pcbview &#8599;</a>
   </nav>
   <button id="themeToggle" class="ghost" title="Toggle light / dark">◐</button>
 </header>
@@ -287,22 +289,12 @@
     </section>
 
     <!-- ============================ ABOUT ============================= -->
-    <!-- ============================== BOARD ============================= -->
-    <!-- pcbview (~/Software/pcbview) builds route/pcbview/ from the routed board:
-         copper layer by layer, the 3D model and the part pane, as a static site
-         that is framed here untouched, so GitHub Pages serves it with nothing
-         running. The iframe's src is set on first visit (renderBoardView) so the
-         66 MB of layer plots are not fetched by people who never open the tab.
-         Below it, boardvis's assembly view (route/boardvis/, by route/boardvis.sh). -->
+    <!-- ============================ BOARD VIEW ========================== -->
+    <!-- Static pages rendered by route/boardvis.sh (boardvis on the IPC-2581
+         export of the routed board), so the tab works from GitHub Pages where
+         nothing runs. The live, interactive boardvis is offered only when this
+         page is itself served from the machine that runs it. -->
     <section class="tabpane" id="pane-board">
-      <figure class="card pv-card">
-        <figcaption>Board <span class="hint">amzhex-full.kicad_pcb &middot; copper, 3D and parts, by pcbview</span>
-          <span class="viewctl">
-            <a href="route/pcbview/#copper" target="_blank" rel="noopener" title="The viewer on its own page">open full page &#8599;</a>
-          </span>
-        </figcaption>
-        <iframe id="pvFrame" class="pv-frame" title="pcbview: the routed amzhex board" loading="lazy"></iframe>
-      </figure>
       <figure class="card">
         <figcaption>Assembly view <span class="hint" id="bvHint"></span>
           <span class="viewctl">

@@ -1880,7 +1880,6 @@ const BV_DIR = 'route/boardvis/';
 function renderBoardView() {
   if (app._bv) return;
   app._bv = { side: 'bottom', callouts: 'grouped' };
-  document.getElementById('pvFrame').src = 'route/pcbview/#copper';
   const page = document.getElementById('bvPage');
   const open = document.getElementById('bvOpen');
   const showPage = () => {
