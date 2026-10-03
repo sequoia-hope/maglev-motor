@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>amzhex — the routed honeycomb stator</title>
+<style>
+:root{
+  --bg:#0f1014; --bg2:#16181e; --bg3:#1d2028; --line:#2a2e38;
+  --ink:#dfe3ea; --ink2:#98a0af; --ink3:#6b7383;
+  --cu:#e0574f; --cu2:#5b8dd6; --ok:#5fbf7a; --warn:#e0a955; --bad:#e0574f;
+  --acc:#c9a227;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth; scroll-padding-top:64px}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.62 -apple-system,"Segoe UI",Inter,Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased}
+code,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--bg3);padding:1px 5px;border-radius:4px;font-size:.88em;color:#cfd6e2}
+a{color:#7fb2f0;text-decoration:none} a:hover{text-decoration:underline}
+h1,h2,h3{line-height:1.25;margin:0}
+.wrap{max-width:1180px;margin:0 auto;padding:0 22px}
+
+/* ---- nav ---- */
+nav{position:sticky;top:0;z-index:40;background:rgba(15,16,20,.93);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:6px;height:52px;overflow-x:auto}
+nav b{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--acc);
+  margin-right:14px;white-space:nowrap}
+nav a{font-size:13px;color:var(--ink2);padding:5px 9px;border-radius:6px;white-space:nowrap}
+nav a:hover{background:var(--bg3);color:var(--ink);text-decoration:none}
+
+/* ---- header ---- */
+header{padding:52px 0 28px;border-bottom:1px solid var(--line)}
+header h1{font-size:clamp(26px,4vw,40px);letter-spacing:-.02em}
+header .sub{color:var(--ink2);font-size:17px;margin-top:10px;max-width:70ch}
+.tags{display:flex;flex-wrap:wrap;gap:7px;margin-top:18px}
+.tag{font-size:12px;padding:3px 10px;border-radius:20px;background:var(--bg3);
+  color:var(--ink2);border:1px solid var(--line)}
+.tag.ok{color:var(--ok);border-color:#2c4a35} .tag.warn{color:var(--warn);border-color:#4a3d22}
+
+section{padding:46px 0;border-bottom:1px solid var(--line)}
+section>.wrap>h2{font-size:24px;letter-spacing:-.01em}
+section>.wrap>h2::before{content:attr(data-n);color:var(--acc);font:600 13px/1 ui-monospace,monospace;
+  display:block;margin-bottom:8px;letter-spacing:.12em}
+h3{font-size:16px;margin:30px 0 10px;color:var(--ink)}
+p{margin:12px 0;max-width:78ch;color:#c6ccd6}
+p.lead{font-size:16.5px;color:var(--ink)}
+ul{max-width:78ch;color:#c6ccd6;padding-left:20px} li{margin:6px 0}
+
+/* ---- figures ---- */
+figure{margin:22px 0}
+figure img{display:block;width:100%;height:auto;border-radius:9px;background:#fff;
+  border:1px solid var(--line);cursor:zoom-in}
+figure img.dark{background:var(--bg2)}
+figcaption{color:var(--ink3);font-size:13px;margin-top:9px;max-width:82ch}
+figcaption b{color:var(--ink2);font-weight:600}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:22px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px}
+.grid2 figure,.grid3 figure{margin:0}
+
+/* ---- stats ---- */
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:24px 0}
+@media(max-width:900px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.stat{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:13px 15px}
+.stat .v{font:600 21px/1.2 ui-monospace,monospace;color:var(--ink)}
+.stat .v small{font-size:12px;color:var(--ink3);font-weight:400}
+.stat .k{font-size:11.5px;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-top:5px}
+
+/* ---- tables ---- */
+table{border-collapse:collapse;width:100%;margin:18px 0;font-size:13.5px}
+th,td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--ink3);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
+td.n,th.n{text-align:right;font-family:ui-monospace,monospace}
+tbody tr:hover{background:var(--bg2)}
+.scroll{overflow-x:auto}
+
+/* ---- callouts ---- */
+.note{border-left:3px solid var(--line);background:var(--bg2);padding:14px 18px;
+  border-radius:0 8px 8px 0;margin:20px 0;max-width:82ch}
+.note.ok{border-color:var(--ok)} .note.warn{border-color:var(--warn)}
+.note.bad{border-color:var(--bad)}
+.note p{margin:6px 0;max-width:none}
+.note .h{font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink2)}
+.note.ok .h{color:var(--ok)} .note.warn .h{color:var(--warn)} .note.bad .h{color:var(--bad)}
+
+pre{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+  overflow-x:auto;font-size:13px;line-height:1.6;color:#c6ccd6;margin:16px 0}
+pre .c{color:var(--ink3)}
+
+/* ---- layer viewer ---- */
+#viewer{display:grid;grid-template-columns:238px 1fr;gap:20px;align-items:start;margin-top:20px}
+@media(max-width:760px){#viewer{grid-template-columns:1fr}}
+#panel{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:13px}
+.lay{display:flex;align-items:center;gap:8px;padding:3px 2px;font-size:12.5px;cursor:pointer;
+  border-radius:5px}
+.lay:hover{background:var(--bg3)}
+.lay .sw{width:11px;height:11px;border-radius:3px;flex:none}
+.lay label{cursor:pointer;flex:1}
+.lay .role{font-size:10px;color:var(--ink3);text-transform:uppercase;letter-spacing:.05em}
+#stack{position:relative;border-radius:9px;overflow:hidden;background:#fff;border:1px solid var(--line)}
+#stack img{position:absolute;inset:0;width:100%;height:100%;mix-blend-mode:multiply}
+#stack img.base{position:relative;display:block;mix-blend-mode:normal}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.hint{color:var(--ink3);font-size:11.5px;margin-top:11px;line-height:1.5}
+
+/* ---- part label overlay ---- */
+.ovbox{position:relative;display:block;line-height:0}
+.ovwrap .lbl{position:absolute;transform:translate(-50%,-50%);font:600 10px/1 ui-monospace,monospace;
+  color:#111;background:rgba(255,255,255,.82);border:1px solid rgba(0,0,0,.25);
+  padding:2px 4px;border-radius:3px;pointer-events:none;white-space:nowrap}
+.ovwrap .lbl.hl{background:var(--acc);color:#1a1400;border-color:#8a6e10}
+.mark{position:absolute;border:2px dashed var(--acc);border-radius:3px;pointer-events:none}
+.mark span{position:absolute;top:-9px;left:50%;transform:translate(-50%,-100%);
+  font:600 11px/1 ui-monospace,monospace;color:#1a1400;background:var(--acc);
+  padding:2px 6px;border-radius:3px;white-space:nowrap}
+figure.tall img{max-height:760px;width:auto;margin:0 auto}
+.togg{font-size:12px;color:var(--ink2);display:inline-flex;align-items:center;gap:7px;
+  margin-top:10px;cursor:pointer}
+
+/* ---- lightbox ---- */
+#lb{position:fixed;inset:0;background:rgba(8,9,12,.96);z-index:100;display:none;
+  align-items:center;justify-content:center;cursor:grab}
+#lb.on{display:flex} #lb.drag{cursor:grabbing}
+#lb img{max-width:none;transform-origin:0 0;image-rendering:auto}
+#lbbar{position:fixed;top:0;left:0;right:0;padding:12px 18px;color:var(--ink2);font-size:13px;
+  display:flex;gap:16px;align-items:center;background:linear-gradient(rgba(8,9,12,.85),transparent)}
+#lbbar b{color:var(--ink);font-weight:600}
+#lbbar .x{margin-left:auto;cursor:pointer;font-size:20px;line-height:1;color:var(--ink2)}
+footer{padding:38px 0 60px;color:var(--ink3);font-size:13px}
+</style></head><body>
+
+<nav><div class="wrap"><b>amzhex</b>
+  <a href="../../" style="color:var(--acc)">&#8598; Simulator</a>
+  <a href="#board">Board</a><a href="#cell">Cell</a><a href="#problem">Problem</a>
+  <a href="#seam">Seam</a><a href="#stamp">Stamp</a><a href="#layers">Layers</a>
+  <a href="#rules">Rules</a><a href="#tiling">Tiling</a><a href="#status">Status</a><a href="#repro">Reproduce</a>
+  <a href="index.html" style="color:var(--ok)">Full board (Oct) &#8599;</a>
+  <a href="hand.html" style="color:var(--warn)">Hand-routing &#8599;</a>
+</div></nav>
+
+<header><div class="wrap">
+  <h1>amzhex — the 1/4″-magnet honeycomb stator</h1>
+  <p class="sub" style="color:var(--warn)"><b>Superseded, August 2026.</b> This page documents
+  <code>fabtile2.merged.kicad_pcb</code>: the stamp routed on the centre quad only, with the
+  other 41 quads placed and unrouted. The whole board has since been routed end to end —
+  see the <a href="index.html">current report</a>. Kept for the cell, seam and stamp analysis.</p>
+  <p class="sub">168 hexagonal spiral coils on a 14-layer, 106&nbsp;mm board, one H-bridge
+  per coil, under a 44.45&nbsp;mm Halbach platen built entirely from catalogue 1/4″ N52 bricks.</p>
+  <div class="tags">
+    <span class="tag">fabtile2.merged.kicad_pcb</span>
+    <span class="tag">rendered 2026-08-27</span>
+    <span class="tag ok">DRC 0 violations</span>
+    <span class="tag ok">stamp 18/24 nets — and it tiles</span>
+    <span class="tag ok">0 interior violations at 42×</span>
+  </div>
+</div></header>
+
+<section id="hero"><div class="wrap">
+  <div class="grid2">
+    <figure><img src="render-top.png" alt="3D render, coil side" class="dark">
+      <figcaption><b>Top — the winding.</b> 168 hexagonal spirals on a triangular
+      lattice, 12 columns × 14 rows at 8.467&nbsp;mm pitch. Every hexagon is 12 stacked
+      layers of 12-turn spiral: 144 turns of 0.103&nbsp;mm trace, 10.36&nbsp;Ω. The zigzag
+      outline follows the honeycomb cell boundary, so boards abut and continue the
+      lattice.</figcaption></figure>
+    <figure><img src="render-bottom.png" alt="3D render, electronics side" class="dark">
+      <figcaption><b>Bottom — the electronics.</b> 168 SOT-23-6 H-bridges, 168 decoupling
+      caps, 42 shift registers, and 1259 seam vias laid on the gutter lattice. The single
+      island of copper in the middle is the routed stamp — everything else is placed and
+      waiting.</figcaption></figure>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="v">168</div><div class="k">coils</div></div>
+    <div class="stat"><div class="v">14</div><div class="k">copper layers</div></div>
+    <div class="stat"><div class="v">106.13<small>×105.44 mm</small></div><div class="k">board</div></div>
+    <div class="stat"><div class="v">3446</div><div class="k">vias</div></div>
+    <div class="stat"><div class="v">378</div><div class="k">placed parts</div></div>
+    <div class="stat"><div class="v">3.7<small>×</small></div><div class="k">lift, centred</div></div>
+    <div class="stat"><div class="v">4.5<small> W</small></div><div class="k">hover power</div></div>
+    <div class="stat"><div class="v">49.8<small> g</small></div><div class="k">platen mass</div></div>
+  </div>
+</div></section>
+
+<section id="board"><div class="wrap">
+  <h2 data-n="01">The board</h2>
+  <p class="lead">Fourteen copper layers: twelve of winding plus two surrendered to the
+  electronics. Both halves of that sentence are load-bearing.</p>
+  <p>The electronics layers have to come in a <b>pair</b>, because a spiral alternates which
+  end it finishes on — with an odd winding count the last layer ends in the centre hole, and
+  the tab carrying that lead out crosses every turn of its own layer. That is a dead short of
+  the whole layer, on all 168 coils, and no design-rule check can see it: the tab and the
+  winding are the same net. And they have to be <b>added</b> rather than taken out of twelve,
+  because two fewer winding layers costs a fifth of the turns (120 instead of 144) and buys no
+  routing improvement at all — measured on a 3×3 tile, 12+2 and 14+2 plateau within two
+  connections of each other.</p>
+  <p>The price is a 14-layer stack, which is past the layer count where PCB pricing turns
+  steep, and a wider drill: 1.84&nbsp;mm of board through a 0.2&nbsp;mm hole is a 9:1 plated
+  hole and the fab does 8:1, so every via opens to 0.23&nbsp;mm and the annular ring comes
+  down to 0.135&nbsp;mm — still over the 0.13&nbsp;mm floor.</p>
+
+  <div class="grid2">
+    <figure><img src="full-wind.png" alt="F.Cu winding layer, whole board">
+      <figcaption><b>One winding layer (F.Cu), whole board.</b> Twelve of these are stacked in
+      series through the crossover vias in each centre hole. The dots between hexagons are the
+      gutter lattice: crossover and terminal vias, plus the seam ladder that carries the bus
+      from cell to cell.</figcaption></figure>
+    <figure class="ovwrap" id="fullov"><img src="full-elec.png" alt="electronics layers, whole board">
+      <figcaption><b>The two electronics layers (In12 + B.Cu), viewed from the bottom.</b>
+      Every part is placed and every seam via is drilled across the whole board; exactly one
+      2×2-cell quad in the middle is routed. That island is what the rest of this page is
+      about.</figcaption></figure>
+  </div>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Quantity</th><th class="n">Value</th><th>How it is set</th></tr></thead>
+    <tbody>
+    <tr><td>Outline</td><td class="n">106.13 × 105.44 mm</td><td>102 Edge.Cuts segments following the honeycomb cell boundary — self-tiling</td></tr>
+    <tr><td>Copper layers</td><td class="n">14</td><td>F.Cu + In1–In11 winding, In12 + B.Cu electronics</td></tr>
+    <tr><td>Pressed thickness</td><td class="n">1.84 mm</td><td>sets the 8:1 via drill floor</td></tr>
+    <tr><td>Coils</td><td class="n">168</td><td>12 columns × 14 rows, rows offset ±¼ pitch</td></tr>
+    <tr><td>Coil pitch</td><td class="n">8.4667 mm</td><td>λ/3, with λ = 25.4 mm = 4 × ¼″</td></tr>
+    <tr><td>Turns per coil</td><td class="n">144</td><td>12 per layer × 12 winding layers</td></tr>
+    <tr><td>Trace / space</td><td class="n">0.103 / 0.090 mm</td><td>0.193 mm turn pitch; space is at the fab floor, not equal to the trace</td></tr>
+    <tr><td>Coil resistance</td><td class="n">10.36 Ω</td><td>0.9 A wants 9.3 V — the current limit and the rail are the same number</td></tr>
+    <tr><td>Vias</td><td class="n">3446</td><td>all 0.50 mm land / 0.23 mm drill: 2184 coil (13 per coil), 1259 seam, 3 fabric</td></tr>
+    <tr><td>Parts</td><td class="n">378</td><td>168 × TC118S (SOT-23-6, C88308), 168 × 100 nF 0402 (C1525), 42 × 74HC595BQ (DHVQFN-16, C730243)</td></tr>
+    </tbody></table></div>
+
+  <h3>What flies over it</h3>
+  <p>The platen is 44.45&nbsp;mm square and every magnet is a catalogue part: 33 bricks of
+  ¼″ × ¼″ × ⅛″ N52 in a 7×7 lattice, nine magnetised through the ⅛″ thickness and
+  twenty-four through a ¼″ width, the null cells left empty. λ = 25.4&nbsp;mm because that is
+  4 × ¼″, so the lattice closes exactly on the platen with no border wasted. Numbers below are
+  recomputed by <code>route/numbers.mjs</code> from the same physics the simulator runs.</p>
+  <div class="stats">
+    <div class="stat"><div class="v">1.5<small> mm</small></div><div class="k">air gap</div></div>
+    <div class="stat"><div class="v">3.70<small>×</small></div><div class="k">lift, centred</div></div>
+    <div class="stat"><div class="v">2.32<small>×</small></div><div class="k">lift, worst corner</div></div>
+    <div class="stat"><div class="v">2.32<small>×</small></div><div class="k">lift, 45° yaw</div></div>
+    <div class="stat"><div class="v">4.49<small> W</small></div><div class="k">hover, centred</div></div>
+    <div class="stat"><div class="v">5.45<small> W</small></div><div class="k">hover, worst</div></div>
+    <div class="stat"><div class="v">243<small> mA</small></div><div class="k">busiest coil</div></div>
+    <div class="stat"><div class="v">21.8<small> K</small></div><div class="k">temperature rise</div></div>
+  </div>
+  <p>Like every 1 oz honeycomb this design is heat-first, not force-first: 68&nbsp;A/mm² in the
+  thin copper at hover. The ±16&nbsp;mm workspace floor of 2.32× is the number that decides
+  whether the stage flies everywhere rather than falling through a corner.</p>
+</div></section>
+
+<section id="cell"><div class="wrap">
+  <h2 data-n="02">One cell</h2>
+  <p class="lead">The whole board is one cell repeated, so the cell is where every constraint
+  lands: the winding, the via bay it leaves in its own centre, the gutter it leaves around
+  itself, and the three parts that have to live on the copper's back.</p>
+
+  <figure><img src="cell-allcu.png" alt="one cell, all 14 copper layers">
+    <figcaption><b>Cell 78, all fourteen copper layers at once.</b> The rainbow band is twelve
+    stacked spirals — 6.773&nbsp;mm across the flats, 12 turns each. In the centre hole sits
+    the <b>via bay</b>: the crossover vias that put the twelve layers in series, arranged on a
+    gated ring so a legal 0.5&nbsp;mm routing via still fits at the coil's exact centre and a
+    trace can reach it through the gap. Blue is B.Cu, pink is In12; the diagonal pad comb is
+    the 74HC595 that serves this cell's quad, sitting directly over the winding because there
+    is nowhere else for it to be.</figcaption></figure>
+
+  <div class="grid2">
+    <figure><img src="cell-wind.png" alt="one winding layer of one cell">
+      <figcaption><b>One layer of the spiral.</b> Corners are filleted so each crossover via
+      drops into a copper-free pocket. The winding is exported <code>locked</code>: KiCad's
+      shove router will otherwise spend minutes trying to move 25 000 segments when a drag
+      brushes one.</figcaption></figure>
+    <figure><img src="cell-elec.png" alt="electronics layers of one cell">
+      <figcaption><b>The same cell from the bottom, electronics layers only.</b> Straight pink
+      runs on In12 are constructed bus lanes; blue is the routed and constructed B.Cu. The
+      isolated rings are via barrels with nothing on this layer — the drill has to miss the
+      winding, which is why they sit in the gutter.</figcaption></figure>
+  </div>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Cell dimension</th><th class="n">Value</th><th>Consequence</th></tr></thead>
+    <tbody>
+    <tr><td>Hexagon across flats</td><td class="n">6.773 mm</td><td>80% fill of the 8.467 mm cell</td></tr>
+    <tr><td>Centre hole apothem</td><td class="n">1.071 mm</td><td>holds 11 crossover vias on a gated ring and still leaves a legal routing-via site</td></tr>
+    <tr><td>Gutter available to a via</td><td class="n">0.795 mm</td><td>a fab-legal via needs 0.79: clearance in, via, edge clearance out</td></tr>
+    <tr><td>Turn pitch</td><td class="n">0.193 mm</td><td>0.103 trace + 0.090 space; equal trace-and-space would cost the bay its room</td></tr>
+    <tr><td>Vias per coil</td><td class="n">13</td><td>11 crossovers + 2 terminals</td></tr>
+    <tr><td>Fill</td><td class="n">0.80</td><td>84% leaves only 0.59 mm of gutter — and costs no turns, since turns-per-layer is floor-quantised at 12 either way</td></tr>
+    </tbody></table></div>
+
+  <div class="note"><div class="h">Why 80% and not 94%</div>
+  <p>The square-grid presets still wind at 0.94 fill, which leaves 0.24&nbsp;mm of gutter —
+  not enough for a via any fab will drill. Dropping this board to 0.80 buys the gutter a legal
+  via and costs nothing, because turns-per-layer comes out 12 at either fill.</p></div>
+</div></section>
+
+<section id="problem"><div class="wrap">
+  <h2 data-n="03">Why this board is hard to route</h2>
+  <p class="lead">A plated through-hole can only be drilled where <em>no</em> winding layer
+  has copper. On this board that is the gutter lattice and nothing else — which means that
+  inside a cell, under the parts, B.Cu is the only layer a trace can reach.</p>
+  <p>That single fact explains every measurement the project has made. Extra electronics
+  layers are worthless because they are all equally unreachable; more router passes do not
+  help; taking the power nets out does not help the signals. Measured on a 3×3 tile, in
+  unrouted connections (lower is better):</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Change</th><th class="n">Result</th></tr></thead><tbody>
+    <tr><td>2 electronics layers</td><td class="n">42–44</td></tr>
+    <tr><td>4 electronics layers</td><td class="n">44</td></tr>
+    <tr><td>6 electronics layers</td><td class="n">44</td></tr>
+    <tr><td>30 passes vs 150 passes</td><td class="n">identical</td></tr>
+    <tr><td>gutter vias per cell 7 → 4</td><td class="n">38 → 37</td></tr>
+    <tr><td>coil fill 0.80 → 0.74 → 0.68 (wider gutter)</td><td class="n">38 → 40 → 38</td></tr>
+    <tr><td>centre hole enlarged (144 → 108 turns)</td><td class="n">45 → 43</td></tr>
+    <tr><td><b>blind vias between the two electronics layers</b></td><td class="n"><b>38 → 5</b></td></tr>
+    </tbody></table></div>
+  <p>Only the last line moves it, and it is a fabrication decision rather than a layout one.
+  So the layout answer had to come from somewhere else: stop asking the autorouter to solve
+  the whole board, and make the board <b>periodic</b> instead.</p>
+
+  <h3>The stamp</h3>
+  <p>The 168 cells factor into 42 identical 2×2 quads, each with its own 74HC595 driving its
+  four cells' eight bridge inputs. Rows alternate their x-offset by a quarter pitch, so a block
+  spanning an <em>even</em> number of rows is a pure translation of its neighbour two rows up —
+  a 2×2 quad stamps identically everywhere. Route one quad, and in principle the board is that
+  quad 42 times.</p>
+  <p>The router never sees the real board either. The full 12×14 board is roughly 300 000
+  track segments of coil spiral, and handed that, freerouting spends all its time re-deriving
+  that none of it is routable. So the routing problem is <em>written</em> rather than exported:
+  only the electronics layers exist as signal layers, every coil is one hexagonal
+  <code>via_keepout</code> (vias may not be drilled into the winding, which is the physical
+  truth), and every pad is a single-pin component placed at its absolute position with its
+  rotation baked into a polygon padstack. On the 3×3 tile, that took a router pass from
+  86 seconds to 2.</p>
+
+  <div class="note bad"><div class="h">The autorouter does not trust its own arithmetic</div>
+  <p>freerouting 2.2.4 <b>reports completeness it has not achieved</b> on nets that include
+  anchor pins: it says "1–2 unrouted" while geometrically leaving 4–7 connections dangling,
+  and then stops because its own score has converged. KiCad's ratsnest agrees with the
+  project's geometric checker, not with the router. Every result on this page is verified by
+  <code>checkses.mjs</code>, which reads copper against a pin map — never by the router's own
+  count.</p></div>
+</div></section>
+
+<section id="seam"><div class="wrap">
+  <h2 data-n="04">The seam interface</h2>
+  <p class="lead">If every quad is the same stamp, the stamps have to meet somewhere. They
+  meet at a fixed ladder of nine vias in the shared east–west gutter, and nothing crosses a
+  diagonal seam at all.</p>
+
+  <div class="grid2" style="align-items:start">
+    <figure class="tall"><img src="seam-allcu.png" alt="the seam ladder between two cells">
+      <figcaption><b>The 1.59 mm gutter between two cells, all layers.</b> Two staggered via
+      columns interleave so that every constructed lane can be a dead-straight run: a lane at
+      its own via's offset passes every other via of its own column at ≥0.84&nbsp;mm and every
+      via of the other column at ≥0.42&nbsp;mm, which clears the 0.39&nbsp;mm a 0.1&nbsp;mm
+      trace needs from a 0.5&nbsp;mm barrel with 0.03 to spare. No jogs, and no lane ever
+      crosses another.</figcaption></figure>
+    <div>
+      <div class="scroll"><table>
+        <thead><tr><th>Signal</th><th class="n">x</th><th class="n">y</th><th>Side</th></tr></thead>
+        <tbody>
+        <tr><td>SCL <span style="color:var(--ink3)">(reserved)</span></td><td class="n">3.83</td><td class="n">+2.10</td><td>north</td></tr>
+        <tr><td>VLOGIC</td><td class="n">4.40</td><td class="n">+1.68</td><td>north</td></tr>
+        <tr><td>SDA <span style="color:var(--ink3)">(reserved)</span></td><td class="n">3.83</td><td class="n">+1.26</td><td>north</td></tr>
+        <tr><td>GND</td><td class="n">4.40</td><td class="n">+0.42</td><td>north</td></tr>
+        <tr><td>VBUS</td><td class="n">3.83</td><td class="n">−0.42</td><td>south</td></tr>
+        <tr><td>SCLK</td><td class="n">3.83</td><td class="n">−1.26</td><td>south</td></tr>
+        <tr><td>RCLK</td><td class="n">4.40</td><td class="n">−1.68</td><td>south</td></tr>
+        <tr><td>DATA</td><td class="n">3.83</td><td class="n">−2.10</td><td>south</td></tr>
+        <tr><td>OE_N</td><td class="n">4.40</td><td class="n">−2.52</td><td>south</td></tr>
+        </tbody></table></div>
+      <p style="font-size:13.5px">Cell-frame millimetres, origin at the coil centre, y up.
+      <b>Side alignment bought four connections:</b> a signal's seam site must sit on the same
+      side of the cell's east–west corridor as its in-cell taps — register signals south next
+      to the register, power and VLOGIC north near the bridge and decap — or every lane dives
+      across the corridor to reach its tap.</p>
+      <p style="font-size:13.5px">Both columns were shifted 0.12&nbsp;mm west in the latest
+      revision. The previous ladder split the gutter so evenly that <em>no</em> winding-layer
+      lane could pass it: both hex-side corridors measured 0.51&nbsp;mm where a 0.1&nbsp;mm
+      trace needs 0.53. The shift keeps every existing clearance and opens a 0.628&nbsp;mm
+      corridor east of column B — a dead-straight north–south hug lane, one independent copy
+      per winding layer.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="stamp"><div class="wrap">
+  <h2 data-n="05">The stamp: cells 78 / 79 / 90 / 91</h2>
+  <p class="lead">This is the routed board. Four coils, four H-bridges, four decoupling caps
+  and one shift register, wired to each other and to the seam ladder on both sides — 19 of the
+  24 nets complete, verified geometrically, with the merged board coming back DRC-clean.</p>
+
+  <figure class="ovwrap" id="ov">
+    <img src="quad-elec.png" alt="the routed quad, electronics layers">
+    <figcaption><b>The routed quad, both electronics layers, viewed from the bottom.</b>
+    Straight pink runs on In12 are the constructed bus lanes and the power comb trunks —
+    note the per-cell jog around each coil's via bay, the only obstacle a straight lane meets.
+    Blue is B.Cu: the register's escape fan, the bridge and decap pockets, the coil terminal
+    hops and the PWM harness. <label class="togg"><input type="checkbox" id="ovtog" checked>
+    show part labels</label></figcaption>
+  </figure>
+
+  <div class="grid2">
+    <figure><img src="quad-bcu.png" alt="B.Cu only">
+      <figcaption><b>B.Cu alone.</b> 192 segments. Everything that has to touch a pad lives
+      here, because a plated through-hole cannot be drilled inside a coil and B.Cu is the only
+      layer a trace can reach under the parts.</figcaption></figure>
+    <figure><img src="quad-in12.png" alt="In12.Cu only">
+      <figcaption><b>In12.Cu alone.</b> 68 segments, and almost all of them dead straight.
+      Nine lanes per cell row run seam to seam; the rectangular detours are the jogs around
+      each via bay. This layer is what makes the cell periodic.</figcaption></figure>
+  </div>
+
+  <figure><img src="quad-allcu.png" alt="the routed quad, all layers">
+    <figcaption><b>The same quad with the winding underneath.</b> The routing has to thread
+    the gutter lattice and the parts, and the only genuinely free surface is the bottom
+    copper.</figcaption></figure>
+
+  <h3>Constructed, not routed</h3>
+  <p>The headline result of the current pipeline is negative about the tool it was built
+  around. In the run that produced this board, <b>freerouting returned an empty session</b>:
+  it took the five nets it was handed, scored 0.00 on pass 1, observed that the board state
+  had not changed, and stopped. Every one of the 268 track segments and 6 vias in the stamp
+  was <em>constructed</em> — closed-form lanes and power combs, and an A* grid router working
+  on a 0.025&nbsp;mm obstacle grid with committed per-net clearance bands.</p>
+  <p>That is the expected outcome, not a failure of configuration. freerouting gives up
+  instantly on any net whose corridor is a single thread, and on this geometry most corridors
+  are single threads: a measured 0.11&nbsp;mm mini-gate here, a one-trace serpentine slot
+  there, seam ladders that are nine-via walls crossable only at specific windows. "Does the
+  router quit in two passes with zero fragments" became the criterion for what has to be
+  constructed instead.</p>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Copper in the stamp</th><th class="n">Segments</th><th>Where it came from</th></tr></thead>
+    <tbody>
+    <tr><td>B.Cu</td><td class="n">192</td><td>constructed — register fan, pockets, coil hops, PWM harness</td></tr>
+    <tr><td>In12.Cu</td><td class="n">68</td><td>constructed — bus lanes and power comb trunks</td></tr>
+    <tr><td>In10.Cu</td><td class="n">5</td><td>constructed — winding-layer fabric (PWMB_78)</td></tr>
+    <tr><td>In11.Cu</td><td class="n">3</td><td>constructed — winding-layer fabric (DATA_E)</td></tr>
+    <tr><td>freerouting</td><td class="n">0</td><td>empty <code>network_out</code>; 5 nets offered, 5 returned unrouted</td></tr>
+    </tbody></table></div>
+
+  <div class="note ok"><div class="h">Winding-layer fabric</div>
+  <p>The two rows on In10 and In11 are the newest idea and the one with the most headroom
+  left. A winding layer is not a routing resource inside a coil, but the <em>gutter</em> on a
+  winding layer is empty copper that nothing else wants — the hug lane east of the seam
+  ladder runs the entire seam, one independent copy per winding layer, and a through-drill is
+  the only thing that cares. Six winding layers now carry fabric — the two 78-PWMs on the west hug lanes, DATA_E on the internal one, and the 90/91 nets ride a staircase: row-1 hug up, an In12 jog across the half-pitch row stagger, the row-2 hug on to the empty row-2/3 gutter, and a short tail onto the pad from the north.</p></div>
+
+  <h3>The verdict</h3>
+  <p>Twenty-four nets make up the stamp's job. The count below is
+  <code>checkses.mjs</code>'s: it reads the session's copper against a pin map and asks
+  whether the pins are actually joined, which is the only number this project accepts.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Net</th><th>Job</th><th class="n">Verdict</th></tr></thead>
+    <tbody>
+    <tr><td class="mono">coil_78_A/B · coil_79_A/B<br>coil_90_A/B · coil_91_A/B</td><td>each coil's two terminal vias to its bridge's two outputs</td><td class="n" style="color:var(--ok)">8 / 8</td></tr>
+    <tr><td class="mono">GND_C</td><td>power comb: the seam barrels to every bridge and decap in the quad</td><td class="n" style="color:var(--ok)">complete</td></tr>
+    <tr><td class="mono">SCLK_C · RCLK_C · OE_N_C<br>VLOGIC_C · DATA_W · DATA_E</td><td>the register's control and chain nets to their seam sites</td><td class="n" style="color:var(--ok)">6 / 6</td></tr>
+    <tr><td class="mono">PWMB_78 · PWMA_90 · PWMB_91</td><td>register output to bridge input</td><td class="n" style="color:var(--ok)">3 / 8</td></tr>
+    <tr><td class="mono">PWMA_78 · PWMA_79 · PWMB_79<br>PWMB_90 · PWMA_91</td><td>register output to bridge input</td><td class="n" style="color:var(--bad)">missing</td></tr>
+    <tr><td class="mono">VLOGIC_CE</td><td>register pad 16 to the internal-seam VLOGIC barrel</td><td class="n" style="color:var(--bad)">missing</td></tr>
+    </tbody></table></div>
+  <div class="stats">
+    <div class="stat"><div class="v" style="color:var(--ok)">18<small> / 24</small></div><div class="k">nets complete</div></div>
+    <div class="stat"><div class="v" style="color:var(--bad)">6</div><div class="k">missing connections</div></div>
+    <div class="stat"><div class="v" style="color:var(--ok)">0</div><div class="k">DRC violations</div></div>
+    <div class="stat"><div class="v" style="color:var(--ok)">= bare</div><div class="k">merged DRC vs unrouted</div></div>
+    <div class="stat"><div class="v">284<small> + 13 vias</small></div><div class="k">segments placed</div></div>
+    <div class="stat"><div class="v">2819<small> ← 2885</small></div><div class="k">board ratsnest</div></div>
+  </div>
+  <p>VBUS's comb is constructed too, and its 44 segments are in the board; it is not one of
+  the 24 because it has no routed job left to check. All six remaining misses are register-pocket
+  escapes, and under periodicity the router completes <em>none</em> of them — with the eight
+  neighbouring stamps' copper as keepouts, freerouting scores 0.00 and stops on the first
+  pass, so anything not constructed stays unrouted. Each of the six has now been measured to
+  a dead end at this register placement: the pocket's west face, the band-NN channel mouths
+  and the seam-junction zones sit exactly one lattice period apart, so any one net's copper
+  in one of them is a forbidden image in the others. The trajectory across the pipeline's
+  history, each point a full regenerate-construct-route-merge-DRC cycle, was 9 → 8 → 7 → 5
+  missing on the non-tiling stamp — and this stamp holds <b>6</b> while also tiling, with the
+  merged board's DRC exactly equal to the bare board's every time.</p>
+
+  <figure><img src="reg-elec.png" alt="the register pocket">
+    <figcaption><b>The register pocket.</b> A DHVQFN-16 on 0.5&nbsp;mm pitch, rotated 150°,
+    sitting over the winding with its exposed pad problem designed away. Its position was
+    chosen by scanning 300 000 candidate (position × rotation) pairs against the real board;
+    the fit landscape is two tiny pockets, and this is the better one flipped 180°, which
+    turns the control column toward the west seam where its taps are. Eight pads per side at
+    0.5&nbsp;mm pitch admit no same-layer crossing escapes at 0.09/0.1&nbsp;mm rules, so the
+    fan is nested by tap depth, and each stub exits perpendicular to its pad face for
+    0.55&nbsp;mm before turning — a shallow exit sweeps its clearance band across the next
+    pad's approach and seals it.</figcaption></figure>
+</div></section>
+
+<section id="layers"><div class="wrap">
+  <h2 data-n="06">Layer stack</h2>
+  <p class="lead">All fourteen copper layers over the stamp, viewed from the bottom — B.Cu
+  first, F.Cu last, the order a drill would meet them coming up from the electronics side.</p>
+  <div id="viewer">
+    <div id="panel">
+      <div id="layerlist"></div>
+      <div style="margin-top:13px;font-size:12px;color:var(--ink3)">others opacity
+        <input type="range" id="dim" min="0" max="100" value="18"></div>
+      <div class="hint">radio = the opaque layer · checkbox = drawn at all ·
+        slider = opacity of the rest. Windings 1–12 are near-identical by design; the
+        interesting pair is In12 and B.Cu.</div>
+    </div>
+    <div id="stack">
+      <img class="base" id="img_edge" src="lay-edge.png" alt="board window">
+    </div>
+  </div>
+</div></section>
+
+<section id="rules"><div class="wrap">
+  <h2 data-n="07">Design rules</h2>
+  <p class="lead">The <code>.kicad_dru</code> beside the board is generated from the same
+  <code>FAB</code> object the geometry is sized from, so the thing being checked and the thing
+  being drawn cannot drift.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Rule</th><th class="n">Value</th><th>Source</th></tr></thead>
+    <tbody>
+    <tr><td>min track width</td><td class="n">0.09 mm</td><td>JLCPCB 1 oz multilayer</td></tr>
+    <tr><td>min copper clearance</td><td class="n">0.09 mm</td><td>JLCPCB 1 oz multilayer</td></tr>
+    <tr><td>min via drill</td><td class="n">0.23 mm</td><td><b>aspect ratio</b>: 1.84 mm ÷ 8, not the bare 0.15 mm floor</td></tr>
+    <tr><td>min via diameter</td><td class="n">0.49 mm</td><td>drill + 2 × annular ring</td></tr>
+    <tr><td>min annular ring</td><td class="n">0.13 mm</td><td>JLCPCB support answer 110</td></tr>
+    <tr><td>via hole to hole</td><td class="n">0.20 mm</td><td>JLCPCB</td></tr>
+    <tr><td>copper to board edge</td><td class="n">0.20 mm</td><td>routed edges</td></tr>
+    <tr><td>hole to copper</td><td class="n">0.20 mm</td><td>inner-layer via hole to copper</td></tr>
+    </tbody></table></div>
+  <div class="note warn"><div class="h">The rule KiCad cannot state</div>
+  <p>Aspect ratio is the only fab limit that depends on the <em>stack</em> rather than on the
+  copper, and KiCad has no constraint for it. So the rule file states the drill <em>floor</em>
+  the ratio implies instead — because a ratio the rule file cannot express is a ratio nothing
+  checks. That silence is exactly how a 14-layer board once shipped 698 routed vias at 9.2:1
+  with DRC reporting zero errors: every rule was a diameter.</p></div>
+</div></section>
+
+<section id="tiling"><div class="wrap">
+  <h2 data-n="08">Does the stamp repeat?</h2>
+  <p class="lead">DRC on the board above says the copper is legal <em>where it sits</em>. That
+  is a different question from whether forty-two copies of it collide — and until this week
+  nobody had asked the second one. The answer was no.</p>
+
+  <h3>The test</h3>
+  <p>The quad lattice is two pure translations: one quad east
+  (2 cells, 16.933&nbsp;mm) and one band north (2 rows, 14.665&nbsp;mm, which is exactly where
+  the ±¼-pitch row stagger cancels). So a neighbour's copper is this copper shifted, under a
+  different net wherever the name carries a cell index — <code>PWMA_79</code> two columns over
+  is <code>PWMA_81</code>, and two of those touching is a short. The global bus does not
+  change, and there the neighbour's copper really is this copper and may touch.
+  <code>tilecheck.mjs</code> checks the stamp against all eight shifted copies of itself on
+  that rule.</p>
+  <div class="note bad"><div class="h">Verdict on the 19/24 stamp: it does not tile</div>
+  <p>50 pairwise conflicts, 12 distinct, every one of them at distance <b>0</b> — real
+  crossings, not near misses — and every one traceable to <b>three constructed PWM paths</b>:
+  <code>PWMA_79</code>, <code>PWMA_90</code> and <code>PWMB_79</code>. <code>PWMA_90</code>
+  alone spans 14.675&nbsp;mm north to south against a 14.665&nbsp;mm band period, so it meets
+  <em>itself</em> one quad up. That is why cloning it produced 1356+ DRC violations, <b>687 of
+  them in the board's interior</b> — more than a cell pitch from any edge, where the only thing
+  copper can collide with is another stamp.</p></div>
+
+  <h3>The fix: a constructor that knows it is drawing a stamp</h3>
+  <p>The obstacle grid now carries the eight lattice images of every committed path, skipping
+  images that land on the net being routed. A path can also collide with its own image, and
+  those are not knowable before the path exists — so <code>routeNet</code> finds one, blocks
+  what it hits, and looks again, up to five times. The routed stage gets the same images as
+  keepouts (<code>PERIODIC_KEEPOUTS=1</code>), clipped to a cell and a half around the quad
+  because unclipped they grow freerouting's working area rather than its obstacle set and
+  pass&nbsp;1 never finishes.</p>
+  <p>With the images off, the construction is byte-identical to the old one — the change is
+  inert until it bites.</p>
+
+  <div class="scroll"><table>
+    <thead><tr><th></th><th class="n">old 19/24 stamp</th><th class="n">this stamp</th></tr></thead>
+    <tbody>
+    <tr><td>nets complete (of 24)</td><td class="n">19</td><td class="n">18</td></tr>
+    <tr><td>constructed nets</td><td class="n">19</td><td class="n">18</td></tr>
+    <tr><td>copper in the stamp</td><td class="n">268 seg + 6 vias</td><td class="n">284 seg + 13 vias</td></tr>
+    <tr><td>DRC on the merged board</td><td class="n" style="color:var(--ok)">0</td><td class="n" style="color:var(--ok)">0</td></tr>
+    <tr><td><b>tilecheck conflicts</b></td><td class="n" style="color:var(--bad)">12</td><td class="n" style="color:var(--ok)"><b>0</b></td></tr>
+    <tr><td>DRC after cloning to 42 quads</td><td class="n" style="color:var(--bad)">1356+</td><td class="n" style="color:var(--warn)">669</td></tr>
+    <tr><td>…of those, in the interior</td><td class="n" style="color:var(--bad)">687</td><td class="n" style="color:var(--ok)"><b>0</b></td></tr>
+    </tbody></table></div>
+  <p>The two nets that first paid the price, <code>PWMA_90</code> and <code>PWMB_90</code>,
+  were won back the long way round: their old treks used the neighbouring stamp's space, so
+  they now ride the winding-layer fabric NORTH instead — through the inter-row band, across
+  the half-pitch row stagger, and down from the empty row-2/3 gutter into the bridge pads.
+  <code>PWMB_91</code> joined them with a vialess In7 run the whole way. What remains missing
+  is exactly the set for which every corridor has been measured shut: the register pocket's
+  west face, the channel mouths and the seam-junction zones sit one lattice period apart, so
+  one net's copper there is another's forbidden image — three nets' worth of geometry cannot
+  share a periodic column.</p>
+
+  <div class="note ok"><div class="h">Cloned to all 42 quads: the interior is clean</div>
+  <p>669 violations remain and <b>every one of them sits at the board's rim</b>. Not one lies
+  in the interior. They are the copper <code>quadclone</code> trims against the outline
+  (416 items), which leaves half-teeth and dangling stubs where there is no neighbour to
+  meet; the whole <code>tracks_crossing</code> class, 366 violations of stamps colliding with
+  stamps, is gone. Closing the rim is the margin-spine work, not stamp work.</p></div>
+
+  <figure><img src="tiled-elec.png" alt="the routing repeated across all 42 quads">
+    <figcaption><b>The stamp on all 42 quads, both electronics layers, bottom view.</b> Compare
+    the same view of the single stamp in section 01. The In12 lanes now run the full width of
+    every band, because each stamp's lanes end on the seam vias the next stamp starts
+    from.</figcaption></figure>
+  <div class="grid2">
+    <figure><img src="tiles-elec.png" alt="four quads meeting">
+      <figcaption><b>Four quads meeting.</b> The seam ladders are the joins: a lane leaves one
+      stamp at a via and the next stamp's copy of the same lane leaves that same via. Nothing
+      crosses a diagonal seam.</figcaption></figure>
+    <figure><img src="tiled-3d.png" alt="3D render of the tiled board" class="dark">
+      <figcaption><b>The tiled board.</b> Interior DRC-clean at 42 stamps; the rim is still
+      trimmed copper waiting for the margin spines.</figcaption></figure>
+  </div>
+</div></section>
+
+<section id="status"><div class="wrap">
+  <h2 data-n="09">Status — what is true, and what is not yet</h2>
+
+  <div class="note ok"><div class="h">Verified on this board</div>
+  <p>KiCad DRC against the generated JLCPCB rules: <b>0 errors</b>, identical to the same
+  board before the routing was merged. <code>coilcheck.mjs</code> green: no winding
+  self-intersections, no via barrel welded to its own turns, no touching via lands — the three
+  short classes that <em>no</em> design-rule check can report, because both halves of each
+  short are the coil's own net. The stamp's connectivity is 18/24 by geometric check, the
+  board's ratsnest falls from 2885 to 2819 connections when the stamp is merged — and
+  <code>tilecheck</code> reports <b>zero</b> conflicts against all eight neighbouring
+  copies of the stamp: for the first time the routed stamp and the tiling stamp are the same
+  board.</p></div>
+
+  <div class="note warn"><div class="h">Scope: 4 cells of 168</div>
+  <p>One quad is routed. The other 41 are placed, drilled and waiting. Nothing on this page
+  claims otherwise, and the full-board render above is the honest picture.</p></div>
+
+  <div class="note warn"><div class="h">Stamping it 42 times: interior clean, rim not</div>
+  <p>Cloning the stamp onto all 42 quads leaves <b>669 DRC violations, none of them
+  interior</b> — all at the rim, where <code>quadclone</code> trims copper against the
+  outline. What is still missing before this is a board: the six unrouted connections per
+  quad, the west/east margin spines, the band-to-band DATA links, and a rim that ends its
+  copper properly instead of having it cut off. See <a href="#tiling">§08</a>.</p></div>
+
+  <div class="note"><div class="h">Two reporting traps worth knowing</div>
+  <p><b>KiCad's DRC report caps each check.</b> The unconnected list stops at 499 items and
+  the clearance list at 499 violations, so those numbers are floors, not counts. The bare board
+  and the routed board both "report 499 unconnected" while genuinely differing by 67
+  connections. The true ratsnest count comes from the board's own connectivity graph via
+  <code>pcbnew</code>, which is what <code>summarise.py</code> prints.</p>
+  <p><b>The remaining warnings are the expected kind</b> and are also capped: dangling seam
+  vias with no copper on them yet, silkscreen over copper, and this machine's unconfigured
+  footprint library. None is a property of the copper.</p></div>
+
+  <h3>For comparison: what the autorouter can do with the whole board</h3>
+  <p>On an earlier revision of this board — before the periodic stamp existed — the whole
+  168-cell problem was handed to freerouting as one job. It grinds down to
+  <b>563 unrouted connections</b> from 1799 — and has to be watched, because it does not
+  converge the way a small tile does. Over eleven passes it went 1245, 1193, 1125, 1073, 1002,
+  933, 877, 835, 778, 771, 710: a tenth pass gaining 7 followed by an eleventh gaining 61. A
+  single slow pass on this board is not convergence. That run also handed back 17 segments
+  belonging to two nets at once — a dead short if merged as given — which is why the merge step
+  refuses shared copper and drops the net with less routing back to the ratsnest, where it is
+  visible.</p>
+</div></section>
+
+<section id="repro"><div class="wrap">
+  <h2 data-n="10">Reproduce</h2>
+  <p>Every artefact on this page is regenerated from the board file, and the board file is
+  regenerated from the preset. Nothing here is hand-placed.</p>
+  <pre><span class="c"># the stamp pipeline: generate, validate, construct, route, union, merge, DRC</span>
+<span class="c"># FABRIC_LAYERS names the winding layers the fabric may use, in FAB_A/B/C order</span>
+cd route
+<span class="c"># the stamp: 18/24 constructed, DRC-clean, tiles clean (six fabric layers)</span>
+OUT_KEY=fabtile2 SKIP_GEN=1 SR_SWEEP=1 SR_CONSTRUCT=1 PERIODIC_KEEPOUTS=1 MP_R2=20 \
+  FABRIC_LAYERS=In11.Cu,In10.Cu,In9.Cu,In8.Cu,In7.Cu,In6.Cu ./qlane.sh
+node quadclone.mjs fabtile2 fabtile2.union.ses      <span class="c"># -> fabtile2.full.kicad_pcb</span>
+
+<span class="c"># the page and every render in it</span>
+./report.sh fabtile2.merged.kicad_pcb
+python3 ../serve.py 8010     <span class="c"># then http://localhost:8010/route/report/</span></pre>
+  <div class="scroll"><table>
+    <thead><tr><th>Tool</th><th>Does</th></tr></thead><tbody>
+    <tr><td class="mono">quadgen.mjs</td><td>builds the full 12×14 board with 42 identical quads, seam vias and pinned part placements</td></tr>
+    <tr><td class="mono">coilcheck.mjs</td><td>hard gate: refuses any board whose windings self-intersect or weld to a via</td></tr>
+    <tr><td class="mono">lanegen.mjs</td><td>constructs the lanes, power combs, coil hops and PWM harness; verifies every segment numerically before emitting</td></tr>
+    <tr><td class="mono">quadroute.mjs</td><td>writes the routing <em>problem</em> — electronics layers only, coils as via keepouts, constructed copper as keepouts</td></tr>
+    <tr><td class="mono">tilecheck.mjs</td><td>the tiling gate: the stamp against eight shifted copies of itself, net-aware</td></tr>
+    <tr><td class="mono">checkses.mjs</td><td>the verdict: geometric connectivity against a pin map, never the router's own count</td></tr>
+    <tr><td class="mono">mkses.mjs</td><td>merges a session onto the real 14-layer board and refuses copper the router gave to two nets</td></tr>
+    <tr><td class="mono">report.sh</td><td>this page's renders, plus <a href="facts.json">facts.json</a>, <a href="numbers.json">numbers.json</a>, <a href="summary.txt">summary.txt</a></td></tr>
+    </tbody></table></div>
+</div></section>
+
+<footer><div class="wrap">
+  Rendered from <code>route/fabtile2.merged.kicad_pcb</code> · every number on this page is
+  measured from that file or recomputed by the simulator's own physics ·
+  <a href="facts.json">facts.json</a> · <a href="numbers.json">numbers.json</a>
+</div></footer>
+
+<div id="lb"><div id="lbbar"><b id="lbt"></b><span id="lbz"></span>
+  <span style="color:var(--ink3)">wheel to zoom · drag to pan · esc to close</span>
+  <span class="x" id="lbx">×</span></div><img id="lbi" alt=""></div>
+
+<script>
+/* ---------- layer stack viewer ---------- */
+const QUAD = [59.0, 53.0, 84.0, 73.0];          // the window every quad render uses
+const WHEEL = ['#d05a52','#4f8fd6','#e08b3a','#57ab6b','#9a6fd0','#d0568f',
+               '#3fa9a0','#c2a33a','#7f8fd0','#cf7050','#5fae86','#a86fb0'];
+fetch('layers.json').then(r => r.json()).then(layers => {
+  const list = document.getElementById('layerlist');
+  const stack = document.getElementById('stack');
+  const dim = document.getElementById('dim');
+  let sel = 'b';
+  let w = 0;
+  layers.forEach((L, i) => {
+    const col = L.winding ? WHEEL[w++ % WHEEL.length] : (L.slug === 'b' ? '#4f8fd6' : '#d05a52');
+    const img = document.createElement('img');
+    img.id = 'img_' + L.slug; img.src = 'lay-' + L.slug + '.png'; img.alt = L.name;
+    stack.appendChild(img);
+    const row = document.createElement('div');
+    row.className = 'lay';
+    row.innerHTML = `<input type="radio" name="sel" id="r_${L.slug}"${L.slug === sel ? ' checked' : ''}>` +
+      `<input type="checkbox" id="v_${L.slug}" checked>` +
+      `<span class="sw" style="background:${col}"></span>` +
+      `<label for="r_${L.slug}">${L.name}</label>` +
+      `<span class="role">${L.winding ? 'wind' : 'elec'}</span>`;
+    list.appendChild(row);
+    row.querySelector('#r_' + L.slug).onchange = () => { sel = L.slug; apply(); };
+    row.querySelector('#v_' + L.slug).onchange = apply;
+  });
+  function apply() {
+    for (const L of layers) {
+      const img = document.getElementById('img_' + L.slug);
+      const on = document.getElementById('v_' + L.slug).checked;
+      img.style.display = on ? '' : 'none';
+      img.style.opacity = L.slug === sel ? 1 : dim.value / 100;
+    }
+  }
+  dim.oninput = apply;
+  apply();
+}).catch(() => {
+  document.getElementById('viewer').innerHTML =
+    '<p style="color:var(--ink3)">layers.json did not load — serve this directory over ' +
+    'HTTP (<code>python3 serve.py</code>) rather than opening the file directly.</p>';
+});
+
+/* ---------- where the stamp sits on the whole board ---------- */
+/* FULL and QUAD are the windows report.sh actually rendered, so this rectangle
+   is the real one rather than an eyeballed overlay. Both renders are mirrored,
+   so board x runs right to left. */
+const FULL = [9.8, 9.9, 116.4, 116.1];
+// An overlay has to be positioned against the IMAGE. A <figure> box includes
+// its caption, so percentages measured against it drift by the caption height.
+function ovbox(fig) {
+  let b = fig.querySelector('.ovbox');
+  if (!b) {
+    const img = fig.querySelector('img');
+    b = document.createElement('div');
+    b.className = 'ovbox';
+    img.parentNode.insertBefore(b, img);
+    b.appendChild(img);
+  }
+  return b;
+}
+(() => {
+  const f = document.getElementById('fullov');
+  if (!f) return;
+  const pct = (a, b, v) => 100 * (v - a) / (b - a);
+  const m = document.createElement('div');
+  m.className = 'mark';
+  m.style.left = pct(FULL[2], FULL[0], QUAD[2]) + '%';
+  m.style.right = (100 - pct(FULL[2], FULL[0], QUAD[0])) + '%';
+  m.style.top = pct(FULL[1], FULL[3], QUAD[1]) + '%';
+  m.style.bottom = (100 - pct(FULL[1], FULL[3], QUAD[3])) + '%';
+  m.innerHTML = '<span>the routed stamp</span>';
+  ovbox(f).appendChild(m);
+})();
+
+/* ---------- part labels over the stamp render ---------- */
+/* The quad renders are MIRRORED (a bottom view), so board x runs right to left:
+   left = (x2 - boardX) / (x2 - x1). Getting this backwards is the same trap that
+   once made every pad in the routing problem come out mirrored. */
+fetch('facts.json').then(r => r.json()).then(f => {
+  const ov = ovbox(document.getElementById('ov'));
+  const [x1, y1, x2, y2] = QUAD;
+  const hot = new Set(['U78', 'U79', 'U90', 'U91', 'SR21', 'C78', 'C79', 'C90', 'C91']);
+  for (const p of f.parts.inWindow) {
+    const d = document.createElement('div');
+    d.className = 'lbl' + (hot.has(p.ref) ? ' hl' : '');
+    d.textContent = p.ref;
+    d.style.left = (100 * (x2 - p.x) / (x2 - x1)) + '%';
+    d.style.top = (100 * (p.y - y1) / (y2 - y1)) + '%';
+    ov.appendChild(d);
+  }
+  document.getElementById('ovtog').onchange = (e) => {
+    for (const l of ov.querySelectorAll('.lbl')) l.style.display = e.target.checked ? '' : 'none';
+  };
+}).catch(() => { const t = document.getElementById('ovtog'); if (t) t.parentElement.remove(); });
+
+/* ---------- lightbox: zoom and pan, because these renders reward it ---------- */
+(() => {
+  const lb = document.getElementById('lb'), im = document.getElementById('lbi');
+  const zt = document.getElementById('lbz'), tt = document.getElementById('lbt');
+  let s = 1, ox = 0, oy = 0, dragging = false, px = 0, py = 0;
+  const draw = () => {
+    im.style.transform = `translate(${ox}px,${oy}px) scale(${s})`;
+    zt.textContent = Math.round(s * 100) + '%';
+  };
+  const open = (src, cap) => {
+    im.src = src; tt.textContent = cap; lb.classList.add('on');
+    im.onload = () => {
+      s = Math.min(innerWidth / im.naturalWidth, innerHeight / im.naturalHeight) * 0.94;
+      ox = (innerWidth - im.naturalWidth * s) / 2;
+      oy = (innerHeight - im.naturalHeight * s) / 2;
+      draw();
+    };
+  };
+  const close = () => { lb.classList.remove('on'); im.src = ''; };
+  for (const img of document.querySelectorAll('figure img')) {
+    img.onclick = () => open(img.src, img.alt || '');
+  }
+  document.getElementById('lbx').onclick = close;
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  lb.onwheel = (e) => {
+    e.preventDefault();
+    const k = Math.exp(-e.deltaY * 0.0015);
+    ox = e.clientX - (e.clientX - ox) * k;
+    oy = e.clientY - (e.clientY - oy) * k;
+    s *= k; draw();
+  };
+  lb.onmousedown = (e) => {
+    if (e.target === document.getElementById('lbx')) return;
+    dragging = true; px = e.clientX; py = e.clientY; lb.classList.add('drag');
+  };
+  addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    ox += e.clientX - px; oy += e.clientY - py; px = e.clientX; py = e.clientY; draw();
+  });
+  addEventListener('mouseup', () => { dragging = false; lb.classList.remove('drag'); });
+})();
+</script>
+</body></html>

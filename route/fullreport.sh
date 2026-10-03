@@ -1,5 +1,5 @@
 #!/bin/bash
-# Renders + measured facts for report/full.html, straight from the board file.
+# Renders + measured facts for report/index.html, straight from the board file.
 #   ./fullreport.sh <key>      (expects <key>.kicad_pcb, <key>.bare.kicad_pcb,
 #                               <key>.assemble.json, <key>.drc.json from fullgate.sh,
 #                               <key>.routed.kicad_pcb + <key>.pour.json from pour.py)
