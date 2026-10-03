@@ -1,0 +1,5 @@
+DRC        : 0 errors, 0 warnings
+Unrouted   : 2819 connections  (report lists 499)
+              328  coil_*
+               86  PWMA_*
+               85  PWMB_*

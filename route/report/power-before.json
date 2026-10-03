@@ -1,0 +1,95 @@
+{
+ "board": "amzfull.kicad_pcb",
+ "assume": {
+  "t_outer_um": 35.0,
+  "t_inner_um": 35.0,
+  "t_plate_um": 20.0,
+  "board_mm": 1.84
+ },
+ "VBUS": {
+  "r_to_pin_mohm": {
+   "min": 97.3,
+   "median": 206.4,
+   "max": 390.7,
+   "worst": "U167"
+  },
+  "hover": {
+   "total_a": 0.62,
+   "worst_drop_mv": 89.9,
+   "mean_drop_mv": 75.5,
+   "loss_w": 0.047,
+   "worst_j_a_mm2": 177.1,
+   "worst_j_amps": 0.62,
+   "worst_j_what": "('track', 'In12.Cu', 0.1, 2283)",
+   "worst_j_at": [
+    103.97,
+    97.75,
+    "In12.Cu"
+   ],
+   "max_conductor_a": 0.62,
+   "max_conductor_what": "('barrel', 103.971, 98.878)"
+  },
+  "peak": {
+   "total_a": 3.0,
+   "worst_drop_mv": 435.1,
+   "mean_drop_mv": 365.2,
+   "loss_w": 1.096,
+   "worst_j_a_mm2": 857.1,
+   "worst_j_amps": 3.0,
+   "worst_j_what": "('track', 'In12.Cu', 0.1, 2283)",
+   "worst_j_at": [
+    103.97,
+    97.75,
+    "In12.Cu"
+   ],
+   "max_conductor_a": 3.0,
+   "max_conductor_what": "('barrel', 103.971, 98.878)"
+  }
+ },
+ "GND": {
+  "r_to_pin_mohm": {
+   "min": 26.5,
+   "median": 266.5,
+   "max": 437.8,
+   "worst": "U144"
+  },
+  "hover": {
+   "total_a": 0.62,
+   "worst_drop_mv": 128.9,
+   "mean_drop_mv": 107.8,
+   "loss_w": 0.067,
+   "worst_j_a_mm2": 177.1,
+   "worst_j_amps": 0.62,
+   "worst_j_what": "('track', 'B.Cu', 0.1, 2094)",
+   "worst_j_at": [
+    105.37,
+    100.9,
+    "B.Cu"
+   ],
+   "max_conductor_a": 0.62,
+   "max_conductor_what": "('track', 'B.Cu', 0.1, 2094)"
+  },
+  "peak": {
+   "total_a": 3.0,
+   "worst_drop_mv": 623.8,
+   "mean_drop_mv": 521.5,
+   "loss_w": 1.564,
+   "worst_j_a_mm2": 857.1,
+   "worst_j_amps": 3.0,
+   "worst_j_what": "('track', 'B.Cu', 0.1, 2095)",
+   "worst_j_at": [
+    105.12,
+    100.65,
+    "B.Cu"
+   ],
+   "max_conductor_a": 3.0,
+   "max_conductor_what": "('track', 'B.Cu', 0.1, 2095)"
+  }
+ },
+ "loop_mohm": {
+  "min": 194.8,
+  "median": 476.6,
+  "max": 786.2,
+  "worst": "U167"
+ }
+}

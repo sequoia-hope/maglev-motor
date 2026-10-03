@@ -299,6 +299,50 @@ if (process.env.CARRY_AS_KEEPOUT && carried.length) {
   ];
   carried = [];
   carriedVias = [];
+  // PERIODIC_KEEPOUTS=1: the stamp lands on all 42 quads, so the NEIGHBOURS'
+  // copies of this same copper are obstacles too. Blanket keepouts are the
+  // right shape here even though they are net-blind: the bus nets are already
+  // DONE and out of the router's netlist, and for a per-cell net its own image
+  // two columns over is a different net that it must not touch either.
+  // Without this the router can hand back a stage that is legal on this quad
+  // and shorts on every other one -- which is exactly what lanegen's A* had to
+  // be taught (see PERIODICITY there, and tilecheck.mjs for the verdict).
+  if (process.env.PERIODIC_KEEPOUTS) {
+    const qAt = (i, j) => quads.find((q) => q.band === Q.band + j && q.pos === Q.pos + i);
+    const vec = (i, j) => {
+      const n = qAt(i, j);
+      return n ? [coils[n.cells[0]][0] - coils[Q.cells[0]][0],
+        coils[n.cells[0]][1] - coils[Q.cells[0]][1]] : null;
+    };
+    const negv = (v) => v && [-v[0], -v[1]];
+    const LA = vec(1, 0) || negv(vec(-1, 0)), LB = vec(0, 1) || negv(vec(0, -1));
+    const base = copperKeepouts.slice();
+    // Clip to a margin around the quad. An image a cell and a half away cannot
+    // interact with anything the router may draw here, and handing freerouting
+    // 9x the keepouts unclipped costs it more than ten minutes on pass 1
+    // (measured, mp 12 never reached one): the far images grow its working
+    // area rather than its obstacle set.
+    const qx = Q.cells.map((c) => coils[c][0]), qy = Q.cells.map((c) => coils[c][1]);
+    const M = 1.5 * pitch;
+    const box = [Math.min(...qx) - M, Math.min(...qy) - M, Math.max(...qx) + M, Math.max(...qy) + M];
+    const near = (x, y) => x >= box[0] && x <= box[2] && y >= box[1] && y <= box[3];
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        if ((!i && !j) || !LA || !LB) continue;
+        const dx = i * LA[0] + j * LB[0], dy = i * LA[1] + j * LB[1];
+        for (const k of base) {
+          if (k.seg) {
+            if (!near(k.seg[0] + dx, k.seg[1] + dy) && !near(k.seg[2] + dx, k.seg[3] + dy)) continue;
+            copperKeepouts.push({ layer: k.layer, seg: [k.seg[0] + dx, k.seg[1] + dy, k.seg[2] + dx, k.seg[3] + dy, k.seg[4]] });
+          } else if (k.circle) {
+            if (!near(k.circle.x + dx, k.circle.y + dy)) continue;
+            copperKeepouts.push({ layer: k.layer, circle: { ...k.circle, x: k.circle.x + dx, y: k.circle.y + dy } });
+          }
+        }
+      }
+    }
+    console.log(`periodic: ${base.length} keepouts -> ${copperKeepouts.length} with the 8 neighbouring stamps (clipped)`);
+  }
   console.log(`carry converted to ${copperKeepouts.length} copper keepouts`);
 }
 

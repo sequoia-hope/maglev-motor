@@ -1,0 +1,272 @@
+{
+ "board": "fabtile2.merged.kicad_pcb",
+ "outline": {
+  "minX": 10,
+  "minY": 10.344965,
+  "maxX": 116.133333,
+  "maxY": 115.788369,
+  "segs": 102,
+  "width": 106.133,
+  "height": 105.443
+ },
+ "layers": {
+  "all": [
+   "F.Cu",
+   "In1.Cu",
+   "In2.Cu",
+   "In3.Cu",
+   "In4.Cu",
+   "In5.Cu",
+   "In6.Cu",
+   "In7.Cu",
+   "In8.Cu",
+   "In9.Cu",
+   "In10.Cu",
+   "In11.Cu",
+   "In12.Cu",
+   "B.Cu"
+  ],
+  "winding": [
+   "F.Cu",
+   "In1.Cu",
+   "In2.Cu",
+   "In3.Cu",
+   "In4.Cu",
+   "In5.Cu",
+   "In6.Cu",
+   "In7.Cu",
+   "In8.Cu",
+   "In9.Cu",
+   "In10.Cu",
+   "In11.Cu"
+  ],
+  "electronics": [
+   "In12.Cu",
+   "B.Cu"
+  ]
+ },
+ "vias": {
+  "total": 3453,
+  "byClass": {
+   "coil_#": 2184,
+   "VBUS": 154,
+   "GND": 154,
+   "VLOGIC": 154,
+   "SDA": 154,
+   "SCL": 154,
+   "SCLK": 154,
+   "RCLK": 154,
+   "DATA_#": 38,
+   "OE_N": 143,
+   "PWMB_#": 6,
+   "PWMA_#": 4
+  },
+  "size": [
+   0.5
+  ],
+  "drill": [
+   0.23
+  ]
+ },
+ "segsByLayer": {
+  "F.Cu": 25704,
+  "In1.Cu": 25032,
+  "In2.Cu": 24696,
+  "In3.Cu": 25368,
+  "In4.Cu": 25032,
+  "In5.Cu": 25368,
+  "In6.Cu": 25032,
+  "In7.Cu": 25385,
+  "In8.Cu": 25045,
+  "In9.Cu": 25368,
+  "In10.Cu": 25373,
+  "In11.Cu": 25371,
+  "In12.Cu": 81,
+  "B.Cu": 165
+ },
+ "parts": {
+  "counts": {
+   "U": {
+    "n": 168,
+    "footprint": "maglev:SOT23HB",
+    "value": "TC118S",
+    "lcsc": "C88308"
+   },
+   "C": {
+    "n": 168,
+    "footprint": "maglev:C0402",
+    "value": "100n",
+    "lcsc": "C1525"
+   },
+   "SR": {
+    "n": 42,
+    "footprint": "maglev:SR595Q",
+    "value": "74HC595BQ",
+    "lcsc": "C730243"
+   }
+  },
+  "inWindow": [
+   {
+    "ref": "U65",
+    "x": 62.343,
+    "y": 71.819,
+    "rot": 0
+   },
+   {
+    "ref": "U66",
+    "x": 70.81,
+    "y": 71.819,
+    "rot": 0
+   },
+   {
+    "ref": "U67",
+    "x": 79.276,
+    "y": 71.819,
+    "rot": 0
+   },
+   {
+    "ref": "U89",
+    "x": 62.343,
+    "y": 57.154,
+    "rot": 0
+   },
+   {
+    "ref": "C89",
+    "x": 63.043,
+    "y": 58.804,
+    "rot": 0
+   },
+   {
+    "ref": "U78",
+    "x": 66.576,
+    "y": 64.487,
+    "rot": 0
+   },
+   {
+    "ref": "C78",
+    "x": 67.276,
+    "y": 66.137,
+    "rot": 0
+   },
+   {
+    "ref": "U79",
+    "x": 75.043,
+    "y": 64.487,
+    "rot": 0
+   },
+   {
+    "ref": "C79",
+    "x": 75.743,
+    "y": 66.137,
+    "rot": 0
+   },
+   {
+    "ref": "U90",
+    "x": 70.81,
+    "y": 57.154,
+    "rot": 0
+   },
+   {
+    "ref": "C90",
+    "x": 71.51,
+    "y": 58.804,
+    "rot": 0
+   },
+   {
+    "ref": "U91",
+    "x": 79.276,
+    "y": 57.154,
+    "rot": 0
+   },
+   {
+    "ref": "C91",
+    "x": 79.976,
+    "y": 58.804,
+    "rot": 0
+   },
+   {
+    "ref": "SR21",
+    "x": 64.433,
+    "y": 67.983,
+    "rot": 0
+   },
+   {
+    "ref": "U80",
+    "x": 83.51,
+    "y": 64.487,
+    "rot": 0
+   },
+   {
+    "ref": "SR22",
+    "x": 81.367,
+    "y": 67.983,
+    "rot": 0
+   },
+   {
+    "ref": "SR27",
+    "x": 64.433,
+    "y": 53.318,
+    "rot": 0
+   },
+   {
+    "ref": "SR28",
+    "x": 81.367,
+    "y": 53.318,
+    "rot": 0
+   }
+  ],
+  "window": [
+   59,
+   53,
+   84,
+   73
+  ]
+ },
+ "coil": {
+  "w": 6.773333333333334,
+  "halfOut": 3.386666666666667,
+  "halfIn": 1.0706666666666673,
+  "pitch": 0.193,
+  "corner": 0.6424000000000004,
+  "sides": 6,
+  "phase": 0,
+  "turns": 12,
+  "layers": 12,
+  "physLayers": 14,
+  "trace": 0.103,
+  "edgeInset": 0.05,
+  "bayGate": 0.6632251157578452,
+  "thickness": 1.84
+ },
+ "stator": {
+  "coilType": "pcbhex",
+  "coilPitch": 0.008466666666666667,
+  "coilFill": 0.8,
+  "statorSize": 0.102,
+  "windingHeight": 0.0016,
+  "wireDiameter": 0.0005,
+  "pcbLayers": 14,
+  "pcbSpareLayers": 2,
+  "pcbTraceWidth": 0.000103,
+  "pcbTraceSpace": 0.00009,
+  "pcbEdgeInset": 0.00005,
+  "pcbRimMargin": 0.00015,
+  "pcbBayGate": 38,
+  "pcbCopperThickness": 0.000035,
+  "lockCoilPitch": false
+ },
+ "translator": {
+  "arrayType": "halbach2d",
+  "layout": "single",
+  "driveByMagnet": true,
+  "cubicMagnets": false,
+  "magnetSize": 0.00635,
+  "pitch": 0.0254,
+  "magnetThickness": 0.003175,
+  "Br": 1.45,
+  "segments": 4,
+  "platenSize": 0.04445,
+  "platenMass": 0,
+  "maxOrder": 3
+ }
+}

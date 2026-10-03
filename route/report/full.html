@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>amzhex — the whole board, routed</title>
+<style>
+:root{
+  --bg:#0f1014; --bg2:#16181e; --bg3:#1d2028; --line:#2a2e38;
+  --ink:#dfe3ea; --ink2:#98a0af; --ink3:#6b7383;
+  --ok:#5fbf7a; --warn:#e0a955; --bad:#e0574f; --acc:#c9a227;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth; scroll-padding-top:64px}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.62 -apple-system,"Segoe UI",Inter,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+code,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--bg3);padding:1px 5px;border-radius:4px;font-size:.88em;color:#cfd6e2}
+a{color:#7fb2f0;text-decoration:none} a:hover{text-decoration:underline}
+h1,h2,h3{line-height:1.25;margin:0}
+.wrap{max-width:1180px;margin:0 auto;padding:0 22px}
+nav{position:sticky;top:0;z-index:40;background:rgba(15,16,20,.93);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:6px;height:52px;overflow-x:auto}
+nav b{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--acc);margin-right:14px;white-space:nowrap}
+nav a{font-size:13px;color:var(--ink2);padding:5px 9px;border-radius:6px;white-space:nowrap}
+nav a:hover{background:var(--bg3);color:var(--ink);text-decoration:none}
+header{padding:52px 0 28px;border-bottom:1px solid var(--line)}
+header h1{font-size:clamp(26px,4vw,40px);letter-spacing:-.02em}
+header .sub{color:var(--ink2);font-size:17px;margin-top:10px;max-width:74ch}
+.tags{display:flex;flex-wrap:wrap;gap:7px;margin-top:18px}
+.tag{font-size:12px;padding:3px 10px;border-radius:20px;background:var(--bg3);color:var(--ink2);border:1px solid var(--line)}
+.tag.ok{color:var(--ok);border-color:#2c4a35} .tag.warn{color:var(--warn);border-color:#4a3d22} .tag.bad{color:var(--bad);border-color:#4a2422}
+section{padding:46px 0;border-bottom:1px solid var(--line)}
+section>.wrap>h2{font-size:24px;letter-spacing:-.01em}
+section>.wrap>h2::before{content:attr(data-n);color:var(--acc);font:600 13px/1 ui-monospace,monospace;display:block;margin-bottom:8px;letter-spacing:.12em}
+h3{font-size:16px;margin:30px 0 10px;color:var(--ink)}
+p{margin:12px 0;max-width:78ch;color:#c6ccd6}
+p.lead{font-size:16.5px;color:var(--ink)}
+ul{max-width:78ch;color:#c6ccd6;padding-left:20px} li{margin:6px 0}
+figure{margin:22px 0}
+figure img{display:block;width:100%;height:auto;border-radius:9px;background:#fff;border:1px solid var(--line)}
+figcaption{color:var(--ink3);font-size:13px;margin-top:9px;max-width:82ch}
+table{border-collapse:collapse;margin:18px 0;font-size:14px;width:100%;max-width:960px}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--bg3);color:var(--ink2);font-weight:600} td{color:#c6ccd6}
+pre{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:14px 16px;overflow-x:auto;font-size:13px;line-height:1.55;color:#cfd6e2;max-width:960px}
+.good{color:var(--ok)} .risk{color:var(--warn)} .dead{color:var(--bad)}
+.grid{display:inline-grid;grid-template-columns:auto repeat(6,58px);gap:3px;font:12px ui-monospace,monospace;margin:10px 26px 10px 0;vertical-align:top}
+.grid div{padding:6px 4px;text-align:center;border-radius:4px;background:var(--bg3)}
+.grid .h{background:none;color:var(--ink3)}
+.grid .full{background:#1f3a29;color:#9be0b0} .grid .part{background:#3d3320;color:#e7c78a}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:18px} @media(max-width:860px){.two{grid-template-columns:1fr}}
+footer{padding:38px 0 60px;color:var(--ink3);font-size:13px}
+</style></head><body>
+
+<nav><div class="wrap"><b>amzhex · full board</b>
+  <a href="../../" style="color:var(--acc)">&#8598; Simulator</a>
+  <a href="#verdict">Verdict</a><a href="#bug">The patterning bug</a><a href="#method">Hybrid method</a>
+  <a href="#rim">Rim</a><a href="#chain">Chain &amp; header</a><a href="#power">Power</a><a href="#open">Not done</a><a href="#repro">Reproduce</a>
+  <a href="index.html">Stamp page (Aug) &#8599;</a>
+</div></nav>
+
+<header><div class="wrap">
+  <h1>The whole 168-coil board, routed</h1>
+  <p class="sub">The 12 &times; 14 hex coil board with a driver per coil: every register, bridge, coil lead,
+  bus, the shift chain end to end and the power rails, on the real 14-layer board. Tiled where the board really is
+  periodic, routed in place where it is not.</p>
+  <div class="tags" id="tags"><span class="tag">loading full.json…</span></div>
+</div></header>
+
+<section id="verdict"><div class="wrap">
+  <h2 data-n="01">Verdict, measured on the board file</h2>
+  <p class="lead">Every number on this page is read back from <code id="bname">the board</code> by
+  <code>fullreport.sh</code> — KiCad's own DRC, pcbnew's own connectivity, and two checkers for the
+  shorts no DRC can see. Nothing here is typed in.</p>
+  <table id="gates"><tr><th>Gate</th><th>Result</th><th>What it proves</th></tr></table>
+  <figure><img src="full2-board.png" alt="whole board, electronics layers">
+  <figcaption>The whole board, B.Cu (blue) and In12 (red) only; the twelve winding layers are not drawn.
+  Black rings are the bus ladders and routing vias, grey rings are the coils' own crossover vias.</figcaption></figure>
+</div></section>
+
+<section id="bug"><div class="wrap">
+  <h2 data-n="02">Why the old stamp did not pattern</h2>
+  <p class="lead">The August stamp was cloned onto all 42 quads and the clone was called clean. It was
+  clean only inside a 6&nbsp;mm frame the gate was told to ignore.</p>
+  <p>Measured with pcbnew, quad by quad: only the <b>20 interior quads</b> take the stamp whole. Every one of the
+  22 rim quads breaks, for three different reasons:</p>
+  <ul>
+    <li><b>South band</b> — stamp copper that leaves its own quad (it borrows the neighbour's gutter) was cut off at the outline, leaving stubs.</li>
+    <li><b>North band and east column</b> — the generator rotates and nudges the rim cells' bridge and decoupling cap to keep their pads off the cut. The stamp's copper then lands where the pads are not.</li>
+    <li><b>West and east columns</b> — there is no bus ladder at the board edge, so the register's drops to the west seam go nowhere.</li>
+  </ul>
+  <p>The stamp itself was also six nets short (18 of 24). Those six had been "proven" unroutable, but every
+  proof froze the other eighteen nets' copper in the order it was laid.</p>
+  <div id="grids"></div>
+  <p class="mono" style="color:var(--ink3);font-size:12.5px">rows = band 6 (north) … 0 (south), columns = quad position west … east</p>
+</div></section>
+
+<section id="method"><div class="wrap">
+  <h2 data-n="03">The hybrid: tile what tiles, route the rest in place</h2>
+  <h3>1 · The stamp is routed on a torus</h3>
+  <p>One lattice period of the bare board (16.93 &times; 14.66&nbsp;mm) is wrapped onto a torus and all of the quad's
+  nets are negotiated <i>at once</i> on all 14 copper layers, on a 0.025&nbsp;mm grid
+  (<code>gridrouter.mjs</code>, PathFinder-style rip-up and re-route). A net's copper and every periodic image of
+  every other net are the same grid cells, so "does it tile" is not a check afterwards — it is the shape of the
+  search space. All 24 nets route, including the six "dead" ones.</p>
+  <p>Two things are added to the stamp so the board needs no margin spines: each bus net's two lane rows are
+  linked north–south inside the stamp (16 links, riding the winding-layer gutters from ladder barrel to ladder
+  barrel), and two straight east–west lines of In12 are <b>reserved</b> — kept empty — for the shift chain's returns.</p>
+  <figure><img src="full2-stamp.png" alt="the stamp">
+  <figcaption>The centre quad on the finished board, every layer. Red horizontals are the fixed In12 bus lanes;
+  the coloured verticals in the seams are the north–south bus links on winding layers.</figcaption></figure>
+  <h3>2 · Pattern, but only what is legal and anchored there</h3>
+  <p><code>assemble.mjs</code> works on one board-wide grid that the stamp's grid is a period of. A stamp path is
+  laid on a quad only if every node of it is legal against that quad's <i>real</i> copper and outline, and both of
+  its ends sit on copper that stays. A path that fails is dropped whole, with everything that hung off it —
+  never trimmed into a stub.</p>
+  <h3>3 · Patch each rim quad in a window of the real board</h3>
+  <p>Each quad is then asked what its pins still need — register&nbsp;→ bridge, bridge&nbsp;→ coil terminal,
+  pad&nbsp;→ bus, lane row&nbsp;→ lane row — and exactly that is negotiated in a window around it, against
+  everything already laid. If a quad will not settle, its own patterned paths are ripped up and the whole quad is
+  routed from scratch, together with whatever that opens in finished neighbours.</p>
+</div></section>
+
+<section id="rim"><div class="wrap">
+  <h2 data-n="04">The rim</h2>
+  <div class="two">
+  <figure><img src="full2-nw.png" alt="north-west corner">
+  <figcaption>North-west corner: no west ladder and nudged north cells at once. The hardest quad — routed from scratch.</figcaption></figure>
+  <figure><img src="full2-sw.png" alt="south-west corner">
+  <figcaption>South-west corner, where the chain starts: DATA_0 arrives on its reserved lane from the header.</figcaption></figure>
+  </div>
+</div></section>
+
+<section id="chain"><div class="wrap">
+  <h2 data-n="05">Shift chain, header and dead-man</h2>
+  <p>The 42 registers chain west → east in every band, so each band's last register has to reach the next
+  band's first: 95&nbsp;mm back across the board. Through finished stamps there is no such path on any layer
+  (measured: the router returns "no path"). The stamp therefore reserves two clean In12 lines in the gap between
+  bands; the assembler lays copper on them only where a return runs — one lane per gap for the band-to-band return,
+  and the second lane of the gaps either side of the header for the chain's two ends (DATA_0 out to the first
+  register, DATA_42 back from the last). DATA_42's trunk comes down the east edge from the north-east corner onto
+  its lane before the rim is patched; the last hop from each lane to its pin is negotiated with the rest of that quad.</p>
+  <p>The 2 &times; 5 header and the /OE dead-man (two resistors, a capacitor, a FET) are put back on the bare board
+  <i>before</i> routing. The board is dense: only four spots hold the header's pads at ≥ 0.2&nbsp;mm from every
+  barrel, and each was route-tested: one walls a bridge pad in, the interior one leaves the header's DATA pins no
+  path to their lanes, the east-rim one routes — after its quad is ripped up and routed from scratch.</p>
+  <figure><img src="full2-header.png" alt="header region">
+  <figcaption>East edge, bands 0–1: the header (the 2 &times; 5 pad block) and the dead-man parts among rim cells whose
+  bridges were rotated by the generator.</figcaption></figure>
+  <table id="nets"><tr><th>Board-level net</th><th>Result</th></tr></table>
+</div></section>
+
+<section id="power"><div class="wrap">
+  <h2 data-n="06">Power: rails in the gutters</h2>
+  <p class="lead">As first routed, every bus lane on this board was a 0.1&nbsp;mm track, VBUS and GND included, and the
+  header's GND pin reached the mesh through 6&nbsp;mm of that track and another bridge's pad. Connected, not adequate.
+  No wider lane fits — but the <b>gutter</b> does: 1.7&nbsp;mm between neighbouring windings on all twelve winding
+  layers, holding nothing but barrels.</p>
+  <table id="pwr"><tr><th>Solved on the board file (<code>powercheck.py</code>)</th><th>Tracks only (before)</th><th>As built</th></tr></table>
+  <p><code>powercheck.py</code> turns every VBUS and GND track, barrel, pad and pour cell into a resistor network
+  (1&nbsp;oz copper, 20&nbsp;&micro;m barrel plating), feeds it at the header's two power pins and loads all 168 bridges.
+  <i>Hover</i> is the simulator's worst-case hover power on the 9&nbsp;V bus, 0.62&nbsp;A; the 3&nbsp;A case is more than a
+  1.27&nbsp;mm header pin is rated to carry.</p>
+  <h3>1 · Pour the two rails into the gutters, on all fourteen layers</h3>
+  <p><code>pour.py</code> pours GND on seven layers and VBUS on the other seven, alternating, so the two rails lie on
+  top of each other. KiCad's own zone filler does it, against the board's own rule files, at 0.12&nbsp;mm from foreign
+  copper (the fab minimum is 0.09). The tracks stay; the pour is copper in parallel. Every power barrel standing in a
+  gutter ties its net's layers together. Nothing is poured over a coil face.</p>
+  <figure><img src="power-rails.png" alt="rails on one winding layer">
+  <figcaption>The centre of the board on In9, a VBUS layer: the windings (grey), the pour in the gutters (orange), the
+  slits that cut it into a tree, and barrels. Blue pads are on the far side.</figcaption></figure>
+  <h3>2 · Cut it into a tree, so no coil is encircled</h3>
+  <p>A poured honeycomb is a closed copper ring round every coil on every layer: a shorted turn coupled to a 144-turn
+  winding that is switched at PWM frequency. Estimated from the geometry (ring ≈ 3&nbsp;m&Omega; and 16&nbsp;nH per net,
+  coupling ≈ 0.3), the rings would turn roughly 0.2 to 2&nbsp;W of PWM ripple into heat at hover, depending on the PWM
+  frequency — against 5.6&nbsp;W of hover power, and against the few <i>milli</i>watts the whole rail network dissipates.
+  So the pour is cut. It is first poured whole and solved, the current through each of the <span id="nflats">555</span>
+  gutter flats is read off, and the rails are the <b>maximum spanning tree</b> of that — the arteries the honeycomb was
+  already using. Every flat outside the tree gets one 0.2&nbsp;mm slit: one per coil, the fewest that leaves no ring.
+  Which flats conduct is decided by the routed board (bus ladders, crossover farms, links riding winding layers), so
+  it is measured, not assumed. The slits are rule areas in the board file, so a refill in KiCad reproduces the tree.</p>
+  <p><code>ringcheck.py</code> is the gate: all poured copper, every layer and both nets, projected onto one plane;
+  the copper-free plane flooded in from outside the board; every coil's winding must be reached.
+  <span class="mono" id="ringline"></span></p>
+  <div class="two">
+  <figure><img src="power-before.VBUS.png" alt="VBUS drop before">
+  <figcaption>VBUS drop at hover, tracks only. Every dot is a node of the network; blue is the header's potential,
+  red is <span class="mapmv">130</span>&nbsp;mV below it.</figcaption></figure>
+  <figure><img src="power-after.VBUS.png" alt="VBUS drop as built">
+  <figcaption>VBUS as built, same colour scale. The shape is the tree.</figcaption></figure>
+  <figure><img src="power-before.GND.png" alt="GND drop before">
+  <figcaption>GND, tracks only.</figcaption></figure>
+  <figure><img src="power-after.GND.png" alt="GND drop as built">
+  <figcaption>GND as built.</figcaption></figure>
+  </div>
+  <h3>3 · Feeding it: the open item</h3>
+  <p>The header's pads sit over a coil face, so the only way into the board is a barrel in the nearest gutter. The
+  router gave the VBUS pin two barrels 0.1&nbsp;mm away — a B.Cu pour of its own now joins pin and barrels with all the
+  copper that fits — and gave the GND pin one barrel 6&nbsp;mm away, through a 0.1&nbsp;mm track and another bridge's
+  pad. That track is still GND's whole feed: 177&nbsp;A/mm² at hover, the one red line in the table.</p>
+  <p><code>service.mjs</code> can place each power pin's own barrels and 0.5&nbsp;mm copper tabs <i>before</i> routing,
+  at the nearest sites legal through all fourteen layers (<code>FEED_VIAS</code>). Electrically that is the fix —
+  every trial measured 12–20&nbsp;mV at hover and a loop under 150&nbsp;mΩ — but the header quad does not survive it:
+  six full route tests (two barrels per pin, one, one on GND only, at either site, and with GND moved to the pin facing
+  VBUS so both feed from the gutter south of the header) left 2 to 9 connections open every time. A barrel in the seam
+  west of the header takes one of the crossing slots between ladder barrels that the register's PWM tracks need, and
+  the quad was already at the edge. So the barrels are off by default, and the feed wants a different header spot or
+  pinout — a design decision.</p>
+  <figure><img src="power-feed.png" alt="header feed">
+  <figcaption>The header on B.Cu as built: the VBUS pin (JSPINE.1) on its pour and barrels; the GND pin (JSPINE.2) on
+  its patch, which still leaves by one track.</figcaption></figure>
+  <h3>What limits it now</h3>
+  <ul>
+    <li><b>The connector.</b> One 1.27&nbsp;mm header pin per rail. Pins of that pitch are typically rated around 1&nbsp;A
+    (check the part); hover is 0.62&nbsp;A. Lifting at the 0.9&nbsp;A/coil ceiling is about 8&nbsp;A on the bus, which
+    this header cannot carry whatever the board does.</li>
+    <li><b>Loops through thin tracks remain.</b> The 0.1&nbsp;mm lanes still join neighbouring rails, so there are closed
+    loops round coils — through tens of milliohms of track, as there were before the pour. Estimated at a few
+    milliwatts each; not gated.</li>
+    <li><b>The shorted-turn figure is an estimate</b>, not a measurement: nothing here simulates the PWM field.</li>
+  </ul>
+</div></section>
+
+<section id="open"><div class="wrap">
+  <h2 data-n="07">What is not done</h2>
+  <ul>
+    <li class="risk"><b>GND's feed is one 0.1&nbsp;mm track</b> from the header pin to the first barrel — good for about
+    hover (0.62&nbsp;A, ~20&nbsp;K rise), not for more, and about what the 1.27&nbsp;mm header pin is rated for anyway.
+    Pre-placed feed barrels fix it electrically but break the header quad's routing (§06). The rails themselves are
+    done: 178&nbsp;mΩ worst loop, 29&nbsp;mV at hover, no coil encircled.</li>
+    <li><b>Reserved I2C lanes carry nothing.</b> SDA/SCL are laid and linked as a mesh and reach the header, but the board
+    has no sensors on it yet.</li>
+    <li><b>Ladder barrels flagged "via dangling".</b> The generator places a full 9-via ladder at every seam; where a
+    lane is the only thing on a barrel KiCad warns. Not routing copper.</li>
+    <li><b>No fab review.</b> DRC is against JLCPCB's published 12-layer rules as encoded in <code>src/kicad.js</code>; nobody has
+    sent this to a fab's DFM.</li>
+  </ul>
+</div></section>
+
+<section id="repro"><div class="wrap">
+  <h2 data-n="08">Reproduce</h2>
+<pre>cd route
+./full.sh                       # stamp (torus) → service parts + power feed → pattern + patch → pour → whole-board gates
+./fullreport.sh amzfull         # this page's renders and full.json</pre>
+  <table>
+    <tr><th>File</th><th>Role</th></tr>
+    <tr><td class="mono">gridrouter.mjs</td><td>the negotiated grid router: exact static clearance at the nodes, occupancy discs, torus or window</td></tr>
+    <tr><td class="mono">stamp2.mjs</td><td>the quad stamp as a torus problem; bus links (MESH), reserved lanes (RESERVE)</td></tr>
+    <tr><td class="mono">service.mjs</td><td>header + dead-man back on the bare board; feed barrels and tabs at the header's power pins</td></tr>
+    <tr><td class="mono">assemble.mjs</td><td>pattern → chain ends → patch rim quads → board-level nets → board file</td></tr>
+    <tr><td class="mono">t2gate.sh · fullgate.sh</td><td>stamp gates · whole-board gates (no rim exemption; hole-to-hole counted)</td></tr>
+    <tr><td class="mono">coilleads.py · openlist.py</td><td>bridge output ↔ coil terminal check · what is still open, by net</td></tr>
+    <tr><td class="mono">pour.py</td><td>VBUS/GND poured into the gutters on 14 layers; honeycomb solved, cut to its maximum spanning tree</td></tr>
+    <tr><td class="mono">ringcheck.py · powercheck.py</td><td>no coil encircled by poured copper · the power copper as a resistor network (loop resistance, drop, current density)</td></tr>
+    <tr><td class="mono">render2.py</td><td>draws a board window straight from the file</td></tr>
+  </table>
+</div></section>
+
+<footer><div class="wrap">Generated numbers: <a href="full.json">full.json</a>. The August stamp page is kept as
+history: <a href="index.html">index.html</a>, <a href="hand.html">hand.html</a>.</div></footer>
+
+<script>
+fetch('full.json').then((r) => r.json()).then((d) => {
+  const el = (id) => document.getElementById(id);
+  const errs = Object.keys(d.drc_errors).length;
+  el('bname').textContent = d.board;
+  const tag = (cls, txt) => `<span class="tag ${cls}">${txt}</span>`;
+  el('tags').innerHTML = [
+    tag(errs ? 'bad' : 'ok', errs ? `DRC: ${JSON.stringify(d.drc_errors)}` : 'KiCad DRC: 0 errors, whole board'),
+    tag(d.unconnected ? 'warn' : 'ok', `${d.unconnected} unconnected`),
+    tag('ok', d.coil_leads.replace('coil leads: ', '').split(' (')[0]),
+    tag('', `${d.routed_segments} routed segments · ${d.routed_vias} routing vias`),
+    tag(d.power.limits && d.power.limits.failed.length ? 'bad' : 'ok', `supply loop ≤ ${d.power.loop_mohm.max} mΩ per bridge (was ${d.power_before.loop_mohm.max})`),
+    tag(/no coil/.test(d.ringcheck) ? 'ok' : 'bad', /no coil/.test(d.ringcheck) ? 'no coil encircled by pour' : 'COIL ENCIRCLED'),
+  ].join('');
+  const row = (a, b, c) => `<tr><td>${a}</td><td>${b}</td><td>${c}</td></tr>`;
+  el('gates').insertAdjacentHTML('beforeend', [
+    row('KiCad DRC, whole board, no rim exemption', errs ? `<span class="dead">${JSON.stringify(d.drc_errors)}</span>` : '<span class="good">0 errors</span> (hole-to-hole counted as an error)', 'every clearance, edge, hole and short rule of the fab rule file, on all 14 layers'),
+    row('pcbnew true ratsnest', d.unconnected ? `<span class="risk">${d.unconnected} unconnected</span>` : '<span class="good">0 unconnected</span>', 'every net of the netlist is one piece of copper'),
+    row('coilcheck', `<span class="${d.coilcheck.startsWith('coilcheck OK') ? 'good' : 'dead'}">${d.coilcheck.split(';')[0]}</span>`, 'no routed copper touches a winding or a mid-winding via (same net — invisible to DRC)'),
+    row('coil leads', d.coil_leads.includes('168/168') ? `<span class="good">${d.coil_leads.split(' (')[0].replace('coil leads: ', '')}</span>` : `<span class="dead">${d.coil_leads}</span>`, 'each bridge output reaches its own coil terminal and nothing else — no coil is bypassed'),
+    row('stamp on its 8 periodic images (tilecheck)', `<span class="${d.tilecheck === 'TILES CLEAN' ? 'good' : 'risk'}">${d.tilecheck}</span>`, 'the stamp cannot collide with its own neighbours'),
+  ].join(''));
+  el('gates').insertAdjacentHTML('beforeend', [
+    row('ringcheck', /no coil/.test(d.ringcheck) ? '<span class="good">no coil encircled</span>' : `<span class="dead">${d.ringcheck}</span>`, 'the poured power rails form no closed ring round any coil (a shorted turn)'),
+    row('powercheck', d.power.limits.failed.length ? `<span class="dead">${d.power.limits.failed.join('; ')}</span>` : `<span class="good">loop ≤ ${d.power.loop_mohm.max} mΩ, hover J ≤ ${Math.max(d.power.VBUS.hover.worst_j_a_mm2, d.power.GND.hover.worst_j_a_mm2)} A/mm²</span>`, `limits: ${d.power.limits.loop_mohm} mΩ supply loop per bridge, ${d.power.limits.j_hover} A/mm² in any power conductor at hover (the windings' own hover density)`),
+  ].join(''));
+  {
+    const P = d.power, Q = d.power_before, both = (f) => `<td>${f(Q)}</td><td>${f(P)}</td>`;
+    const what = (h) => { const m = /'(track|zone|barrel)'(?:, '([^']+)')?/.exec(h.worst_j_what) || []; return m[1] === 'track' ? `a 0.1 mm track on ${m[2]}` : m[1] === 'zone' ? `pour on ${m[2]}` : 'a barrel'; };
+    const worst = (p, k) => (p.VBUS[k].worst_j_a_mm2 >= p.GND[k].worst_j_a_mm2 ? p.VBUS[k] : p.GND[k]);
+    el('pwr').insertAdjacentHTML('beforeend', [
+      `<tr><td>Supply loop seen by a bridge, VBUS + GND path (min / median / max), in series with its 10 Ω coil</td>${both((p) => `${p.loop_mohm.min} / ${p.loop_mohm.median} / <b>${p.loop_mohm.max} mΩ</b>`)}</tr>`,
+      `<tr><td>Rail lost at the worst bridge, hover (0.62 A, every bridge an equal share)</td>${both((p) => `<b>${(p.VBUS.hover.worst_drop_mv + p.GND.hover.worst_drop_mv).toFixed(0)} mV</b> of 9000`)}</tr>`,
+      `<tr><td>Same at 3 A</td>${both((p) => `${(p.VBUS.peak.worst_drop_mv + p.GND.peak.worst_drop_mv).toFixed(0)} mV`)}</tr>`,
+      `<tr><td>Hardest-worked conductor at hover (the windings run 70 A/mm² at hover)</td>${both((p) => { const h = worst(p, 'hover'); return `<b>${h.worst_j_a_mm2} A/mm²</b>: ${h.worst_j_amps} A in ${what(h)}`; })}</tr>`,
+      `<tr><td>Same at 3 A</td>${both((p) => { const h = worst(p, 'peak'); return `${h.worst_j_a_mm2} A/mm²: ${h.worst_j_amps} A in ${what(h)}`; })}</tr>`,
+      `<tr><td>Dissipated in the power copper at hover</td>${both((p) => `${((p.VBUS.hover.loss_w + p.GND.hover.loss_w) * 1000).toFixed(0)} mW`)}</tr>`,
+      `<tr><td>Poured copper</td><td>none</td><td>${d.pour.area_mm2.VBUS} mm² VBUS + ${d.pour.area_mm2.GND} mm² GND on 7 layers each; ${d.pour.slits} slits over ${d.pour.flats} flats</td></tr>`,
+    ].join(''));
+    el('nflats').textContent = d.pour.flats;
+    el('ringline').textContent = d.ringcheck;
+    el('feedlist').innerHTML = d.feed_barrels.map((l) => `<li class="mono" style="font-size:13px">${l}</li>`).join('');
+    document.querySelectorAll('.mapmv').forEach((e) => { e.textContent = P.VBUS.map_full_scale_mv || 130; });
+  }
+  const grid = (title, vals, cls) => {
+    let h = `<div class="grid"><div class="h" style="grid-column:1/-1;text-align:left;color:var(--ink2)">${title}</div>`;
+    for (let band = 6; band >= 0; band--) {
+      h += `<div class="h">b${band}</div>`;
+      for (let pos = 0; pos < 6; pos++) { const v = vals[band * 6 + pos]; h += `<div class="${cls(v)}">${v}</div>`; }
+    }
+    return h + '</div>';
+  };
+  el('grids').innerHTML =
+    grid(`stamp paths that pattern legally (of ${d.stamp_paths})`, d.kept_grid, (v) => (v === d.stamp_paths ? 'full' : 'part')) +
+    grid('connections left to route in place', d.need_grid, (v) => (v === 0 ? 'full' : 'part'));
+  el('nets').insertAdjacentHTML('beforeend', d.board_nets.map((n) => `<tr><td class="mono">${n.net}</td><td>${n.ok ? '<span class="good">routed</span>' : '<span class="dead">open</span>'}</td></tr>`).join('')
+    + `<tr><td>rim quads patched</td><td>${d.patched_ok} of ${d.patched_quads} complete (${d.patch_jobs} connections)</td></tr>`);
+});
+</script>
+</body></html>

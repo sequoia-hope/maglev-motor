@@ -1,0 +1,132 @@
+{
+ "board": "hand.merged.kicad_pcb",
+ "window_mm": [
+  59.0,
+  53.0,
+  84.0,
+  73.0
+ ],
+ "tile_refs": [
+  "C78",
+  "C79",
+  "C90",
+  "C91",
+  "SR21",
+  "U78",
+  "U79",
+  "U90",
+  "U91"
+ ],
+ "board_unconnected": 2819,
+ "tile_airwires": 6,
+ "nets": [
+  {
+   "net": "PWMA_78",
+   "fragments": 2,
+   "ladders_merged": 0,
+   "airwires": [
+    {
+     "len_mm": 7.009,
+     "from": [
+      67.676,
+      63.537
+     ],
+     "to": [
+      62.596,
+      68.365
+     ]
+    }
+   ]
+  },
+  {
+   "net": "PWMA_79",
+   "fragments": 2,
+   "ladders_merged": 0,
+   "airwires": [
+    {
+     "len_mm": 12.748,
+     "from": [
+      76.143,
+      63.537
+     ],
+     "to": [
+      65.021,
+      69.765
+     ]
+    }
+   ]
+  },
+  {
+   "net": "PWMA_91",
+   "fragments": 2,
+   "ladders_merged": 0,
+   "airwires": [
+    {
+     "len_mm": 18.601,
+     "from": [
+      80.376,
+      56.205
+     ],
+     "to": [
+      66.021,
+      68.033
+     ]
+    }
+   ]
+  },
+  {
+   "net": "PWMB_79",
+   "fragments": 2,
+   "ladders_merged": 0,
+   "airwires": [
+    {
+     "len_mm": 11.549,
+     "from": [
+      76.143,
+      65.437
+     ],
+     "to": [
+      65.271,
+      69.332
+     ]
+    }
+   ]
+  },
+  {
+   "net": "PWMB_90",
+   "fragments": 2,
+   "ladders_merged": 0,
+   "airwires": [
+    {
+     "len_mm": 12.044,
+     "from": [
+      71.91,
+      58.105
+     ],
+     "to": [
+      65.771,
+      68.466
+     ]
+    }
+   ]
+  },
+  {
+   "net": "VLOGIC",
+   "fragments": 2,
+   "ladders_merged": 1,
+   "airwires": [
+    {
+     "len_mm": 2.883,
+     "from": [
+      62.933,
+      65.976
+     ],
+     "to": [
+      62.346,
+      68.798
+     ]
+    }
+   ]
+  }
+ ]
+}

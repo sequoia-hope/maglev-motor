@@ -395,6 +395,7 @@ const GRID = 0.025;
 const gx0 = c78x - 6.5, gy0 = c78y - 7.332 - 6.5;   // covers both rows + margin
 const gw = Math.ceil((2 * 8.467 + 13) / GRID), gh = Math.ceil((7.332 + 13) / GRID);
 const blocked = new Uint8Array(gw * gh);         // 1 = hard obstacle
+const staticPadRunsInit = [];                    // pad-layer runs, kept for imaging
 const gi = (ix, iy) => iy * gw + ix;
 const toIx = (x) => Math.round((x - gx0) / GRID), toIy = (y) => Math.round((y - gy0) / GRID);
 const blockDisc2 = (x, y, r, buf, val) => {
@@ -531,7 +532,12 @@ for (const v of board.vias) blockDisc(v.x, v.y, v.size / 2 + CLR + W / 2 + SAFE,
 for (const v of cvias) blockDisc(v.x, v.y, 0.25 + CLR + W / 2 + SAFE, blocked);
 for (const s of runs) {
   if (s.layer !== PAD_LAYER) continue;
-  for (let i = 0; i + 1 < s.pts.length; i++) blockSeg(...s.pts[i], ...s.pts[i + 1], W + CLR + SAFE, blocked);
+  for (let i = 0; i + 1 < s.pts.length; i++) {
+    blockSeg(...s.pts[i], ...s.pts[i + 1], W + CLR + SAFE, blocked);
+    // kept with their nets as well, because the NEIGHBOURING stamps' copies of
+    // them are obstacles too (see PERIODICITY below)
+    staticPadRunsInit.push({ net: s.net, seg: [...s.pts[i], ...s.pts[i + 1]] });
+  }
 }
 // routing net N: N's own pads (by BOARD name: coil_78_A -> coil_78, RCLK_C ->
 // RCLK) become passable, as does an optional starting via barrel
@@ -539,6 +545,88 @@ const boardName = (net) => net === 'DATA_W' ? `DATA_${centreQuad}`
   : net === 'DATA_E' ? `DATA_${centreQuad + 1}`
   : /^VLOGIC_C[WE]$/.test(net) ? 'VLOGIC'
   : net.replace(/_C$/, '').replace(/_[AB]$/, '');
+// --- PERIODICITY ---------------------------------------------------------------
+// This copper is a STAMP: the same shapes land on all 42 quads. So a path is
+// only finished when it also clears the same path drawn one quad east and one
+// band north. Both are pure translations -- two cells across, and two rows up,
+// which is exactly where the +-p/4 row stagger cancels -- so a neighbour's
+// copper is this copper shifted. What changes is the NET: every name carrying
+// a cell index becomes a different net two columns over, and two such nets
+// touching is a short. The global bus does not change, and there the
+// neighbour's copper really is this copper, so it may touch.
+//
+// Without this the stamp is legal where it sits and illegal everywhere else:
+// measured, three PWM constructions (PWMA_79, PWMA_90, PWMB_79) overran the
+// period and collided with their neighbours 12 ways. tilecheck.mjs is the gate.
+const NCOL = coils.filter((c) => Math.abs(c[1] - coils[0][1]) < 0.01).length;
+const NROW = Math.round(coils.length / NCOL);
+const quadAt = (i, j) => quads.find((q) => q.band === Q.band + j && q.pos === Q.pos + i);
+const vecTo = (i, j) => {
+  const n = quadAt(i, j);
+  return n ? [coils[n.cells[0]][0] - c78x, coils[n.cells[0]][1] - c78y] : null;
+};
+const neg = (v) => v && [-v[0], -v[1]];
+const LAT_A = vecTo(1, 0) || neg(vecTo(-1, 0));
+const LAT_B = vecTo(0, 1) || neg(vecTo(0, -1));
+const LATTICE = [];
+if (LAT_A && LAT_B) {
+  for (let i = -1; i <= 1; i++) {
+    for (let j = -1; j <= 1; j++) {
+      if (!i && !j) continue;
+      // PERIODIC_OFF=1 restores the pre-tiling behaviour byte for byte, and
+      // PERIODIC_ONLY=1,0;0,1 narrows to named neighbours -- "which neighbour
+      // costs which net" is the whole question when a construction is lost.
+      if (process.env.PERIODIC_OFF) continue;
+      if (process.env.PERIODIC_ONLY && !process.env.PERIODIC_ONLY.split(';').includes(`${i},${j}`)) continue;
+      LATTICE.push([i * LAT_A[0] + j * LAT_B[0], i * LAT_A[1] + j * LAT_B[1], i, j]);
+    }
+  }
+}
+const cellStep = (cell, i, j) => {
+  const c2 = (cell % NCOL) + 2 * i, r2 = Math.floor(cell / NCOL) + 2 * j;
+  return (c2 < 0 || c2 >= NCOL || r2 < 0 || r2 >= NROW) ? null : r2 * NCOL + c2;
+};
+// the BOARD net this net's copper carries on the quad (i, j) steps away,
+// or null where the lattice runs off the board
+const imageName = (net, i, j) => {
+  const bn = boardName(net);
+  const m = /^(coil|PWMA|PWMB)_(\d+)$/.exec(bn);
+  if (m) {
+    const c2 = cellStep(+m[2], i, j);
+    return c2 == null ? null : `${m[1]}_${c2}`;
+  }
+  if (/^DATA_\d+$/.test(bn)) {
+    const n = quadAt(i, j);
+    return n ? `DATA_${+bn.slice(5) + quads.indexOf(n) - centreQuad}` : null;
+  }
+  return bn;                                     // global bus: same copper
+};
+// Everything constructed on the pad layer, for imaging. The static `runs`
+// (lanes, combs, teeth) are snapshotted when the grid is built; `committed`
+// grows as the harness routes.
+const staticPadRuns = staticPadRunsInit;
+const periodicSegs = function* () {
+  for (const r of staticPadRuns) yield r;
+  for (const c2 of committed) yield c2;
+  // constructed vias are all-layer barrels: their images block B.Cu too
+  // (found the hard way: PWMB_78's dive routed straight over PWMB_91's
+  // band-NN rise image -- only tilecheck saw it)
+  for (const v of cvias) yield { net: v.net, seg: [v.x, v.y, v.x, v.y], via: true };
+};
+// Block the eight neighbouring stamps' copper, skipping images that land on
+// the net being routed (a join) and images that fall off the board.
+const blockImages = (me, buf, extra = null) => {
+  for (const [dx, dy, i, j] of LATTICE) {
+    const src2 = extra ? [...periodicSegs(), ...extra] : [...periodicSegs()];
+    for (const c2 of src2) {
+      const img = imageName(c2.net, i, j);
+      if (img === null || img === me) continue;
+      blockSeg(c2.seg[0] + dx, c2.seg[1] + dy, c2.seg[2] + dx, c2.seg[3] + dy,
+               (c2.via ? 0.25 + CLR + W / 2 : W + CLR) + SAFE_P, buf);
+    }
+  }
+};
+
 const inPad = (x, y, g2, inflate = 0) => {
   const a = (g2.rot * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
   const dx = x - g2.x, dy = y - g2.y;
@@ -605,6 +693,7 @@ const foreignFor = (net) => {
     if (boardName(c2.net) === boardName(net) && !boardName(net).startsWith('coil_')) continue;
     blockSeg(c2.seg[0], c2.seg[1], c2.seg[2], c2.seg[3], W + CLR + SAFE_P, foreignScratch);
   }
+  blockImages(boardName(net), foreignScratch);
   return foreignScratch;
 };
 const ownBarrels = [];                           // {net, x, y}: startVia barrels per constructed net
@@ -638,10 +727,28 @@ const routeNet = (net, from, to, { emit = true, startVia = null, guide = null, d
     const p3 = fp2 && fp2.pads.find((q) => q.name === pd2);
     if (p3) blockRect({ x: fp2.x + p3.dx, y: fp2.y + p3.dy, w: p3.w, h: p3.h, rot: -((fp2.rot || 0) + (p3.ang || 0)) }, CLR + W / 2 + SAFE, allow, 0);
   }
-  const p = astar(from[0], from[1], to[0], to[1], allow, foreignFor(net), guide && prefFor(guide));
+  const me = boardName(net);
+  const pref = guide && prefFor(guide);
+  const fg = new Uint8Array(foreignFor(net));    // copy: the scratch is reused
+  let p = astar(from[0], from[1], to[0], to[1], allow, fg, pref);
+  // A path can also clash with its OWN image: PWMA_90 ran 14.675 mm north to
+  // south against a 14.665 mm band period and met itself one quad up. The
+  // images of a path are not knowable before it exists, so find one, block
+  // what it collides with, and look again.
+  for (let tries = 0; p && tries < 5; tries++) {
+    const mine = [];
+    for (let i = 0; i + 1 < p.length; i++) mine.push({ net, seg: [p[i][0], p[i][1], p[i + 1][0], p[i + 1][1]] });
+    const selfImg = new Uint8Array(gw * gh);
+    blockImages(me, selfImg, mine);
+    if (!p.some(([x, y]) => selfImg[gi(toIx(x), toIy(y))])) break;
+    let grew = false;
+    for (let i = 0; i < fg.length; i++) if (selfImg[i] && !fg[i]) { fg[i] = 1; grew = true; }
+    if (!grew) { p = null; break; }
+    p = astar(from[0], from[1], to[0], to[1], allow, fg, pref);
+    if (tries === 4 && p) console.error(`HARNESS: ${net} still self-overlapping after 5 tries`);
+  }
   if (!p) {
     const sx = toIx(from[0]), sy = toIy(from[1]);
-    const fg = foreignFor(net);
     let freeN = 0, allowN = 0;
     for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
       const i2 = gi(sx + dx, sy + dy);
@@ -649,18 +756,23 @@ const routeNet = (net, from, to, { emit = true, startVia = null, guide = null, d
       if (allow[i2]) allowN++;
     }
     console.error(`HARNESS: no path for ${net} (start 7x7: ${freeN} free, ${allowN} allowed)`);
-    if (process.env.DUMP_GRID && (!process.env.DUMP_NET || process.env.DUMP_NET === net) && !routeNet.dumped) {
-      routeNet.dumped = true;
+    if (process.env.DUMP_GRID && (!process.env.DUMP_NET || process.env.DUMP_NET === net)) {
+      // one file per failing attempt (a net can fail twice: harness then
+      // fabric), so a single run yields every failure's grid
+      routeNet.dumped = routeNet.dumped || new Map();
+      const n2 = (routeNet.dumped.get(net) || 0) + 1;
+      routeNet.dumped.set(net, n2);
+      const dumpPath = `${process.env.DUMP_GRID}.${net}.${n2}.json`;
       const merged = new Uint8Array(blocked);
       for (let i = 0; i < merged.length; i++) if (allow[i]) merged[i] = 0;
-      writeFileSync(process.env.DUMP_GRID, JSON.stringify({
+      writeFileSync(dumpPath, JSON.stringify({
         gw, gh, gx0, gy0, GRID, from, to,
         rows: Array.from({ length: gh }, (_, iy) => Buffer.from(merged.subarray(iy * gw, (iy + 1) * gw)).toString('base64')),
         // static+allow alone can show start/goal CONNECTED while the A* fails:
         // the committed foreign bands are the wall. Dump them or the flood lies.
         fgRows: Array.from({ length: gh }, (_, iy) => Buffer.from(fg.subarray(iy * gw, (iy + 1) * gw)).toString('base64')),
       }));
-      console.error(`grid dumped to ${process.env.DUMP_GRID}`);
+      console.error(`grid dumped to ${dumpPath}`);
     }
     return false;
   }
@@ -1220,40 +1332,64 @@ const stubRuns = new Set();
           const t2 = L2 ? Math.max(0, Math.min(1, ((px - ax) * dx2 + (py - ay) * dy2) / L2)) : 0;
           return Math.hypot(px - (ax + t2 * dx2), py - (ay + t2 * dy2));
         };
-        const siteOK = (x, y, net) => {
+        const siteOK = (x, y, net, why) => {
+          const no = (r2) => { if (why) why.push(r2); return false; };
           for (const [cx2, cy2] of coils) {
-            if (Math.hypot(x - cx2, y - cy2) < 6.5 && hexD(x - cx2, -(y - cy2)) < coilKeepR2 + CLR + 0.25 + 0.03) return false;
+            if (Math.hypot(x - cx2, y - cy2) < 6.5 && hexD(x - cx2, -(y - cy2)) < coilKeepR2 + CLR + 0.25 + 0.03) return no('hex');
           }
-          for (const v of board.vias) if (Math.hypot(x - v.x, y - v.y) < 0.6) return false;
-          for (const v of cvias) if (Math.hypot(x - v.x, y - v.y) < 0.6) return false;
+          for (const v of board.vias) if (Math.hypot(x - v.x, y - v.y) < 0.6) return no('via');
+          for (const v of cvias) if (Math.hypot(x - v.x, y - v.y) < 0.6) return no('cvia');
           for (const tb of allTabs) {
             if (Math.abs(tb[0] - x) > 2 && Math.abs(tb[2] - x) > 2) continue;
-            if (ptSeg2(x, y, tb[0], tb[1], tb[2], tb[3]) < 0.25 + CLR + gPlan.trace / 2 + 0.02) return false;
+            if (ptSeg2(x, y, tb[0], tb[1], tb[2], tb[3]) < 0.25 + CLR + gPlan.trace / 2 + 0.02) return no('tab');
           }
           for (const fp of board.fps) {
             if (Math.hypot(x - fp.x, y - fp.y) > 4) continue;
             for (const p2 of fp.pads) {
-              if (inPad(x, y, { x: fp.x + p2.dx, y: fp.y + p2.dy, w: p2.w, h: p2.h, rot: -((fp.rot || 0) + (p2.ang || 0)) }, 0.25 + CLR + 0.03)) return false;
+              if (inPad(x, y, { x: fp.x + p2.dx, y: fp.y + p2.dy, w: p2.w, h: p2.h, rot: -((fp.rot || 0) + (p2.ang || 0)) }, 0.25 + CLR + 0.03)) return no('pad:' + fp.ref);
             }
           }
           for (const r2 of runs) {
             if (r2.net === net) continue;         // own copper may touch its own barrel
             for (let i2 = 0; i2 + 1 < r2.pts.length; i2++) {
-              if (ptSeg2(x, y, r2.pts[i2][0], r2.pts[i2][1], r2.pts[i2 + 1][0], r2.pts[i2 + 1][1]) < 0.25 + CLR + W / 2 + 0.03) return false;
+              if (ptSeg2(x, y, r2.pts[i2][0], r2.pts[i2][1], r2.pts[i2 + 1][0], r2.pts[i2 + 1][1]) < 0.25 + CLR + W / 2 + 0.03) return no('run:' + r2.net);
             }
           }
           return true;
         };
-        const findSite = ([px, py], net, yLo = c78y + 2.77, yHi = c78y + 4.6) => {
+        const findSite = ([px, py], net, yLo = c78y + 2.77, yHi = c78y + 4.6, xLo = -1e9, xHi = 1e9) => {
           let best = null;
           for (let dy2 = -0.9; dy2 <= 0.9 + 1e-9; dy2 += 0.05) {
             for (let dx2 = -1.8; dx2 <= 1.8 + 1e-9; dx2 += 0.05) {
               const x = px + dx2, y = py + dy2;
-              if (y < yLo || y > yHi) continue;
+              if (y < yLo || y > yHi || x < xLo || x > xHi) continue;
               if (!siteOK(x, y, net)) continue;
               const d = Math.hypot(dx2, dy2);
               if (!best || d < best.d) best = { x: +x.toFixed(3), y: +y.toFixed(3), d };
             }
+          }
+          if (process.env.FABSITE_WHY === net && best) {
+            const why = [];
+            for (const [x, y] of [[best.x, best.y], [px, py]]) {
+              const w2 = [];
+              siteOK(x, y, net, w2);
+              why.push(`(${x.toFixed(2)},${y.toFixed(2)}):${w2[0] || 'OK'}`);
+            }
+            console.error(`FABSITE_WHY ${net}: best ${why[0]} pref ${why[1]}`);
+          }
+          if (!best && process.env.FABSITE_DEBUG) {
+            const hist = new Map();
+            for (let dy2 = -0.9; dy2 <= 0.9 + 1e-9; dy2 += 0.1) {
+              for (let dx2 = -1.8; dx2 <= 1.8 + 1e-9; dx2 += 0.1) {
+                const x = px + dx2, y = py + dy2;
+                if (y < yLo || y > yHi) continue;
+                const why = [];
+                siteOK(x, y, net, why);
+                hist.set(why[0], (hist.get(why[0]) || 0) + 1);
+              }
+            }
+            console.error(`FABSITE ${net} @(${px.toFixed(2)},${py.toFixed(2)}) y[${yLo.toFixed(2)},${yHi.toFixed(2)}]: ` +
+              [...hist].map(([k2, v2]) => `${k2}=${v2}`).join(' '));
           }
           return best;
         };
@@ -1270,6 +1406,22 @@ const stubRuns = new Set();
           pts.push([b.x, laneY], [b.x, b.y]);
           return pts.map(([x, y]) => [+(+x).toFixed(3), +(+y).toFixed(3)]);
         };
+        if (process.env.FABSITE_MAP) {
+          // one-shot legality map of the via-site bands, for choosing fabric
+          // drop/rise prefs against the REAL board (sites move whenever the
+          // winding walks; hand-measured prefs go stale silently)
+          const out = [];
+          for (const [y1, y2, tag] of [[c78y + 2.75, c78y + 4.65, 'S'], [c78y - 4.55, c78y - 2.25, 'N'],
+            [c78y - 7.332 - 4.65, c78y - 7.332 - 2.75, 'NN']]) {
+            for (let y = y1; y <= y2 + 1e-9; y += 0.05) {
+              for (let x = c78x - 8.5; x <= c78x + 18 + 1e-9; x += 0.05) {
+                if (siteOK(x, y, '?')) out.push([+x.toFixed(3), +y.toFixed(3), tag]);
+              }
+            }
+          }
+          writeFileSync(process.env.FABSITE_MAP, JSON.stringify(out));
+          console.error(`FABSITE_MAP: ${out.length} legal sites written to ${process.env.FABSITE_MAP}`);
+        }
         const gd1 = (x, y) => gd([[x, y]])[0];
         const gutterNet = (net, fromPt, dropPref, laneYOff, risePref, riseLeg, dropGuide = null) => {
           const dv = findSite(dropPref, net);
@@ -1296,88 +1448,6 @@ const stubRuns = new Set();
           blockDisc(dv.x, dv.y, 0.25 + CLR + W / 2 + SAFE, blocked);
           blockDisc(rvS.x, rvS.y, 0.25 + CLR + W / 2 + SAFE, blocked);
         };
-        // PWMB_79: east through the seam's A/B-column inter-via gaps
-        // (A 66.95-67.79, B 66.11-68.21 -- the only B.Cu crossings left),
-        // the y~66.7 jog band between the GND-B via and the tail's top,
-        // the shelf south of cell 79's bay ring, to U79.5's west face
-        con(`PWMB_${Q.cells[1]}`, stubEnd.get('11'), padAt(`U${Q.cells[1]}`, '5'), {
-          guide: gd([[65.5, 69.35], [66.2, 68.9], [67.0, 68.3], [67.8, 67.75], [68.5, 67.5], [68.93, 67.35],
-            [69.50, 67.15], [69.95, 66.9], [70.5, 66.75], [71.2, 66.7], [72.0, 66.5], [72.5, 66.1],
-            [72.95, 65.6], [73.6, 65.5], [74.4, 65.5], [75.0, 65.4], [75.59, 65.09], [76.04, 65.09]]),
-        });
-        // DATA_E: the under-body channel beside the VLOGIC chain, out the
-        // south mouth to its drop via, ride east, rise south of the ladder
-        // and enter the portal from the SOUTH (J78.IN denies the west face,
-        // the B-column the east)
-        {
-          const portalT = taps.find((t2) => t2.net === 'DATA_E' && t2.kind !== 'stub');
-          // the rise leg STARTS at the portal: the portal's only legal
-          // approach is a sub-raster sliver past J78.IN that exists solely
-          // inside the startVia's allow disc (exactly how the committed
-          // orientation's drop reached it)
-          gutterNet('DATA_E', padAt(sr, '2'), gd1(63.8, 70.9), 3.47, gd1(69.85, 69.6),
-            (rv3) => routeNet('DATA_E', [portalT.x, portalT.y], [rv3.x, rv3.y], {
-              startVia: portalT, alsoOpen: [{ x: rv3.x, y: rv3.y }],
-              guide: gd([[68.93, 68.63], [68.8, 69.15], [69.3, 69.62], [69.85, 69.62]]),
-            }),
-            gd([[64.36, 65.9], [64.15, 66.6], [63.8, 67.4], [63.5, 68.2], [63.25, 69.0], [63.4, 69.7], [63.7, 70.4]]));
-        }
-        // PWMA_78 goes to the router: its only corridor (the west-face
-        // climb) crosses EVERY west drop -- flood-measured mutual
-        // exclusion, five drops beat one PWM. The structural fix is
-        // re-mapping which register pad drives which cell (qFn in quadgen
-        // is convention, not geometry) -- a co-design lever for later.
-        con(`PWMA_${Q.cells[1]}`, stubEnd.get('13'), padAt(`U${Q.cells[1]}`, '1'));
-        // the 90 pair crosses the same column gaps north of GND's wall.
-        // A_90 jogs east at y~66.65 (the band between the GND-B via and the
-        // tail's top) and climbs x~70.6 east of the tail to the row-3
-        // over-the-top band, into U90.1's north face. B_90 descends the
-        // one-lane band WEST of the tail (x ~69.98, clear until the tail's
-        // west curl at y 63.35), jogs east at y~63.15 under the curl, and
-        // climbs x~70.9 to the C90 pad gap and U90's inter-column slot.
-        // the A-column keeps only two usable crossing slots (the split
-        // [65.67,65.92]/[66.30,66.55] band around GND's line) and PWMB_79
-        // took one -- the 90 pair crosses UNDER the ladder instead (south
-        // of every A via at y > 69.03 and of OE_N at y > 69.45, B_91's
-        // discovery), then north: A_90 threads the x~70.6 slit east of the
-        // tail's leg, B_90 rounds J79.OUT at x~71.5 through cell 79's west
-        // interior. Both end as before (over-the-top / the C90 pad gap).
-        con(`PWMA_${Q.cells[2]}`, stubEnd.get('9'), padAt(`U${Q.cells[2]}`, '1'), {
-          guide: gd([[65.85, 69.05], [66.6, 69.4], [67.4, 69.6], [68.2, 69.65], [68.93, 69.6], [69.6, 69.65],
-            [70.15, 69.55], [70.55, 69.25], [70.6, 68.7], [70.6, 68.0], [70.62, 67.2], [70.62, 66.5],
-            [70.6, 65.5], [70.6, 64.5], [70.55, 63.5], [70.5, 62.5], [70.45, 61.5], [70.4, 60.5], [70.45, 59.5],
-            [70.5, 58.5], [70.55, 57.5], [70.6, 56.5], [70.6, 55.8], [70.9, 55.3], [71.4, 55.3], [71.75, 55.5], [71.81, 55.85]]),
-        });
-        con(`PWMB_${Q.cells[2]}`, stubEnd.get('7'), padAt(`U${Q.cells[2]}`, '5'), {
-          guide: gd([[66.1, 68.7], [66.9, 69.2], [67.7, 69.85], [68.5, 70.0], [69.3, 70.0], [70.1, 70.0],
-            [70.9, 70.0], [71.5, 69.95], [71.55, 69.3], [71.5, 68.5], [71.5, 67.5], [71.5, 66.5], [71.5, 65.5],
-            [71.45, 64.5], [71.4, 63.5], [71.3, 62.5], [71.2, 61.5], [71.1, 60.5], [71.05, 59.6],
-            [71.31, 59.15], [71.31, 58.6], [71.31, 58.2], [71.45, 57.85], [71.81, 57.75]]),
-        });
-        // PWMB_91: east sweep south of PWMB_79's lane, clear of coil_91_B's
-        // committed diagonal, then U91's north slot to U91.5's west face
-        con(`PWMB_${Q.cells[3]}`, stubEnd.get('3'), padAt(`U${Q.cells[3]}`, '5'), {
-          guide: gd([[67.1, 67.95], [68.2, 68.9], [69.2, 70.0], [70.5, 70.1], [72.5, 69.6], [74.5, 68.6],
-            [75.6, 67.4], [75.9, 66.0], [76.2, 64.4], [76.6, 62.9], [77.4, 61.9], [78.4, 61.3], [79.3, 60.7],
-            [79.7, 59.8], [79.6, 58.7], [79.3, 57.9], [79.4, 57.3], [79.9, 57.55], [80.28, 57.75]]),
-        });
-        con(`PWMA_${Q.cells[3]}`, stubEnd.get('5'), padAt(`U${Q.cells[3]}`, '1'));
-        // --- WINDING-LAYER FABRIC (task 15) ------------------------------
-        // Everything left is a register-pocket escape whose only corridor is
-        // a single thread. The fabric gives each a via near its pad, a ride
-        // through a seam gutter on a winding layer (clean by banFlats), an
-        // In12 trunk in the empty inter-row bands, and a rise onto/next to
-        // its destination. One lane per ladder column per fabric layer.
-        // The interleaved ladder is IMPASSABLE to column-riding fabric: the
-        // 0.39-clearance discs of an A via and its diagonal B neighbour
-        // overlap (centres 0.708 apart), so no jog shape threads them.
-        // What DOES run the whole seam is a straight vertical HUGGING the
-        // west cell's hex at copper+0.15: it clears every A-column barrel by
-        // ~0.41 and the B column by ~0.98, needs no jogs at all, and each
-        // fabric layer carries its own independent copy of the lane.
-        // (Junction VIAS cannot sit on the hug line -- a via land needs 0.34
-        // from the winding -- so rides end with short angled legs to via
-        // sites out in the band pockets.)
         const hugX = (westCellX) => +(westCellX + FABRIC_HUG_X).toFixed(4);
         const emitB = (net, pts) => {
           const P = pts.map(([x2, y2]) => [+(+x2).toFixed(3), +(+y2).toFixed(3)]);
@@ -1397,6 +1467,244 @@ const stubRuns = new Set();
             console.error(`FABRIC: ${net} withdrawn`);
           }
         };
+        // --- 90/91 QUARTET via band NN (2026-08-27) ----------------------
+        // The old B.Cu treks to U90/U91 died under periodicity: their east
+        // extents landed one 16.93 mm period over on the west face (the
+        // tilecheck [1,0] conflicts), and every re-route displaced a west
+        // drop. The destinations sit just SOUTH of the row-2|row-3 gutter
+        // (band NN), which is EMPTY -- so each net rides the fabric NORTH.
+        // Measured truths this shape is built on (via list dumped from the
+        // board, 0.39 trace-to-via / 0.19 trace-to-trace / 0.59 via-to-via):
+        //  - the south gutter's via field leaves exactly TWO clean In12
+        //    lanes: y 69.52 (between the OE_N lane and the 70.02 via row)
+        //    and y 71.25 (south of the 70.79 row); verticals joining them
+        //    survive only at x <= 66.08 or isolated windows, so all four
+        //    drops sit in the WEST box and the dives nest by stub depth;
+        //  - the inter-row band has clean In12 lanes at y 62.35 and
+        //    63.95/64.15; the DATA_E via and the 70.71/71.29 crossovers
+        //    seal the 63.2-63.5 diagonal, so one 90-net exits the internal
+        //    hug NORTH and the other SOUTH;
+        //  - rows stagger half a pitch, so every N-S line staircases: row-1
+        //    hug, In12 jog, row-2 hug (one winding layer per net, a row-2
+        //    lane and a row-1 lane on the same layer are one period apart);
+        //  - band-S In12 y aliases band NN minus 14.665: the rides at 69.52
+        //    and 71.25 image onto y 54.86/56.59 there, which is why the
+        //    rises sit at 55.35 and 56.12, 0.4+ clear of both.
+        if (FABRIC.length >= 6) {
+          const [, , FAB_90B, FAB_90A, FAB_91B, FAB_91A] = FABRIC;
+          const HINTq = hugX(c78x), HE79q = hugX(c78x + pitch), H90q = hugX(c78x + pitch / 2);
+          const QX = (dx) => +(c78x + dx).toFixed(3), QY = (dy) => +(c78y + dy).toFixed(3);
+          const sites = (net, list) => {
+            const out = {};
+            for (const [k, px, py, y1, y2, x1, x2] of list) {
+              out[k] = findSite([QX(px), QY(py)], net, QY(y1), QY(y2),
+                x1 === undefined ? -1e9 : QX(x1), x2 === undefined ? 1e9 : QX(x2));
+              if (!out[k]) { console.error(`FABRIC ${net}: no ${k} site`); return null; }
+            }
+            return out;
+          };
+          const V = (net, S) => { for (const k of Object.keys(S)) cvias.push({ net, x: S[k].x, y: S[k].y }); };
+          // PWMB_91 (pad 3 -> U91.5), In7, the S-slot rider. Pad 5 is
+          // reachable ONLY through the U91 inter-column channel from band
+          // NN (C91's pads, both comb risers and the GND tooth wall every
+          // other face -- measured). A junction via near the 91|92 wedge is
+          // impossible -- any such via's west image lands ON the row-2 OE_N
+          // lane -- so the whole trek stays on In7: down the E79 hug, a
+          // vialess gutter-zigzag diagonal across the inter-row band, up
+          // the 91|92 hug, the pinch leg under the row-3 hexes (dodging
+          // PWMA_91's drop/jB images), and the channel tail.
+          fabNet(`PWMB_${Q.cells[3]}`, () => {
+            const net = `PWMB_${Q.cells[3]}`;
+            const S = sites(net, [['drop', 0.767, 4.167, 3.997, 4.317, 0.667, 0.867],
+              ['jB', 11.217, 3.117, 3.017, 3.217, 11.067, 11.367],
+              ['rise', 14.867, -11.413, -11.483, -11.313, 14.807, 14.967]]);
+            if (!S) return false;
+            V(net, S);
+            runs.push({ net, layer: LANE_LAYER, pts: [[S.drop.x, S.drop.y], [S.drop.x, QY(2.787)],
+              // the 69.52 slot is via-free EXCEPT the ladder OE_N barrels at
+              // y 69.25 (x 69.01/69.58 and 77.48/78.05): hop to the 69.67
+              // thread band over each seam
+              [QX(3.317), QY(2.787)], [QX(3.667), QY(2.937)], [QX(4.567), QY(2.937)], [QX(4.917), QY(2.787)],
+              [S.jB.x, QY(2.787)], [S.jB.x, S.jB.y]] });
+            // the In7 leg rides the 69.67 thread band east over BOTH seam
+            // ladders to the E79 hug (the jB sits west of the east seam so
+            // its image stays clear of PWMB_78's west gateway)
+            runs.push({ net, layer: FAB_91B, pts: [[S.jB.x, S.jB.y], [QX(11.717), QY(2.937)], [QX(12.167), QY(2.937)],
+              [QX(13.067), QY(2.937)], [QX(13.262), QY(2.977)],
+              [HE79q, QY(-2.833)],
+              [QX(14.417), QY(-3.333)], [QX(15.317), QY(-4.033)], [QX(16.417), QY(-4.483)], [QX(17.117), QY(-4.333)],
+              [H90q + pitch, QY(-4.353)], [H90q + pitch, QY(-10.113)],
+              // the pinch: under the 91|92 columns' last vias, along the
+              // row-3 hex floor, down to the rise; the B.Cu tail loops in
+              // from the EAST (the channel mouth x-column is one period from
+              // the jB/leg zone, so nothing of this net may sit there)
+              [QX(17.437), QY(-9.783)], [QX(16.817), QY(-9.883)], [QX(16.217), QY(-10.133)], [QX(15.567), QY(-10.633)],
+              [QX(15.117), QY(-11.133)], [S.rise.x, S.rise.y]] });
+            emitB(net, [[S.rise.x, S.rise.y], [QX(14.567), QY(-11.133)], [QX(14.267), QY(-10.633)], [QX(14.097), QY(-10.233)],
+              [QX(14.087), QY(-8.628)], [QX(14.917), QY(-8.628)]]);
+            return routeNet(net, stubEnd.get('3'), [S.drop.x, S.drop.y], { startVia: S.drop,
+              guide: gd([[66.2, 68.2], [66.1, 69.2], [66.0, 70.0], [65.95, 70.6]]) });
+          });
+          // PWMA_91 rides the ROUTER: with six fabric layers declared it can
+          // via-hop mid-route, and every constructible corridor to U91.1 is
+          // measured shut (the E-seam jB zone, the channel mouth and the
+          // west face are all one period apart -- three nets' worth of
+          // geometry cannot share that column; PWMB_91 got the slot).
+          // PWMB_90 (pad 7 -> U90.5), In9: wedge corridor along cell 78's
+          // SE diagonal, the y~69.66 thread (the only In-layer line past
+          // J66.IN), HINT hug down to cell 90's S vertex (y~63.5), the SE-
+          // diagonal exit north of the 70.71 crossover, In12 to the 90|91
+          // hug, band NN, and the U90 inter-column channel into pad 5.
+          fabNet(`PWMB_${Q.cells[2]}`, () => {
+            const net = `PWMB_${Q.cells[2]}`;
+            const S = sites(net, [['drop', 3.067, 3.267, 2.867, 3.297, 2.917, 3.097],
+              ['jTop', 6.817, -4.233, -4.353, -4.053, 6.647, 7.297],
+              ['jMid', 10.167, -4.133, -4.303, -3.933, 10.047, 10.997],
+              ['rise', 6.717, -11.383, -11.533, -11.233]]);
+            if (!S) return false;
+            V(net, S);
+            runs.push({ net, layer: FAB_90B, pts: [[S.drop.x, S.drop.y], [QX(3.317), QY(2.947)],
+              [HINTq, QY(2.947)],
+              [HINTq, QY(-3.233)], [QX(5.267), QY(-3.273)],
+              [QX(5.867), QY(-3.373)], [QX(6.717), QY(-3.933)],
+              [S.jTop.x, S.jTop.y]] });
+            runs.push({ net, layer: LANE_LAYER, pts: gutterPath(S.jTop, S.jMid, QY(-4.383)) });
+            runs.push({ net, layer: FAB_90B, pts: [[S.jMid.x, S.jMid.y], [QX(9.577), QY(-4.353)],
+              [H90q, QY(-4.353)], [H90q, QY(-9.633)],
+              [QX(8.567), QY(-9.783)], [QX(8.217), QY(-9.833)],
+              [QX(7.417), QY(-9.883)], [QX(6.967), QY(-10.233)],
+              [QX(6.767), QY(-10.833)], [S.rise.x, S.rise.y]] });
+            const u = padAt(`U${Q.cells[2]}`, '5');
+            emitB(net, [[S.rise.x, S.rise.y], [QX(5.817), QY(-10.883)],
+              [QX(5.627), QY(-10.333)], [QX(5.627), u[1]], [+(u[0] - 0.3).toFixed(3), u[1]]]);
+            return routeNet(net, stubEnd.get('7'), [S.drop.x, S.drop.y], { startVia: S.drop,
+              guide: gd([[66.3,68.85],[66.9,69.25],[67.5,69.6],[68.0,69.85]]) });
+          });
+          // PWMA_90 (pad 9 -> U90.1), In8: own corridor one slot over,
+          // NORTH band exit, 64.15 lane, H90 hug, tail into pad 1.
+          fabNet(`PWMA_${Q.cells[2]}`, () => {
+            const net = `PWMA_${Q.cells[2]}`;
+            const S = sites(net, [['drop', 2.477, 2.947, 2.867, 3.297, 2.367, 2.617],
+              ['jTop', 5.967, -2.583, -2.783, -2.493],
+              ['jMid', 10.117, -3.533, -3.633, -3.433, 10.017, 10.267],
+              ['rise', 8.267, -10.613, -10.713, -10.483]]);
+            if (!S) return false;
+            V(net, S);
+            runs.push({ net, layer: FAB_90A, pts: [[S.drop.x, S.drop.y], [QX(2.917), QY(2.847)],
+              [QX(3.367), QY(2.887)], [HINTq, QY(2.957)], [HINTq, QY(-2.133)],
+              [QX(5.267), QY(-2.313)], [S.jTop.x, S.jTop.y]] });
+            runs.push({ net, layer: LANE_LAYER, pts: gutterPath(S.jTop, S.jMid, QY(-2.583)) });
+            runs.push({ net, layer: FAB_90A, pts: [[S.jMid.x, S.jMid.y], [QX(9.867), QY(-3.833)],
+              // thread the 0.9 mm gap between the 74.48 crossover and
+              // PWMB_90's junction via, then under the crossover to the hug
+              [QX(9.737), QY(-4.013)], [QX(9.667), QY(-4.283)],
+              [H90q, QY(-4.303)],
+              [H90q, QY(-10.183)], [QX(8.667), QY(-10.383)], [S.rise.x, S.rise.y]] });
+            emitB(net, [[S.rise.x, S.rise.y], [QX(7.667), QY(-10.283)], [QX(7.317), QY(-10.433)], [QX(7.117), QY(-10.529)]]);
+            return routeNet(net, stubEnd.get('9'), [S.drop.x, S.drop.y], { startVia: S.drop,
+              guide: gd([[65.9,69.35],[66.5,69.6],[67.0,69.68],[67.4,69.68]]) });
+          });
+          // PWMA_79: MEASURED DEAD (2026-08-27). Its In11 chain (W drop,
+          // HW78 hug, band-N diagonal, A* tail) verifies locally but can
+          // never tile: the W-hug entry thread is triple-sealed by
+          // PWMB_78's drop, the 61.78/70.18 board via and PWMB_91's
+          // band-NN rise IMAGE (every candidate line violates one of the
+          // three, and cell 78's SW hex floor closes the detours), and a
+          // W-box drop's own image lands on PWMB_91's pinch. It rides the
+          // router with the rest.
+          if (process.env.FABRIC_A79) {
+          // PWMA_79 (pad 13 -> U79.1), In11: W drop, HW78 hug, then a
+          // vialess diagonal along the inter-row gutter's SOUTH edge -- the
+          // whole run on one winding layer, under the In12 lanes and clear
+          // of every other layer's hugs -- to a rise in the 90|91 wedge and
+          // a short B.Cu tail into the pad's north face.
+          fabNet(`PWMA_${Q.cells[1]}`, () => {
+            const net = `PWMA_${Q.cells[1]}`;
+            const S = sites(net, [['drop', -0.883, 4.567, 4.417, 4.647, -0.983, -0.733],
+              ['rise', 2.117, -3.983, -4.133, -3.833, 1.967, 2.267]]);
+            if (!S) return false;
+            V(net, S);
+            const HW78q = hugX(c78x - pitch);
+            runs.push({ net, layer: FABRIC[0], pts: [[S.drop.x, S.drop.y], [QX(-1.333), QY(4.117)],
+              [QX(-1.683), QY(3.617)], [QX(-2.483), QY(2.967)], [QX(-3.123), QY(2.967)], [hugX(c78x - pitch), QY(2.977)],
+              [hugX(c78x - pitch), QY(-2.633)],
+              [QX(-3.183), QY(-2.833)],
+              [QX(-2.683), QY(-3.333)],
+              [QX(-2.183), QY(-3.583)],
+              [QX(-1.883), QY(-4.033)],
+              [QX(-0.983), QY(-4.333)],
+              [QX(-0.283), QY(-4.433)],
+              [QX(0.717), QY(-4.333)],
+              [QX(1.117), QY(-4.533)],
+              [QX(1.817), QY(-4.333)], [S.rise.x, S.rise.y]] });
+            const u = padAt(`U${Q.cells[1]}`, '1');
+            // the band-N tail east is left to the periodicity-aware A*: the
+            // wedge next to U79 has no legal via at all (the OE_N row-2
+            // lane, the 74.48 crossover and both 90-nets' junction vias
+            // fence every candidate), so the rise sits back west and the
+            // tail worms 8.8 mm on B.Cu -- band N y62-63.5 aliases only
+            // off-stamp, so the A* is free there
+            return routeNet(net, stubEnd.get('13'), [S.drop.x, S.drop.y], { startVia: S.drop,
+              guide: gd([[64.9,70.2],[64.6,70.6],[64.45,70.9],[64.35,71.1]]) })
+              && routeNet(net, [S.rise.x, S.rise.y], [u[0], +(u[1] - 0.25).toFixed(3)], { startVia: S.rise,
+                guide: gd([[68.0,62.9],[69.3,63.0],[70.2,63.2],[71.5,63.1],[72.5,63.2],[73.4,63.3],[74.4,63.4],[75.3,63.5],[76.0,63.3]]) });
+          });
+          }
+
+          //
+        }
+        // PWMB_79: east through the seam's A/B-column inter-via gaps
+        // (A 66.95-67.79, B 66.11-68.21 -- the only B.Cu crossings left),
+        // the y~66.7 jog band between the GND-B via and the tail's top,
+        // the shelf south of cell 79's bay ring, to U79.5's west face
+        con(`PWMB_${Q.cells[1]}`, stubEnd.get('11'), padAt(`U${Q.cells[1]}`, '5'), {
+          guide: gd([[65.5, 69.35], [66.2, 68.9], [67.0, 68.3], [67.8, 67.75], [68.5, 67.5], [68.93, 67.35],
+            [69.50, 67.15], [69.95, 66.9], [70.5, 66.75], [71.2, 66.7], [72.0, 66.5], [72.5, 66.1],
+            [72.95, 65.6], [73.6, 65.5], [74.4, 65.5], [75.0, 65.4], [75.59, 65.09], [76.04, 65.09]]),
+        });
+        // DATA_E: the under-body channel beside the VLOGIC chain, out the
+        // south mouth to its drop via, ride east, rise south of the ladder
+        // and enter the portal from the SOUTH (J78.IN denies the west face,
+        // the B-column the east)
+        {
+          const portalT = taps.find((t2) => t2.net === 'DATA_E' && t2.kind !== 'stub');
+          // the rise leg STARTS at the portal: the portal's only legal
+          // approach is a sub-raster sliver past J78.IN that exists solely
+          // inside the startVia's allow disc (exactly how the committed
+          // orientation's drop reached it)
+          if (FABRIC.length < 3) gutterNet('DATA_E', padAt(sr, '2'), gd1(63.8, 70.9), 3.47, gd1(69.85, 69.6),
+            (rv3) => routeNet('DATA_E', [portalT.x, portalT.y], [rv3.x, rv3.y], {
+              startVia: portalT, alsoOpen: [{ x: rv3.x, y: rv3.y }],
+              guide: gd([[68.93, 68.63], [68.8, 69.15], [69.3, 69.62], [69.85, 69.62]]),
+            }),
+            gd([[64.36, 65.9], [64.15, 66.6], [63.8, 67.4], [63.5, 68.2], [63.25, 69.0], [63.4, 69.7], [63.7, 70.4]]));
+        }
+        // PWMA_78 goes to the router: its only corridor (the west-face
+        // climb) crosses EVERY west drop -- flood-measured mutual
+        // exclusion, five drops beat one PWM. The structural fix is
+        // re-mapping which register pad drives which cell (qFn in quadgen
+        // is convention, not geometry) -- a co-design lever for later.
+        con(`PWMA_${Q.cells[1]}`, stubEnd.get('13'), padAt(`U${Q.cells[1]}`, '1'));
+        // the 90/91 quartet is constructed in the band-NN fabric block
+        // ABOVE (before PWMB_79's trek could wall the dives); the old B.Cu
+        // treks died under periodicity -- their east extents aliased into
+        // the west face one period over (tilecheck's [1,0] conflicts).
+        // --- WINDING-LAYER FABRIC (task 15) ------------------------------
+        // Everything left is a register-pocket escape whose only corridor is
+        // a single thread. The fabric gives each a via near its pad, a ride
+        // through a seam gutter on a winding layer (clean by banFlats), an
+        // In12 trunk in the empty inter-row bands, and a rise onto/next to
+        // its destination. One lane per ladder column per fabric layer.
+        // The interleaved ladder is IMPASSABLE to column-riding fabric: the
+        // 0.39-clearance discs of an A via and its diagonal B neighbour
+        // overlap (centres 0.708 apart), so no jog shape threads them.
+        // What DOES run the whole seam is a straight vertical HUGGING the
+        // west cell's hex at copper+0.15: it clears every A-column barrel by
+        // ~0.41 and the B column by ~0.98, needs no jogs at all, and each
+        // fabric layer carries its own independent copy of the lane.
+        // (Junction VIAS cannot sit on the hug line -- a via land needs 0.34
+        // from the winding -- so rides end with short angled legs to via
+        // sites out in the band pockets.)
         if (FABRIC.length >= 3 && !built.includes('VLOGIC_CE')) {
           // VLOGIC_CE first (pure B.Cu): the pad16 <-> pad4 chain through the
           // under-body channel; the gate-38 ring sits at the column's NE end
@@ -1437,8 +1745,10 @@ const stubRuns = new Set();
           // down the slot into U78.5's west face.
           fabNet(`PWMB_${Q.cells[0]}`, () => {
             const net = `PWMB_${Q.cells[0]}`;
-            const drop = findSite([c78x - 2.68, c78y + 3.77], net, c78y + 3.4, c78y + 4.65);
-            const jTop = findSite([c78x - 3.3, c78y - 3.3], net, ...bandN);
+            // the drop dodges PWMB_91's rise/tail IMAGES (its band-NN
+            // channel work sits one period east-south of this box)
+            const drop = findSite([c78x - 2.78, c78y + 3.37], net, c78y + 3.27, c78y + 3.47, c78x - 2.88, c78x - 2.68);
+            const jTop = findSite([c78x - 4.07, c78y - 2.753], net, c78y - 2.833, c78y - 2.673, c78x - 4.1, c78x - 4.04);
             const rise = findSite([c78x + 1.42, c78y - 4.33], net, ...bandN);
             if (!drop || !jTop || !rise) { console.error(`FABRIC ${net}: no ${!drop ? 'drop' : !jTop ? 'jTop' : 'rise'} site`); return false; }
             cvias.push({ net, x: drop.x, y: drop.y }, { net, x: jTop.x, y: jTop.y }, { net, x: rise.x, y: rise.y });
@@ -1455,8 +1765,16 @@ const stubRuns = new Set();
           fabNet('DATA_E', () => {
             const portalT = taps.find((t2) => t2.net === 'DATA_E' && t2.kind !== 'stub');
             if (!portalT) return false;
-            const drop = findSite([c78x - 2.53, c78y - 3.33], 'DATA_E', ...bandN);
-            const jTop = findSite([HINT + 0.35, c78y - 3.05], 'DATA_E', ...bandN);
+            // the drop must sit at x <= 61.0: any site in [61.1,62.9]
+            // images one period east into the E79 hug / gutter-diagonal
+            // corridor (measured: the old (62.65,63.50) drop's image was the
+            // fence-post that sealed PWMB_91's band-N traverse)
+            const drop = findSite([c78x - 4.55, c78y - 3.1], 'DATA_E', c78y - 3.2, c78y - 2.95, c78x - 4.63, c78x - 4.48);
+            // WEST of the hug with a hard window: every jTop east of it is
+            // pinched between the 70.71/71.29 crossovers and whatever rides
+            // the hug, and a wandering drop/jTop lands its image on the E79
+            // corridor one period over
+            const jTop = findSite([HINT - 0.68, c78y - 2.833], 'DATA_E', c78y - 2.933, c78y - 2.733, HINT - 0.88, HINT - 0.48);
             if (!drop || !jTop) { console.error(`FABRIC DATA_E: no ${!drop ? 'drop' : 'jTop'} site`); return false; }
             cvias.push({ net: 'DATA_E', x: drop.x, y: drop.y }, { net: 'DATA_E', x: jTop.x, y: jTop.y });
             runs.push({ net: 'DATA_E', layer: LANE_LAYER, pts: gutterPath(drop, jTop, +(c78y - 2.58).toFixed(3)) });
@@ -1464,58 +1782,6 @@ const stubRuns = new Set();
               [HINT, +(+portalT.y).toFixed(3)], [portalT.x, portalT.y]] });
             return routeNet('DATA_E', padAt(sr, '2'), [drop.x, drop.y], { startVia: drop,
               guide: [[63.75, 65.3], [63.3, 64.6], [62.85, 63.95], [62.6, 63.4]] });
-          });
-          // PWMB_90: pad 7 -> east corridor -> wedge-east drop on the
-          // internal seam -> hug lane NORTH (In9) -> seam-top junction ->
-          // band east -> rise -> B.Cu up the C90 gap into U90.5.
-          fabNet(`PWMB_${Q.cells[2]}`, () => {
-            const net = `PWMB_${Q.cells[2]}`;
-            const drop = findSite([c78x + 4.82, c78y + 4.07], net, c78y + 3.9, c78y + 4.65);
-            const jTop = findSite([HINT + 0.25, c78y - 2.9], net, ...bandN);
-            const rise = findSite([c78x + 6.42, c78y - 4.2], net, ...bandN);
-            if (!drop || !jTop || !rise) return false;
-            cvias.push({ net, x: drop.x, y: drop.y }, { net, x: jTop.x, y: jTop.y }, { net, x: rise.x, y: rise.y });
-            runs.push({ net, layer: FAB_C, pts: [...southIn(drop, HINT), [HINT, +(jTop.y + 0.45).toFixed(3)], [jTop.x, jTop.y]] });
-            runs.push({ net, layer: LANE_LAYER, pts: gutterPath(jTop, rise, +(c78y - 3.13).toFixed(3)) });
-            const u5 = padAt(`U${Q.cells[2]}`, '5');
-            emitB(net, [[rise.x, rise.y], [+(u5[0] - 0.4).toFixed(3), +(rise.y - 0.35).toFixed(3)], [+(u5[0] - 0.4).toFixed(3), u5[1]]]);
-            return routeNet(net, padAt(sr, '7'), [drop.x, drop.y], { startVia: drop,
-              guide: [[66.0, 68.85], [66.7, 69.05], [68.3, 69.05], [69.3, 69.62], [69.75, 70.2], [69.9, 70.6]] });
-          });
-          // PWMB_91 / PWMA_91: early dives to pocket drops, south In12 band
-          // east, E79 wedge-east drops, hug lanes north on separate layers,
-          // band east, parallel B.Cu tails onto the U91 east faces.
-          fabNet(`PWMB_${Q.cells[3]}`, () => {
-            const net = `PWMB_${Q.cells[3]}`;
-            const drop = findSite([c78x + 0.92, c78y + 4.17], net, ...bandS);
-            const jB = findSite([HE79 + 1.26, c78y + 4.17], net, c78y + 3.9, c78y + 4.65);
-            const jTop = findSite([HE79 + 0.45, c78y - 3.1], net, ...bandN);
-            const rise = findSite([c78x + 15.62, c78y - 4.18], net, ...bandN);
-            if (!drop || !jB || !jTop || !rise) { console.error(`FABRIC ${net}: no ${!drop ? 'drop' : !jB ? 'jB' : !jTop ? 'jTop' : 'rise'} site`); return false; }
-            cvias.push({ net, x: drop.x, y: drop.y }, { net, x: jB.x, y: jB.y }, { net, x: jTop.x, y: jTop.y }, { net, x: rise.x, y: rise.y });
-            runs.push({ net, layer: LANE_LAYER, pts: gutterPath(drop, jB, +(c78y + 4.07).toFixed(3)) });
-            runs.push({ net, layer: FAB_B, pts: [...southIn(jB, HE79), [HE79, +(jTop.y + 0.45).toFixed(3)], [jTop.x, jTop.y]] });
-            runs.push({ net, layer: LANE_LAYER, pts: gutterPath(jTop, rise, +(c78y - 3.78).toFixed(3)) });
-            const u5 = padAt(`U${Q.cells[3]}`, '5');
-            emitB(net, [[rise.x, rise.y], [+(u5[0] + 0.59).toFixed(3), +(rise.y - 0.3).toFixed(3)], [+(u5[0] + 0.59).toFixed(3), u5[1]], [+(u5[0] + 0.45).toFixed(3), u5[1]]]);
-            return routeNet(net, padAt(sr, '3'), [drop.x, drop.y], { startVia: drop,
-              guide: [[66.5, 68.0], [66.15, 68.9], [66.05, 69.9], [66.05, 70.6]] });
-          });
-          fabNet(`PWMA_${Q.cells[3]}`, () => {
-            const net = `PWMA_${Q.cells[3]}`;
-            const drop = findSite([c78x + 1.47, c78y + 4.52], net, ...bandS);
-            const jA = findSite([HE79 + 1.96, c78y + 4.52], net, c78y + 3.9, c78y + 4.65);
-            const jTop = findSite([HE79 + 0.3, c78y - 2.7], net, ...bandN);
-            const rise = findSite([c78x + 16.02, c78y - 4.73], net, ...bandN);
-            if (!drop || !jA || !jTop || !rise) { console.error(`FABRIC ${net}: no ${!drop ? 'drop' : !jA ? 'jA' : !jTop ? 'jTop' : 'rise'} site`); return false; }
-            cvias.push({ net, x: drop.x, y: drop.y }, { net, x: jA.x, y: jA.y }, { net, x: jTop.x, y: jTop.y }, { net, x: rise.x, y: rise.y });
-            runs.push({ net, layer: LANE_LAYER, pts: gutterPath(drop, jA, +(c78y + 4.47).toFixed(3)) });
-            runs.push({ net, layer: FAB_A, pts: [...southIn(jA, HE79), [HE79, +(jTop.y + 0.45).toFixed(3)], [jTop.x, jTop.y]] });
-            runs.push({ net, layer: LANE_LAYER, pts: gutterPath(jTop, rise, +(c78y - 3.33).toFixed(3)) });
-            const u1 = padAt(`U${Q.cells[3]}`, '1');
-            emitB(net, [[rise.x, rise.y], [+(u1[0] + 0.78).toFixed(3), +(rise.y - 0.3).toFixed(3)], [+(u1[0] + 0.78).toFixed(3), u1[1]], [+(u1[0] + 0.45).toFixed(3), u1[1]]]);
-            return routeNet(net, padAt(sr, '5'), [drop.x, drop.y], { startVia: drop,
-              guide: [[66.25, 68.45], [66.35, 69.1], [66.5, 70.4], [66.6, 71.1]] });
           });
         }
         // PWMB_78 goes to the router only when the fabric is off: every
@@ -1691,7 +1957,7 @@ for (const s of segs) {
   for (const v of cvias) {
     if (v.net === s.net) continue;
     const d = ptSeg(v.x, v.y, ...s.seg) - (0.25 + CLR + W / 2);
-    if (d < -1e-9) { console.error(`VIOLATION ${s.net} vs ${v.net} portal via: ${d.toFixed(3)}`); bad++; }
+    if (d < -1e-9) { console.error(`VIOLATION ${s.net} vs ${v.net} portal via at (${v.x},${v.y}): ${d.toFixed(3)} seg (${s.seg.map((q) => q.toFixed(2)).join(',')}) ${s.layer}`); bad++; }
   }
   // fabric layers carry WINDING copper: the hex annulus and that layer's tabs
   if (fabricTabs.has(s.layer)) {
@@ -1700,14 +1966,14 @@ for (const s of segs) {
       if (Math.min(Math.abs(he[0] - s.seg[0]), Math.abs(he[0] - s.seg[2])) > 6 ) continue;
       const d = segSegD(s.seg, he) - need;
       if (segSegD(s.seg, he) < 2 && d < -1e-9) {
-        console.error(`VIOLATION ${s.net} ${s.layer} vs winding hex of cell (${he[4].toFixed(1)},${he[5].toFixed(1)}): ${d.toFixed(3)}`); bad++;
+        console.error(`VIOLATION ${s.net} ${s.layer} vs winding hex of cell (${he[4].toFixed(1)},${he[5].toFixed(1)}): ${d.toFixed(3)} seg (${s.seg.map((q) => q.toFixed(2)).join(',')})`); bad++;
       }
     }
     for (const [ex, ey] of [[s.seg[0], s.seg[1]], [s.seg[2], s.seg[3]]]) {
       for (const [ccx, ccy] of coils) {
         if (Math.abs(ex - ccx) > 5 || Math.abs(ey - ccy) > 5) continue;
         if (hexDistG(ex - ccx, ey - ccy) < coilKeepRG - 1e-9) {
-          console.error(`VIOLATION ${s.net} ${s.layer} endpoint INSIDE winding of cell (${ccx.toFixed(1)},${ccy.toFixed(1)})`); bad++;
+          console.error(`VIOLATION ${s.net} ${s.layer} endpoint INSIDE winding of cell (${ccx.toFixed(1)},${ccy.toFixed(1)}) seg (${s.seg.map((q) => q.toFixed(2)).join(',')})`); bad++;
         }
       }
     }
@@ -1733,7 +1999,7 @@ for (let i = 0; i < segs.length; i++) {
       ptSeg(b.seg[0], b.seg[1], ...a.seg), ptSeg(b.seg[2], b.seg[3], ...a.seg),
     ) - (W + CLR);
     minXNet = Math.min(minXNet, d + W + CLR);
-    if (d < -1e-9) { console.error(`VIOLATION ${a.net} x ${b.net} on ${a.layer}: gap ${(d + W + CLR).toFixed(3)}`); bad++; }
+    if (d < -1e-9) { console.error(`VIOLATION ${a.net} x ${b.net} on ${a.layer}: gap ${(d + W + CLR).toFixed(3)} at (${a.seg[0]},${a.seg[1]})-(${a.seg[2]},${a.seg[3]}) vs (${b.seg[0]},${b.seg[1]})-(${b.seg[2]},${b.seg[3]})`); bad++; }
   }
 }
 // every anchor of a constructed net must touch its copper

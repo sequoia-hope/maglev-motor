@@ -268,3 +268,166 @@ the ring comes down to 0.135 mm — still over the 0.13 mm floor.
   and `gutterFits()` reports the shortfall, but their vias are pinned against the
   winding. Fixing them means the same fill reduction, which for them *does* cost
   turns (13 -> 11), so it is a design decision rather than a bug fix.
+
+## The full board: tile what tiles, route the rest in place (2026-10)
+
+`./full.sh` produces the whole 12x14 board routed end to end — every register,
+bridge, coil lead, bus and the 42-register shift chain — and `./fullgate.sh`
+checks it with no exemptions. Page: `report/full.html`.
+
+```
+stamp2.mjs    bare board -> the 2x2 quad stamp, routed on a TORUS       (t2gate.sh)
+service.mjs   bare board -> + header and dead-man, placed before routing
+assemble.mjs  stamp + board -> pattern, patch the rim, board-level nets  (fullgate.sh)
+```
+
+**Why not just clone the stamp.** Cloning was what `quadclone.mjs` did, and its
+gate (`hand.sh check`) skipped everything within 6 mm of the outline as "spine
+territory". Measured per quad with pcbnew, only the 20 interior quads take the
+stamp whole; all 22 rim quads break — copper trimmed at the outline in the south
+band, bridges and caps rotated off the cut by `quadgen`'s `fitOrNudge` in the
+north band and east column, and no bus ladder at the west and east edges. Do not
+use `quadclone.mjs` or `hand.sh`'s clone gate to judge a board.
+
+**`gridrouter.mjs`** is a negotiated-congestion (PathFinder) router on a 0.025 mm
+grid over all 14 copper layers. Static copper is rasterised from the real
+primitives with exact distance, so a node is legal iff a track centred there
+clears every foreign edge; routed nets claim discs (track–track 0.19, track–via
+0.39, via–via 0.59 mm) and are ripped up and re-routed until nobody shares a
+cell. `wrap: true` makes the grid a torus.
+
+**`stamp2.mjs`** takes ONE lattice period of the bare board and routes the
+quad's 24 nets at once. Because the period wraps, a net's copper and every
+periodic image of every other net are the same cells: tiling is the topology of
+the search, not a check afterwards. Per-quad nets get a window narrower than a
+period, so a net can never meet its own image. The straight In12 lanes and power
+trunks come from `fabtile2.union.ses` as fixed copper. `MESH=2` links each bus
+net's lane rows north–south inside the stamp (no margin spines needed);
+`RESERVE` keeps two clean east–west In12 lines empty for the chain returns.
+
+**`assemble.mjs`** works on one board-wide grid that the stamp's grid is a period
+of. It lays a stamp path on a quad only if every node is legal against that
+quad's real copper and both ends are anchored (dropped whole otherwise), then
+asks each quad what its pins still need and routes exactly that in a window of
+the real board. A quad that will not settle has its own patterned paths ripped
+up and is routed from scratch, together with whatever that opens in finished
+neighbours. Connectivity is "same-class copper sharing a grid node"; it has
+matched pcbnew's ratsnest count exactly on every board so far.
+
+Things that cost time, in the order they bit:
+
+- A routed net's own claim is in the occupancy counts — take it out before
+  asking whether the net is in conflict, or every net fights itself forever.
+- History has to go on the whole contested disc, not the centreline nodes, and
+  the present-sharing factor must be capped; otherwise the same four nets swap
+  one corridor for a hundred iterations.
+- Winding corner fillets are ~1 mm-radius arcs. Tessellate them to < 0.5 um
+  sagitta, or copper routed along a fillet sits microns inside the clearance
+  (KiCad found it; the model had not).
+- The constructed lanes are zero-margin by design. Validate them on their true
+  centreline; grid nodes 0.6 h off it fail the same test.
+- `hole_to_hole` is a *warning* in the generated project file. Two same-net
+  vias 0.075 mm apart went through an errors-only gate; `fullgate.sh` now counts
+  it, and the router keeps a net's own new vias apart.
+- The header fits in exactly four places at >= 0.2 mm from every barrel. One
+  walls a bridge pad in; the interior one leaves the header's DATA pins no path
+  to their lanes even with its quad routed from scratch; the east-rim one
+  routes. Placement is route-tested, not clearance-tested.
+- A long net laid first walls pins in (SR.12 on the west edge: "target walled in:
+  284 nodes"); a rim patch laid first walls the long net's pin in. So the chain
+  ends arrive on the reserved lanes, and the last hop from lane to pin is one of
+  the quad's own jobs, negotiated with everything else in that quad.
+- Nothing is laid from a negotiation that did not converge: the copper that did
+  settle is exactly what the leftovers cannot get past. Rip the quad's own
+  patterned paths up and route it from scratch instead — with whatever that
+  opens in finished neighbours, because a pad may be fed by the neighbour's
+  image of a path.
+- Long east–west nets cannot cross 100 mm of finished stamps on any layer. The
+  stamp has to reserve the line; nothing downstream can find one.
+
+## Power: rails in the gutters (2026-10)
+
+Every bus lane on this board is a 0.1 mm track, VBUS and GND included, and no
+wider lane fits. The first full board fed 168 bridges through that: the worst
+bridge saw 786 mohm of supply loop, the GND pin reached the mesh through 6 mm of
+one track and another bridge's pad, and at 3 A that track is a fuse.
+
+What the board does have is the **gutter**: 1.7 mm between neighbouring
+windings on all twelve winding layers, holding nothing but barrels. `pour.py`
+pours GND on seven layers and VBUS on the other seven, alternating, with
+KiCad's own zone filler against the board's own rule files (0.12 mm from
+foreign copper; the fab minimum is 0.09), nothing over a coil face. Every power
+barrel standing in a gutter ties its net's layers together. Tracks stay; the
+pour is copper in parallel.
+
+A poured honeycomb is a closed ring round every coil on every layer -- a
+shorted turn coupled to a 144-turn winding switched at PWM frequency.
+Estimated from the geometry (ring ~3 mohm, ~16 nH per net, coupling ~0.3) the
+rings would turn 0.2-2 W of PWM ripple into heat at hover, against 5.6 W of
+hover power and the few milliwatts the rail network itself dissipates. So the
+pour is cut into a tree. The gutter lattice is a honeycomb graph (388
+junctions, 555 flats); it is poured whole and solved with `powercheck.py`'s
+network, the current the pour carries through each flat is read off, and the
+rails are the maximum spanning tree of that -- the arteries the honeycomb was
+already using. Every flat outside the tree gets one 0.2 mm slit: one per coil.
+Which flats conduct is decided by the routed board (ladders, crossover farms,
+links riding winding layers, two layers with no barrel between them), so it is
+measured, not assumed; the slit flats carried 12% of the flat current. The
+slits are rule areas in the board file, so a refill in KiCad reproduces the
+tree. Earlier shapes -- east-west rails with a seam spine, north-south rails
+with a zigzag spine -- were worse (248 and 262 mohm), because a seam's two
+columns of ladder barrels leave a pour 0.19 mm of passage and a single spine
+through them chokes.
+
+Gates: `ringcheck.py` projects every poured polygon, all layers and both
+nets, onto one plane and floods it from outside the board; every coil's
+winding must be reachable. `powercheck.py` turns every VBUS/GND track, barrel,
+pad and pour cell into a resistor network (1 oz copper, 20 um plating), feeds
+it at the header pins and loads every bridge; it refuses to report if a bridge
+pin is unreachable (a hole in the model, since the board has no open nets),
+and the 0.05 mm raster agrees with the 0.1 mm one within 2%. DRC sees the
+pour: a fill shifted 0.06 mm sideways returns 510 clearance errors.
+
+Measured on `out/amzhex-full.kicad_pcb` (page: `report/full.html`, section 06):
+
+| | tracks only | with the rails |
+|---|---|---|
+| supply loop per bridge, min / median / max | 195 / 477 / 786 mohm | 51 / 93 / 178 mohm |
+| rail lost at the worst bridge, hover 0.62 A | 219 mV | 29 mV |
+| same at 3 A | 1059 mV | 142 mV |
+| VBUS, hardest-worked conductor at hover | 177 A/mm2 (all of it in one track) | 62 A/mm2 |
+| GND, hardest-worked conductor at hover | 177 A/mm2 | 177 A/mm2 |
+
+The GND line is the open item. The header's pads sit over a coil face, so the
+only way into the board is a barrel in the nearest gutter; the router gave the
+VBUS pin two barrels 0.1 mm away (a B.Cu pour now joins them properly), and
+gave GND one 6 mm away through a track. `service.mjs` can place a pin's own
+barrels and copper tabs BEFORE routing (`FEED_VIAS`), and that works
+electrically (12-20 mV at hover, loop <= 150 mohm in every trial) -- but the
+header quad does not survive it: six full route tests, six boards with 2-9
+connections open (the record is in `service.mjs`). The quad with the header is
+at the edge of routability, and a feed barrel takes a crossing slot its PWM
+tracks need. So the feed wants a different header spot or pinout, which is a
+design decision, and `powercheck.py`'s gate (70 A/mm2 at hover, the windings'
+own density) stays red on GND until then. As built, GND's feed is good for
+about hover (0.62 A in a 0.1 mm outer-layer track, ~20 K rise) and the
+connector's own 1.27 mm pin is rated about the same.
+
+## Assembly view: boardvis (2026-10)
+
+`boardvis.sh` exports the routed board to IPC-2581 (`kicad-cli`, 145 MB for
+`amzhex-full`) and hands it to boardvis (`~/Software/boardvis`), which renders
+the assembly documentation: every part, its pin 1, and the callouts grouped by
+part (168x TC118S, 42x 74HC595, the header and the FET). The static pages and a
+manifest of the open checks land in `boardvis/`, which is what the simulator's
+"Board view" tab shows -- tracked in git so GitHub Pages serves it with nothing
+running behind it. The XML itself goes to `~/pcb/maglev-motor/`, where the live
+boardvis (`proj up boardvis`) scans, so the interactive view with the pin-1
+interview and the PDF packet is one click from the tab when the simulator is
+served from this machine. The top page is empty on purpose: every part is on
+the bottom, the top face is winding copper.
+
+The checks are honest about where the board stands: 212 errors, all of them
+"no pin-1 evidence attached" -- boardvis wants, per part, how an operator
+recognises pin 1 on the physical component, and that is answered once in a
+sidecar beside the XML, not in the board file. Nothing is answered yet.

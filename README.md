@@ -7,8 +7,14 @@ array of ironless coils.
 No build step, no dependencies. Serve the directory and open `index.html`:
 
 ```sh
-python3 -m http.server 8000     # then http://localhost:8000
+python3 serve.py 8000           # then http://localhost:8000  (no-store headers; see the file)
 ```
+
+It is also published as a static site from `main` by GitHub Pages:
+<https://sequoia-hope.github.io/maglev-motor/>. Everything is relative paths and
+pre-rendered files, so the Pages copy has every tab, including the **Board view**
+(`route/boardvis/`, built by `route/boardvis.sh`) and the **Board report**
+(`route/report/`).
 
 Tests (Node 18+, no dependencies):
 

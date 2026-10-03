@@ -1,0 +1,34 @@
+# route/.gitignore keeps renders out of git; the report pages are the exception,
+# since GitHub Pages serves this directory and a page of broken images is no
+# report. Tracked: exactly the images index/full/hand.html reference (15 MB).
+# Regenerate this list after report.sh adds a shot:
+#   cat *.html | grep -o 'src="[^"]*\.png"' | sed 's/src="/!/;s/"$//' | sort -u
+!cell-allcu.png
+!cell-elec.png
+!cell-wind.png
+!full2-board.png
+!full2-header.png
+!full2-nw.png
+!full2-stamp.png
+!full2-sw.png
+!full-elec.png
+!full-wind.png
+!hand-airwires.png
+!lay-edge.png
+!power-after.GND.png
+!power-after.VBUS.png
+!power-before.GND.png
+!power-before.VBUS.png
+!power-feed.png
+!power-rails.png
+!quad-allcu.png
+!quad-bcu.png
+!quad-elec.png
+!quad-in12.png
+!reg-elec.png
+!render-bottom.png
+!render-top.png
+!seam-allcu.png
+!tiled-3d.png
+!tiled-elec.png
+!tiles-elec.png

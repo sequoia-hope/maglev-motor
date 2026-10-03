@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>amzhex — hand-routing the stamp</title>
+<style>
+:root{
+  --bg:#0f1014; --bg2:#16181e; --bg3:#1d2028; --line:#2a2e38;
+  --ink:#dfe3ea; --ink2:#98a0af; --ink3:#6b7383;
+  --cu:#e0574f; --cu2:#5b8dd6; --ok:#5fbf7a; --warn:#e0a955; --bad:#e0574f;
+  --acc:#c9a227;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth; scroll-padding-top:64px}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.62 -apple-system,"Segoe UI",Inter,Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased}
+code,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--bg3);padding:1px 5px;border-radius:4px;font-size:.88em;color:#cfd6e2}
+a{color:#7fb2f0;text-decoration:none} a:hover{text-decoration:underline}
+h1,h2,h3{line-height:1.25;margin:0}
+.wrap{max-width:1180px;margin:0 auto;padding:0 22px}
+nav{position:sticky;top:0;z-index:40;background:rgba(15,16,20,.93);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:6px;height:52px;overflow-x:auto}
+nav b{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--acc);
+  margin-right:14px;white-space:nowrap}
+nav a{font-size:13px;color:var(--ink2);padding:5px 9px;border-radius:6px;white-space:nowrap}
+nav a:hover{background:var(--bg3);color:var(--ink);text-decoration:none}
+header{padding:52px 0 28px;border-bottom:1px solid var(--line)}
+header h1{font-size:clamp(26px,4vw,40px);letter-spacing:-.02em}
+header .sub{color:var(--ink2);font-size:17px;margin-top:10px;max-width:70ch}
+.tags{display:flex;flex-wrap:wrap;gap:7px;margin-top:18px}
+.tag{font-size:12px;padding:3px 10px;border-radius:20px;background:var(--bg3);
+  color:var(--ink2);border:1px solid var(--line)}
+.tag.ok{color:var(--ok);border-color:#2c4a35} .tag.warn{color:var(--warn);border-color:#4a3d22}
+section{padding:46px 0;border-bottom:1px solid var(--line)}
+section>.wrap>h2{font-size:24px;letter-spacing:-.01em}
+section>.wrap>h2::before{content:attr(data-n);color:var(--acc);font:600 13px/1 ui-monospace,monospace;
+  display:block;margin-bottom:8px;letter-spacing:.12em}
+h3{font-size:16px;margin:30px 0 10px;color:var(--ink)}
+p{margin:12px 0;max-width:78ch;color:#c6ccd6}
+p.lead{font-size:16.5px;color:var(--ink)}
+ul{max-width:78ch;color:#c6ccd6;padding-left:20px} li{margin:6px 0}
+figure{margin:22px 0}
+figure img{display:block;width:100%;height:auto;border-radius:9px;background:#fff;
+  border:1px solid var(--line)}
+figcaption{color:var(--ink3);font-size:13px;margin-top:9px;max-width:82ch}
+figcaption b{color:var(--ink2);font-weight:600}
+table{border-collapse:collapse;margin:18px 0;font-size:14px;width:100%;max-width:960px}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--bg3);color:var(--ink2);font-weight:600}
+td{color:#c6ccd6}
+pre{background:var(--bg2);border:1px solid var(--line);border-radius:9px;
+  padding:14px 16px;overflow-x:auto;font-size:13px;line-height:1.55;color:#cfd6e2;max-width:960px}
+.good{color:var(--ok)} .risk{color:var(--warn)} .dead{color:var(--bad)}
+footer{padding:38px 0 60px;color:var(--ink3);font-size:13px}
+</style></head><body>
+
+<nav><div class="wrap"><b>amzhex · hand</b>
+  <a href="index.html" style="color:var(--acc)">&#8598; Board report</a>
+  <a href="#loop">The loop</a><a href="#misses">The six misses</a><a href="#dossier">Dossier</a>
+  <a href="#rules">Rules</a><a href="#traps">Traps</a>
+</div></nav>
+
+<header><div class="wrap">
+  <h1>Hand-routing the stamp</h1>
+  <p class="sub">The pipeline's verdict stands at 18/24 nets with six missing, freerouting
+  scores 0.00 on every one of them, and the constructor holds measured death proofs at this
+  register placement. What the machines could not renegotiate, a mouse can: every routed
+  track of the stamp is yours to keep, move, or rip up — the gates re-verify the whole
+  stamp from scratch every time.</p>
+  <div class="tags">
+    <span class="tag">hand.kicad_pcb</span>
+    <span class="tag ok">starts at 18/24, all gates green</span>
+    <span class="tag warn">6 connections to win</span>
+  </div>
+</div></header>
+
+<section id="loop"><div class="wrap">
+  <h2 data-n="01">The loop</h2>
+  <p class="lead">Route in pcbnew, save, run <code>./hand.sh check</code>. Nothing you do in
+  the editor is trusted until the gates say so.</p>
+<pre>cd route
+./hand.sh build       # once (already done): hand.kicad_pcb + hand.kicad_pro
+kicad hand.kicad_pro  # route; SAVE in pcbnew before checking
+./hand.sh check       # extract -> tilecheck -> merge -> coilcheck -> DRC
+                      #   -> 42x clone + interior DRC -> true ratsnest
+./hand.sh rebuild     # after a green check: refresh the neighbour images
+                      #   so YOUR new copper's periodic images become walls too
+QUICK=1 ./hand.sh check   # skips the clone + full-board DRC + ratsnest</pre>
+  <p>What you see in the editor:</p>
+  <ul>
+    <li><b>Unlocked copper</b> is the stamp's routing — the pipeline's 284 segments and
+      13 vias, plus whatever you draw. It is the only thing <code>handses.py</code>
+      extracts, and the extracted <code>hand.union.ses</code> is the durable artifact
+      (the board files are all regenerated from it). Bank good states:
+      <code>cp hand.union.ses hand-$(date +%m%d).ses</code>.</li>
+    <li><b>Locked copper</b> is the generated board (windings, tabs, coil and seam vias,
+      all 378 parts) <i>plus the eight neighbouring stamp images</i> on their real alias
+      nets (PWMA_78's east image is PWMA_80, and so on). pcbnew will refuse to drag any
+      of it, which is correct: bare-board items exist once per cell and only the
+      generator may move them, and the images are tilecheck's ground truth. Live DRC
+      sees the images, so most periodicity mistakes scream immediately.</li>
+    <li>The six missing nets are colour-coded (net colours in <code>hand.kicad_pro</code>);
+      the board starts DRC-clean, so every live violation is yours.</li>
+  </ul>
+  <p>The gates, in order, and what each one alone can see:</p>
+  <table>
+    <tr><th>gate</th><th>catches</th></tr>
+    <tr><td><code>handses.py</code> (extract)</td><td>copper on nets the stamp does not
+      own — a track that wandered into a neighbour quad and picked up its net</td></tr>
+    <tr><td><code>tilecheck</code></td><td>the stamp against its own 8 lattice images,
+      net-aware — including <b>your new copper against its own images</b>, which the
+      editor cannot show until a rebuild</td></tr>
+    <tr><td><code>coilcheck</code></td><td>same-net shorts no DRC can report: copper
+      crossing its own coil's winding, tab chords, welded via lands</td></tr>
+    <tr><td>KiCad DRC (merged)</td><td>everything cross-net on the real 14-layer board</td></tr>
+    <tr><td>42&times; clone + interior DRC</td><td>the stamp meeting the whole board:
+      668 rim violations are expected spine-territory junk (they reach 5.06&nbsp;mm in,
+      never deeper); <b>interior must stay 0</b></td></tr>
+    <tr><td><code>airwires.py</code></td><td>the true ratsnest (the DRC report caps at
+      ~500); prints CLOSED / open / NEW&nbsp;MISS against the six</td></tr>
+  </table>
+</div></section>
+
+<section id="misses"><div class="wrap">
+  <h2 data-n="02">The six misses</h2>
+  <p class="lead">All six are register-pocket escapes. Endpoints in board millimetres,
+  from the live connectivity graph.</p>
+  <table>
+    <tr><th>net</th><th>from</th><th>to</th><th>span</th><th>what it is</th></tr>
+    <tr><td>VLOGIC_CE</td><td>62.93, 65.98</td><td>62.35, 68.80</td><td>2.9&nbsp;mm</td>
+      <td>SR21 pad 16 (CE&#773;) to VLOGIC — the shortest and the most walled</td></tr>
+    <tr><td>PWMA_78</td><td>67.68, 63.54</td><td>62.60, 68.37</td><td>7.0&nbsp;mm</td>
+      <td>SR pad 14 stub to U78.6's pocket</td></tr>
+    <tr><td>PWMA_79</td><td>76.14, 63.54</td><td>65.02, 69.77</td><td>12.7&nbsp;mm</td>
+      <td>SR pad 13 to U79.1</td></tr>
+    <tr><td>PWMB_79</td><td>76.14, 65.44</td><td>65.27, 69.33</td><td>11.5&nbsp;mm</td>
+      <td>SR pad 5 to U79.5</td></tr>
+    <tr><td>PWMB_90</td><td>71.91, 58.11</td><td>65.77, 68.47</td><td>12.0&nbsp;mm</td>
+      <td>SR pad 7 to U90.5</td></tr>
+    <tr><td>PWMA_91</td><td>80.38, 56.21</td><td>66.02, 68.03</td><td>18.6&nbsp;mm</td>
+      <td>SR pad 3 to U91.1 — the long diagonal</td></tr>
+  </table>
+  <figure><img src="hand-airwires.png" alt="the six airwires over the stamp">
+    <figcaption><b>The work, drawn.</b> The stamp's true ratsnest, one colour per net,
+    over all-copper of the centre quad. Regenerated by every full
+    <code>./hand.sh check</code>, so it always shows what is left.</figcaption></figure>
+</div></section>
+
+<section id="dossier"><div class="wrap">
+  <h2 data-n="03">Dossier: why the machine lost each one</h2>
+  <p class="lead">Ordered by hand-routing odds. Every proof below froze the other 18 nets'
+  copper in place — <b>you are allowed to renegotiate that</b>. Ripping up a committed
+  drop or moving a hug to a different winding layer re-opens corridors the proofs
+  declared shut; the gates re-verify everything, nothing remembers the old shapes.</p>
+
+  <h3 class="good">PWMB_90 — machinery withdrawal, not a proof</h3>
+  <p>A full measured corridor exists in <code>lanegen.mjs</code>: In9 wedge along cell
+  78's SE diagonal, the y≈69.66 thread (the only In-layer line past J66.IN), hug down to
+  cell 90's south vertex, SE-diagonal exit north of the 70.71 crossover, In12 to the
+  90|91 hug, band NN, and the U90 inter-column channel into pad 5. The construction
+  withdrew on via-<i>site</i> legality (its junction/rise sites failed the prober), not
+  on the corridor. A human placing the three vias by eye, against live DRC and the
+  images, is exactly the move the machinery could not make.</p>
+
+  <h3 class="risk">PWMA_78 — five drops beat one climb, on B.Cu</h3>
+  <p>Flood-proven: any north–south line in the 1.5&nbsp;mm west-face strip (x
+  60.5–63.5) crosses all five committed west drops, so its B.Cu climb is mutually
+  exclusive with them. But inner layers ignore B.Cu copper entirely — only via
+  <i>barrels</i> block them. An In-layer rise from a legal gutter via, over the drops,
+  is the unexhausted direction; the catch is finding a via site that clears the seam
+  ladder (0.59 via–via) and whose own east image (x&nbsp;+16.93) lands clean.</p>
+
+  <h3 class="risk">VLOGIC_CE — 2.9 mm, comb-walled</h3>
+  <p>Pad 16's under-body channel is statically shut at bay-gate 38°, and outside
+  approaches are sealed by the power combs: the VBUS riser at x&nbsp;66.09, the GND
+  tooth, and the via-link. Short enough that a small renegotiation of one comb tooth
+  (unlocked stamp copper!) may open it — the comb shape was chosen by the generator for
+  clearance, not sanctity. Anything you move must still verify: combs feed every cell,
+  so watch the ratsnest for NEW MISS lines.</p>
+
+  <h3 class="dead">PWMB_79 — pocket faces walled</h3>
+  <p>The 90/91 quartet's dives sealed its only thread crossing, and U79.5's pocket faces
+  are walled by C79's pads and the GND tooth and the jMid via pair. The C79/GND geometry
+  is fixed, but the quartet's dives are stamp copper — re-shaping them is the only known
+  line of attack.</p>
+
+  <h3 class="dead">PWMA_91 — three nets' geometry in one aliased column</h3>
+  <p>Every constructible corridor to U91.1 is measured shut: the E-seam jB zone, the
+  channel mouth, and the west face are all one x-period apart, so they are <i>one</i>
+  column in the alias frame — three nets' worth of geometry cannot share it, and
+  PWMB_91 got the slot. Freeing it means re-routing PWMB_91's rise, which was itself
+  the survivor of a long fight.</p>
+
+  <h3 class="dead">PWMA_79 — proof-dead, with a tiling proof</h3>
+  <p>Its verified In11 chain exists (gated behind <code>FABRIC_A79</code>) but can never
+  tile: the W-hug entry thread is triple-sealed by PWMB_78's drop, the board via at
+  (61.78,&nbsp;70.18), and PWMB_91's band-NN rise <i>image</i>; cell 78's SW hex floor
+  closes the detours, and a W-box drop's own image lands on PWMB_91's pinch. The proof
+  assumes PWMB_78's and PWMB_91's current copper — same caveat, steepest odds.</p>
+</div></section>
+
+<section id="rules"><div class="wrap">
+  <h2 data-n="04">Rules of the copper</h2>
+  <p class="lead">JLCPCB 14-layer, 1&nbsp;oz. The <code>hand.kicad_dru</code> beside the
+  board enforces all of this live.</p>
+  <table>
+    <tr><th>quantity</th><th>floor</th><th>centre-to-centre for 0.1&nbsp;mm tracks</th></tr>
+    <tr><td>track width</td><td>0.09&nbsp;mm (route at 0.1)</td><td>—</td></tr>
+    <tr><td>copper clearance</td><td>0.09&nbsp;mm</td><td>track–track 0.19&nbsp;mm</td></tr>
+    <tr><td>via (through only)</td><td>0.5&nbsp;mm land / 0.23 drill</td>
+      <td>track–via 0.39&nbsp;mm, via–via 0.59&nbsp;mm</td></tr>
+    <tr><td>hole to copper</td><td>0.2&nbsp;mm</td><td>—</td></tr>
+    <tr><td>hole to hole</td><td>0.2&nbsp;mm</td><td>—</td></tr>
+    <tr><td>copper to board edge</td><td>0.2&nbsp;mm</td><td>—</td></tr>
+  </table>
+  <p>Layer geography:</p>
+  <ul>
+    <li><b>B.Cu</b> — the component side; ignores winding hexes entirely (only drills
+      care about the winding). The register pocket lives here and is saturated.</li>
+    <li><b>In12</b> — the lane layer: striped by the bus ladders; the south gutter has
+      exactly two clean lanes (y≈69.52 between the OE_N lane and the 70.02 via row, and
+      y≈71.25 south of the 70.79 row); band N has clean In12 at 62.35 and
+      63.95/64.15.</li>
+    <li><b>In6–In11</b> — the fabric: winding layers with copper hexes and tabs as
+      obstacles; the hug lane at cell&nbsp;+4.795 (one per layer) runs straight through
+      each seam ladder. In1–In5 and F.Cu are physically the same deal, just unused so
+      far — coilcheck referees hexes and tabs either way.</li>
+    <li><b>Vias</b> are all-layer: gutter lattice only, never over a hex (the drill
+      goes through all 12 winding layers), and everyone's problem on every layer —
+      including the images'.</li>
+  </ul>
+</div></section>
+
+<section id="traps"><div class="wrap">
+  <h2 data-n="05">Traps the editor cannot show you</h2>
+  <ul>
+    <li><b>Your own image.</b> The locked images are of the <i>last built</i> stamp. New
+      copper's periodic images do not exist in the editor until
+      <code>./hand.sh rebuild</code> — tilecheck sees them anyway. The classic form:
+      one net may not have copper in two bands of the same x-column one period apart
+      (lattice: 16.9333&nbsp;east, 14.6647&nbsp;north/south). The west face
+      (x&nbsp;60.5–63.5) and the E-seam zone (x&nbsp;77.4–80.4) are the same column in
+      the alias frame; band&nbsp;NN aliases band&nbsp;S exactly. Check often, rebuild
+      after every landed connection.</li>
+    <li><b>Same-net is invisible to DRC.</b> A track grazing its own coil's winding, or
+      two of a coil's via lands touching, passes DRC clean and kills the board.
+      coilcheck is the referee; do not skip full checks for long.</li>
+    <li><b>Nets propagate on save.</b> KiCad re-nets copper from what it touches. Always
+      start a track on its own net's pad, via, or track; a floating stub drawn in air
+      can silently adopt a neighbour net — extraction will refuse it loudly.</li>
+    <li><b>Arcs are fine but become polylines.</b> The ses grammar has no arcs; the
+      extractor tessellates them at &lt;5&nbsp;µm error and every gate judges the
+      polyline, which is also what gets fabbed.</li>
+    <li><b>Razor margins are normal.</b> The pipeline accepted verified clearances of
+      0.01–0.05&nbsp;mm above floor throughout. Trust the gates, not squeamishness —
+      but give vias real slack (their floors are big and they exist on all layers and
+      all images).</li>
+    <li><b>Do not unlock anything.</b> If a locked item truly must move, that is a
+      generator change (viaPlan/quadgen) — say so instead; a hand-moved bare-board item
+      exists in one cell only and breaks the 42&times; identity silently.</li>
+  </ul>
+</div></section>
+
+<footer><div class="wrap">
+  Built from <code>fabtile2.union.ses</code> · toolchain:
+  <code>hand.sh</code> / <code>handimages.mjs</code> / <code>handlock.py</code> /
+  <code>handses.py</code> · gates: <code>tilecheck.mjs</code>,
+  <code>coilcheck.mjs</code>, kicad-cli DRC, <code>quadclone.mjs</code>,
+  <code>airwires.py</code> · serve the repo root and open
+  <code>/route/report/hand.html</code>
+</div></footer>
+</body></html>

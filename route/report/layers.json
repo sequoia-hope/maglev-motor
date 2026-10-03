@@ -1,0 +1,72 @@
+[
+ {
+  "name": "B.Cu",
+  "slug": "b",
+  "winding": false
+ },
+ {
+  "name": "In12.Cu",
+  "slug": "in12",
+  "winding": false
+ },
+ {
+  "name": "In11.Cu",
+  "slug": "in11",
+  "winding": true
+ },
+ {
+  "name": "In10.Cu",
+  "slug": "in10",
+  "winding": true
+ },
+ {
+  "name": "In9.Cu",
+  "slug": "in9",
+  "winding": true
+ },
+ {
+  "name": "In8.Cu",
+  "slug": "in8",
+  "winding": true
+ },
+ {
+  "name": "In7.Cu",
+  "slug": "in7",
+  "winding": true
+ },
+ {
+  "name": "In6.Cu",
+  "slug": "in6",
+  "winding": true
+ },
+ {
+  "name": "In5.Cu",
+  "slug": "in5",
+  "winding": true
+ },
+ {
+  "name": "In4.Cu",
+  "slug": "in4",
+  "winding": true
+ },
+ {
+  "name": "In3.Cu",
+  "slug": "in3",
+  "winding": true
+ },
+ {
+  "name": "In2.Cu",
+  "slug": "in2",
+  "winding": true
+ },
+ {
+  "name": "In1.Cu",
+  "slug": "in1",
+  "winding": true
+ },
+ {
+  "name": "F.Cu",
+  "slug": "f",
+  "winding": true
+ }
+]

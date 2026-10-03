@@ -49,3 +49,16 @@ production/
 *.coilgrid.json
 *.srscan.json
 srsweep.cands.txt
+
+# The hybrid pipeline (full.sh): stamp node paths, assembly reports, coil terminal table.
+*.paths.json
+*.assemble.json
+*.terminals.json
+
+# powercheck.py is imported by pour.py
+__pycache__/
+*.power.json
+*.power-before.json
+*.pour.json
+*.ringcheck.txt
+*.paths.json

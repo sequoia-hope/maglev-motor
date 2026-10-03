@@ -5,11 +5,18 @@
 # design -- are CONSTRUCTED by lanegen.mjs and only ONE routed stage remains:
 # locals + power + register drops, negotiated together, with the constructed
 # copper as keepouts. Then union, merge, DRC-gate the stamp.
-#   ./qlane.sh            (env: SKIP_GEN=1 to reuse the existing board)
+#   ./qlane.sh            (env: SKIP_GEN=1 to reuse the existing board,
+#                                OUT_KEY=<name> to write <name>.* instead of qlane.*,
+#                                FABRIC_LAYERS=In11.Cu,In10.Cu,In9.Cu,In8.Cu,In7.Cu,In6.Cu
+#                                for the winding-layer fabric -- six layers
+#                                carry the band-NN staircase; see lanegen.mjs,
+#                                MP_R1/MP_R2/MP_R3 for the router pass budgets,
+#                                PERIODIC_KEEPOUTS=1 so the routed stage sees
+#                                the neighbouring stamps too)
 cd "$(dirname "$0")"
-exec > >(tee qlane.log) 2>&1
-echo "== qlane start $(date)"
-B=qlane
+B=${OUT_KEY:-qlane}
+exec > >(tee "$B.log") 2>&1
+echo "== $B start $(date)"
 FR="java -Xss1024m -Xmx8g -jar freerouting-2.2.4.jar"
 export FREEROUTING__ROUTER__SCORING__VIA_COSTS=20 FREEROUTING__ROUTER__SCORING__START_RIPUP_COSTS=100
 
@@ -57,19 +64,19 @@ COILS_TODO=$(echo "$TODO" | tr ',' '\n' | grep '^coil' | paste -sd, -)
 REST_TODO=$(echo "$TODO" | tr ',' '\n' | grep -v '^coil' | paste -sd, -)
 : > $B.r1.ses; : > $B.r2.ses; : > $B.r3.ses
 if [ -n "$COILS_TODO" ]; then
-  echo "== stage R1: coils [$COILS_TODO] (mp 100, vc 5)"
-  run_stage r1 "$COILS_TODO" "$B.lanes.ses" 100
+  echo "== stage R1: coils [$COILS_TODO] (mp ${MP_R1:-100}, vc 5)"
+  run_stage r1 "$COILS_TODO" "$B.lanes.ses" "${MP_R1:-100}"
   echo "R1 fails: $(fails r1 "$COILS_TODO")"
 fi
 if [ -n "$REST_TODO" ]; then
-  echo "== stage R2: register pocket [$REST_TODO] (mp 300, vc 5)"
-  run_stage r2 "$REST_TODO" "$B.lanes.ses,$B.r1.ses" 300
+  echo "== stage R2: register pocket [$REST_TODO] (mp ${MP_R2:-300}, vc 5)"
+  run_stage r2 "$REST_TODO" "$B.lanes.ses,$B.r1.ses" "${MP_R2:-300}"
   echo "R2 fails: $(fails r2 "$REST_TODO")"
 fi
 REDO=$(echo "$(fails r1 "$COILS_TODO"),$(fails r2 "$REST_TODO")" | tr ',' '\n' | grep -v '^$' | paste -sd, -)
 if [ -n "$REDO" ]; then
-  echo "== stage R3: cleanup of [$REDO] (mp 200, vc 5)"
-  run_stage r3 "$REDO" "$B.lanes.ses,$B.r1.ses,$B.r2.ses" 200 "$REDO"
+  echo "== stage R3: cleanup of [$REDO] (mp ${MP_R3:-200}, vc 5)"
+  run_stage r3 "$REDO" "$B.lanes.ses,$B.r1.ses,$B.r2.ses" "${MP_R3:-200}" "$REDO"
   echo "R3 fails: $(fails r3 "$REDO")"
 fi
 
@@ -112,4 +119,10 @@ from collections import Counter
 d=json.load(open('$B.merged.drc.json'))
 c=Counter(v['type'] for v in d.get('violations',[]) if v['severity']=='error')
 print('SINGLE-QUAD DRC ERRORS:', dict(c) or 'NONE')"
-echo "== qlane done $(date)"
+# The stamp is only useful if it REPEATS: DRC on this board says the copper is
+# legal where it sits, which is a different question from whether 42 copies of
+# it collide. tilecheck answers that one, and it is the gate between a routed
+# cell and a routed board.
+echo "== tiling gate"
+node tilecheck.mjs $B $B.union.ses | tail -n +2
+echo "== $B done $(date)"
