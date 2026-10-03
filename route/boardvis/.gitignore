@@ -1,4 +1,0 @@
-# 700 KB of per-designator findings; manifest.json carries the summary.
-checks.json
-# route/.gitignore keeps *.svg out; these four pages are the tab, and are kept.
-!*.svg

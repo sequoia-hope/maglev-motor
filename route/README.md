@@ -413,29 +413,10 @@ own density) stays red on GND until then. As built, GND's feed is good for
 about hover (0.62 A in a 0.1 mm outer-layer track, ~20 K rise) and the
 connector's own 1.27 mm pin is rated about the same.
 
-## The Board tab: pcbview, and boardvis (2026-10)
+## Pcbview (2026-10)
 
 `pcbview.toml` → `~/Software/pcbview/bin/pcbview build route/pcbview.toml` → `pcbview/`:
 every copper layer plotted by kicad-cli in board coordinates, the GLB of the board, and
-the part pane with LCSC numbers, as a static site. The simulator links out to it ("Pcbview",
-beside "Board report") and GitHub Pages serves it unchanged. Rebuild after the board
-changes; the layer plots are the heavy part.
-
-### Assembly view: boardvis
-
-`boardvis.sh` exports the routed board to IPC-2581 (`kicad-cli`, 145 MB for
-`amzhex-full`) and hands it to boardvis (`~/Software/boardvis`), which renders
-the assembly documentation: every part, its pin 1, and the callouts grouped by
-part (168x TC118S, 42x 74HC595, the header and the FET). The static pages and a
-manifest of the open checks land in `boardvis/`, which is what the simulator's
-"Board view" tab shows -- tracked in git so GitHub Pages serves it with nothing
-running behind it. The XML itself goes to `~/pcb/maglev-motor/`, where the live
-boardvis (`proj up boardvis`) scans, so the interactive view with the pin-1
-interview and the PDF packet is one click from the tab when the simulator is
-served from this machine. The top page is empty on purpose: every part is on
-the bottom, the top face is winding copper.
-
-The checks are honest about where the board stands: 212 errors, all of them
-"no pin-1 evidence attached" -- boardvis wants, per part, how an operator
-recognises pin 1 on the physical component, and that is answered once in a
-sidecar beside the XML, not in the board file. Nothing is answered yet.
+the part pane with LCSC numbers, as a static site. The simulator links out to it
+("Pcbview", beside "Board report") and GitHub Pages serves it unchanged. Rebuild after
+the board changes; the layer plots are the heavy part.

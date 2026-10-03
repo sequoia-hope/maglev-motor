@@ -308,20 +308,7 @@ tr.infeasible td { color: var(--muted); }
 .viewctl input[type="range"] { width: 74px; accent-color: var(--accent); }
 .viewctl output { font-variant-numeric: tabular-nums; font-size: 11px; min-width: 20px; }
 .viewctl select { margin-left: 0; }
-.viewctl a { font-size: 11px; color: var(--accent); text-decoration: none; }
 
-/* Board view: the boardvis page is dark-on-dark copper art, so it gets its own
-   plate in both themes rather than the card's paper. */
-.bv-page { background: #121a16; border-radius: 6px; padding: 6px; }
-.bv-page img { display: block; width: 100%; height: auto; }
-.bv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.bv-table th, .bv-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.bv-table th { color: var(--muted); font-weight: 600; }
-.bv-table td.n { text-align: right; font-variant-numeric: tabular-nums; }
-.bv-lvl { display: inline-block; min-width: 3.2em; font-size: 10px; font-weight: 700; text-transform: uppercase; }
-.bv-lvl.error { color: var(--crit); }
-.bv-lvl.warn { color: var(--warn); }
-.bv-lvl.info { color: var(--muted); }
 
 /* ---------- narrow screens ---------------------------------------------
    A phone cannot afford a permanent 310 px column of sliders next to a chart:

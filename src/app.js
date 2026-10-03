@@ -1595,7 +1595,6 @@ function setupChrome() {
     if (name === 'design') redrawAll();
     if (name === 'build') { renderBuild(); redraw('explodedView'); }
     if (name === 'optimise') { redraw('optScatter'); redraw('optSlice'); }
-    if (name === 'board') renderBoardView();
   };
   document.getElementById('tabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-tab]');
@@ -1869,62 +1868,6 @@ function renderAbout() {
       <a href="https://open.library.ubc.ca/media/stream/pdf/24/1.0340572/3" target="_blank" rel="noopener">PDF</a>.
       Array topologies with gaps and staggers.</li>
     </ul>`;
-}
-
-// ------------------------------------------------------------- board view ---
-// The amzhex 1/4" board as boardvis (~/Software/boardvis) documents it: the
-// pages and the checks manifest in route/boardvis/ are built by
-// route/boardvis.sh from the routed board, and this only shows them. The
-// manifest is fetched once, on the first visit to the tab.
-const BV_DIR = 'route/boardvis/';
-function renderBoardView() {
-  if (app._bv) return;
-  app._bv = { side: 'bottom', callouts: 'grouped' };
-  const page = document.getElementById('bvPage');
-  const open = document.getElementById('bvOpen');
-  const showPage = () => {
-    const f = `${BV_DIR}${app._bv.side}_${app._bv.callouts}.svg`;
-    page.src = f;
-    open.href = f;
-  };
-  for (const k of ['side', 'callouts']) {
-    const sel = document.getElementById(k === 'side' ? 'bvSide' : 'bvCallouts');
-    sel.value = app._bv[k];
-    sel.addEventListener('change', () => { app._bv[k] = sel.value; showPage(); });
-  }
-  showPage();
-
-  const checks = document.getElementById('bvChecks');
-  fetch(`${BV_DIR}manifest.json`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status)))).then((m) => {
-    const s = m.summary;
-    document.getElementById('bvHint').textContent =
-      `${m.name} · ${(m.xmlBytes / 1e6).toFixed(0)} MB IPC-2581 · rendered ${m.generated}`;
-    // The live server only answers on the machine that built the pages, so the
-    // link is offered only when this page is being served from there too.
-    const local = ['localhost', '127.0.0.1'].includes(location.hostname);
-    const gh = `https://github.com/sequoia-hope/maglev-motor/blob/main/${m.board}`;
-    const links = [
-      local && m.live ? `<a href="${m.live}" target="_blank" rel="noopener">open in boardvis (live, with the interview) &#8599;</a>` : '',
-      `<a href="https://kicanvas.org/?github=${encodeURIComponent(gh)}" target="_blank" rel="noopener">copper in KiCanvas &#8599;</a>`,
-      `<a href="route/report/" target="_blank" rel="noopener">routing report &#8599;</a>`,
-    ].filter(Boolean).join(' &middot; ');
-    const lvl = (l) => `<span class="bv-lvl ${l}">${l}</span>`;
-    checks.innerHTML = `
-      <p style="font-size:12px;color:var(--ink-2);margin:0 0 8px">
-        <b>${s.total}</b> findings on ${m.board.split('/').pop()}: ${lvl('error')} ${s.error} &nbsp; ${lvl('warn')} ${s.warn} &nbsp; ${lvl('info')} ${s.info}
-        &mdash; ${s.pass ? 'the packet is complete' : 'the assembly packet is not ready to send'}.
-        boardvis asks what the board file cannot know (how an operator spots pin 1 on the part in hand, where the datasheet is,
-        which way the tape is loaded); each row below is one question, asked once per part and answered for every placement of it.
-        ${links ? `<br>${links}` : ''}
-      </p>
-      <table class="bv-table">
-        <tr><th></th><th>part</th><th>question</th><th class="n">parts</th></tr>
-        ${(m.questions || []).map((q) => `<tr><td>${lvl(q.level)}</td><td>${q.partLabel}</td>
-          <td><b>${q.title}</b>${q.question ? `<br><span style="color:var(--muted)">${q.question}</span>` : ''}</td><td class="n">${q.count}</td></tr>`).join('')}
-      </table>`;
-  }).catch((e) => {
-    checks.innerHTML = `<p style="font-size:12px;color:var(--crit)">No boardvis manifest at ${BV_DIR}manifest.json (${e.message}). Run <code>route/boardvis.sh</code>.</p>`;
-  });
 }
 
 // ------------------------------------------------------------------- boot ---
