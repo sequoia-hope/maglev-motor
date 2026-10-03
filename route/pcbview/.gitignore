@@ -1,0 +1,3 @@
+# Built by pcbview from route/pcbview.toml; tracked so GitHub Pages serves the
+# Board tab. route/.gitignore keeps *.svg out, and these layer plots are the tab.
+!*.svg

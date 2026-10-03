@@ -273,7 +273,7 @@ the ring comes down to 0.135 mm — still over the 0.13 mm floor.
 
 `./full.sh` produces the whole 12x14 board routed end to end — every register,
 bridge, coil lead, bus and the 42-register shift chain — and `./fullgate.sh`
-checks it with no exemptions. Page: `report/full.html`.
+checks it with no exemptions. Page: `report/index.html`.
 
 ```
 stamp2.mjs    bare board -> the 2x2 quad stamp, routed on a TORUS       (t2gate.sh)
@@ -388,7 +388,7 @@ pin is unreachable (a hole in the model, since the board has no open nets),
 and the 0.05 mm raster agrees with the 0.1 mm one within 2%. DRC sees the
 pour: a fill shifted 0.06 mm sideways returns 510 clearance errors.
 
-Measured on `out/amzhex-full.kicad_pcb` (page: `report/full.html`, section 06):
+Measured on `out/amzhex-full.kicad_pcb` (page: `report/index.html`, section 06):
 
 | | tracks only | with the rails |
 |---|---|---|
@@ -413,7 +413,15 @@ own density) stays red on GND until then. As built, GND's feed is good for
 about hover (0.62 A in a 0.1 mm outer-layer track, ~20 K rise) and the
 connector's own 1.27 mm pin is rated about the same.
 
-## Assembly view: boardvis (2026-10)
+## The Board tab: pcbview, and boardvis (2026-10)
+
+`pcbview.toml` → `~/Software/pcbview/bin/pcbview build route/pcbview.toml` → `pcbview/`:
+every copper layer plotted by kicad-cli in board coordinates, the GLB of the board, and
+the part pane with LCSC numbers, as a static site. The simulator's Board tab frames it
+(`route/pcbview/#copper`) and GitHub Pages serves it unchanged. Rebuild after the board
+changes; the layer plots are the heavy part.
+
+### Assembly view: boardvis
 
 `boardvis.sh` exports the routed board to IPC-2581 (`kicad-cli`, 145 MB for
 `amzhex-full`) and hands it to boardvis (`~/Software/boardvis`), which renders

@@ -1,0 +1,233 @@
+{
+ "board": "amzhex-full.kicad_pcb",
+ "generated": "2026-10-02",
+ "view_mm": [
+  7.877,
+  8.222,
+  110.379,
+  109.689
+ ],
+ "size_mm": [
+  106.133,
+  105.443
+ ],
+ "round": null,
+ "polar": null,
+ "thickness": 1.84,
+ "plate": "#c8c8c8",
+ "body": "body.svg",
+ "vias": 4153,
+ "nets": 557,
+ "footprints": 383,
+ "front": 0,
+ "back": 383,
+ "tracks": 320013,
+ "length_mm": 397845.6,
+ "layers": [
+  {
+   "name": "F.Cu",
+   "slug": "f",
+   "kind": "copper",
+   "file": "f.svg",
+   "color": "#C83434",
+   "note": "Top copper.",
+   "tracks": 25767,
+   "length_mm": 30969.0,
+   "pads": 0,
+   "zones": [
+    "GND"
+   ]
+  },
+  {
+   "name": "In1.Cu",
+   "slug": "in1",
+   "kind": "copper",
+   "file": "in1.svg",
+   "color": "#7FC87F",
+   "note": "Inner layer 1 of 12.",
+   "tracks": 25305,
+   "length_mm": 31122.7,
+   "pads": 0,
+   "zones": [
+    "VBUS"
+   ]
+  },
+  {
+   "name": "In2.Cu",
+   "slug": "in2",
+   "kind": "copper",
+   "file": "in2.svg",
+   "color": "#CE7D2C",
+   "note": "Inner layer 2 of 12.",
+   "tracks": 25189,
+   "length_mm": 31004.0,
+   "pads": 0,
+   "zones": [
+    "GND"
+   ]
+  },
+  {
+   "name": "In3.Cu",
+   "slug": "in3",
+   "kind": "copper",
+   "file": "in3.svg",
+   "color": "#4FCBCB",
+   "note": "Inner layer 3 of 12.",
+   "tracks": 25703,
+   "length_mm": 31836.7,
+   "pads": 0,
+   "zones": [
+    "VBUS"
+   ]
+  },
+  {
+   "name": "In4.Cu",
+   "slug": "in4",
+   "kind": "copper",
+   "file": "in4.svg",
+   "color": "#DB628B",
+   "note": "Inner layer 4 of 12.",
+   "tracks": 25528,
+   "length_mm": 31180.7,
+   "pads": 0,
+   "zones": [
+    "GND"
+   ]
+  },
+  {
+   "name": "In5.Cu",
+   "slug": "in5",
+   "kind": "copper",
+   "file": "in5.svg",
+   "color": "#A7A5C6",
+   "note": "Inner layer 5 of 12.",
+   "tracks": 25934,
+   "length_mm": 32393.9,
+   "pads": 0,
+   "zones": [
+    "VBUS"
+   ]
+  },
+  {
+   "name": "In6.Cu",
+   "slug": "in6",
+   "kind": "copper",
+   "file": "in6.svg",
+   "color": "#28CCD9",
+   "note": "Inner layer 6 of 12.",
+   "tracks": 25931,
+   "length_mm": 31440.0,
+   "pads": 0,
+   "zones": [
+    "GND"
+   ]
+  },
+  {
+   "name": "In7.Cu",
+   "slug": "in7",
+   "kind": "copper",
+   "file": "in7.svg",
+   "color": "#E8B2A7",
+   "note": "Inner layer 7 of 12.",
+   "tracks": 25832,
+   "length_mm": 32544.6,
+   "pads": 0,
+   "zones": [
+    "VBUS"
+   ]
+  },
+  {
+   "name": "In8.Cu",
+   "slug": "in8",
+   "kind": "copper",
+   "file": "in8.svg",
+   "color": "#F2EDA1",
+   "note": "Inner layer 8 of 12.",
+   "tracks": 25073,
+   "length_mm": 30491.7,
+   "pads": 0,
+   "zones": [
+    "GND"
+   ]
+  },
+  {
+   "name": "In9.Cu",
+   "slug": "in9",
+   "kind": "copper",
+   "file": "in9.svg",
+   "color": "#8DCB81",
+   "note": "Inner layer 9 of 12.",
+   "tracks": 25532,
+   "length_mm": 31757.8,
+   "pads": 0,
+   "zones": [
+    "VBUS"
+   ]
+  },
+  {
+   "name": "In10.Cu",
+   "slug": "in10",
+   "kind": "copper",
+   "file": "in10.svg",
+   "color": "#ED7C33",
+   "note": "Inner layer 10 of 12.",
+   "tracks": 26401,
+   "length_mm": 31828.1,
+   "pads": 0,
+   "zones": [
+    "GND"
+   ]
+  },
+  {
+   "name": "In11.Cu",
+   "slug": "in11",
+   "kind": "copper",
+   "file": "in11.svg",
+   "color": "#5BC3EB",
+   "note": "Inner layer 11 of 12.",
+   "tracks": 25691,
+   "length_mm": 32024.4,
+   "pads": 0,
+   "zones": [
+    "VBUS"
+   ]
+  },
+  {
+   "name": "In12.Cu",
+   "slug": "in12",
+   "kind": "copper",
+   "file": "in12.svg",
+   "color": "#F76F8E",
+   "note": "The second electronics layer: the fixed east\u2013west bus lanes and the shift chain's reserved return lines.",
+   "tracks": 3572,
+   "length_mm": 12025.7,
+   "pads": 0,
+   "zones": [
+    "VBUS"
+   ]
+  },
+  {
+   "name": "B.Cu",
+   "slug": "b",
+   "kind": "copper",
+   "file": "b.svg",
+   "color": "#4D7FC4",
+   "note": "The electronics layer: parts, the bus ladders and the register-to-bridge routing; also a GND pour in the gutters.",
+   "tracks": 8555,
+   "length_mm": 7226.3,
+   "pads": 2035,
+   "zones": [
+    "GND",
+    "VBUS"
+   ]
+  },
+  {
+   "name": "Edge.Cuts",
+   "slug": "edge",
+   "kind": "outline",
+   "file": "edge.svg",
+   "color": "#D0D2CD",
+   "note": "The outline and every cut-out in it."
+  }
+ ]
+}

@@ -310,6 +310,8 @@ tr.infeasible td { color: var(--muted); }
 .viewctl select { margin-left: 0; }
 .viewctl a { font-size: 11px; color: var(--accent); text-decoration: none; }
 
+.pv-frame { display: block; width: 100%; height: calc(100vh - 150px); min-height: 480px; border: 0; border-radius: 6px; background: var(--plane); }
+
 /* Board view: the boardvis page is dark-on-dark copper art, so it gets its own
    plate in both themes rather than the card's paper. */
 .bv-page { background: #121a16; border-radius: 6px; padding: 6px; }
