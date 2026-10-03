@@ -642,7 +642,7 @@
   "triangles": 3573776,
   "primitives": 31
  },
- "when": "2026-10-02 23:24",
+ "when": "2026-10-03 00:00",
  "source": {
   "kind": "file",
   "pcb": "out/amzhex-full.kicad_pcb",
